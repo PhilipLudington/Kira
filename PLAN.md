@@ -12,7 +12,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 2. Lexer | Complete | 10/10 |
 | 3. AST Definition | Complete | 7/7 |
 | 4. Parser | Complete | 20/20 |
-| 5. Symbol Table | Not Started | 0/8 |
+| 5. Symbol Table | Complete | 8/8 |
 | 6. Type Checker | Not Started | 0/15 |
 | 7. Effect Checker | Not Started | 0/9 |
 | 8. Pattern Matching | Not Started | 0/9 |
@@ -75,14 +75,14 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write comprehensive parser tests
 
 ## Phase 5: Symbol Table & Scoping
-- [ ] Implement symbol table with nested scopes
-- [ ] Track variable bindings with types
-- [ ] Track function bindings with signatures
-- [ ] Track type definitions (sum types, product types, type aliases)
-- [ ] Track trait definitions and implementations
-- [ ] Implement module namespace management
-- [ ] Resolve imports and visibility (pub vs private)
-- [ ] Detect duplicate definitions and shadowing rules
+- [x] Implement symbol table with nested scopes
+- [x] Track variable bindings with types
+- [x] Track function bindings with signatures
+- [x] Track type definitions (sum types, product types, type aliases)
+- [x] Track trait definitions and implementations
+- [x] Implement module namespace management
+- [x] Resolve imports and visibility (pub vs private)
+- [x] Detect duplicate definitions and shadowing rules
 
 ## Phase 6: Type Checker
 - [ ] Implement type representation: primitives, named, generic, function, tuple, array

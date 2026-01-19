@@ -6,6 +6,7 @@ const std = @import("std");
 pub const lexer = @import("lexer/root.zig");
 pub const ast = @import("ast/root.zig");
 pub const parser_mod = @import("parser/root.zig");
+pub const symbols = @import("symbols/root.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -27,6 +28,16 @@ pub const PrettyPrinter = ast.PrettyPrinter;
 pub const Parser = parser_mod.Parser;
 pub const ParseError = parser_mod.ParseError;
 
+// Symbol table exports
+pub const Symbol = symbols.Symbol;
+pub const SymbolId = symbols.SymbolId;
+pub const ScopeId = symbols.ScopeId;
+pub const Scope = symbols.Scope;
+pub const ScopeKind = symbols.ScopeKind;
+pub const SymbolTable = symbols.SymbolTable;
+pub const Resolver = symbols.Resolver;
+pub const ResolveError = symbols.ResolveError;
+
 /// Tokenize Kira source code
 pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !std.ArrayList(Token) {
     var lex = Lexer.init(source);
@@ -44,10 +55,19 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Program {
     return p.parseProgram();
 }
 
+/// Resolve a parsed program, populating the symbol table
+pub fn resolve(allocator: std.mem.Allocator, program: *const Program, table: *SymbolTable) ResolveError!void {
+    var resolver = Resolver.init(allocator, table);
+    defer resolver.deinit();
+
+    return resolver.resolve(program);
+}
+
 test {
     _ = lexer;
     _ = ast;
     _ = parser_mod;
+    _ = symbols;
 }
 
 test "tokenize simple expression" {
