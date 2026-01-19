@@ -1,23 +1,30 @@
-//! By convention, root.zig is the root source file when making a library.
+//! Kira Programming Language
+//!
+//! A functional programming language with explicit types, explicit effects, and no surprises.
 const std = @import("std");
 
-pub fn bufferedPrint() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub const lexer = @import("lexer/root.zig");
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+pub const Token = lexer.Token;
+pub const TokenType = lexer.TokenType;
+pub const Lexer = lexer.Lexer;
+pub const Location = lexer.Location;
+pub const Span = lexer.Span;
 
-    try stdout.flush(); // Don't forget to flush!
+/// Tokenize Kira source code
+pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !std.ArrayList(Token) {
+    var lex = Lexer.init(source);
+    return lex.scanAllTokens(allocator);
 }
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
+test {
+    _ = lexer;
 }
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+test "tokenize simple expression" {
+    var tokens = try tokenize(std.testing.allocator, "let x: i32 = 42");
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 7), tokens.items.len);
+    try std.testing.expectEqual(TokenType.let, tokens.items[0].type);
 }

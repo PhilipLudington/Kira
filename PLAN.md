@@ -2,24 +2,25 @@
 
 A functional programming language with explicit types, explicit effects, and no surprises.
 
+> Implementation in Zig for performance and integration with CarbideZig standards.
+
 ## Phase 1: Project Setup
-- [ ] Initialize TypeScript project with strict mode
-- [ ] Set up build system (esbuild or tsc)
-- [ ] Configure test framework (Vitest)
-- [ ] Create directory structure: `src/lexer`, `src/parser`, `src/typechecker`, `src/effects`, `src/codegen`
-- [ ] Set up CLI entry point with basic REPL skeleton
+- [x] Initialize Zig project with build.zig
+- [x] Set up build system with test configuration
+- [x] Create directory structure: `src/lexer`, `src/parser`, `src/typechecker`, `src/effects`, `src/codegen`
+- [x] Set up CLI entry point with basic REPL skeleton
 
 ## Phase 2: Lexer
-- [ ] Define token types enum (keywords, operators, literals, punctuation)
-- [ ] Implement source location tracking (line, column, span)
-- [ ] Implement keyword recognition: `fn`, `let`, `type`, `module`, `import`, `pub`, `effect`, `trait`, `impl`, `const`, `if`, `else`, `match`, `for`, `return`, `break`, `true`, `false`, `self`, `Self`, `and`, `or`, `not`, `is`, `in`, `as`, `where`, `var`
-- [ ] Implement operator scanning: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), special (`?`, `??`, `..`, `..=`, `->`, `=>`, `:`, `::`, `|`)
-- [ ] Implement integer literals (decimal, hex `0x`, binary `0b`, with underscores, type suffixes)
-- [ ] Implement float literals (with optional `f32`/`f64` suffix)
-- [ ] Implement string literals with escape sequences (`\n`, `\t`, `\\`, `\"`)
-- [ ] Implement comment handling: line (`//`), block (`/* */`), doc (`///`, `//!`)
-- [ ] Implement newline-as-terminator logic (significant newlines)
-- [ ] Write lexer tests for all token types
+- [x] Define token types enum (keywords, operators, literals, punctuation)
+- [x] Implement source location tracking (line, column, span)
+- [x] Implement keyword recognition: `fn`, `let`, `type`, `module`, `import`, `pub`, `effect`, `trait`, `impl`, `const`, `if`, `else`, `match`, `for`, `return`, `break`, `true`, `false`, `self`, `Self`, `and`, `or`, `not`, `is`, `in`, `as`, `where`, `var`
+- [x] Implement operator scanning: arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), special (`?`, `??`, `..`, `..=`, `->`, `=>`, `:`, `::`, `|`)
+- [x] Implement integer literals (decimal, hex `0x`, binary `0b`, with underscores, type suffixes)
+- [x] Implement float literals (with optional `f32`/`f64` suffix)
+- [x] Implement string literals with escape sequences (`\n`, `\t`, `\\`, `\"`)
+- [x] Implement comment handling: line (`//`), block (`/* */`), doc (`///`, `//!`)
+- [x] Implement newline-as-terminator logic (significant newlines)
+- [x] Write lexer tests for all token types
 
 ## Phase 3: AST Definition
 - [ ] Define expression nodes: literals, identifiers, binary ops, unary ops, function calls, field access, index access, tuple access, closures, match expressions
