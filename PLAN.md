@@ -4,6 +4,27 @@ A functional programming language with explicit types, explicit effects, and no 
 
 > Implementation in Zig for performance and integration with CarbideZig standards.
 
+## Status
+
+| Phase | Status | Progress |
+|-------|--------|----------|
+| 1. Project Setup | Complete | 4/4 |
+| 2. Lexer | Complete | 10/10 |
+| 3. AST Definition | Complete | 7/7 |
+| 4. Parser | Not Started | 0/20 |
+| 5. Symbol Table | Not Started | 0/8 |
+| 6. Type Checker | Not Started | 0/15 |
+| 7. Effect Checker | Not Started | 0/9 |
+| 8. Pattern Matching | Not Started | 0/9 |
+| 9. Interpreter | Not Started | 0/12 |
+| 10. Standard Library | Not Started | 0/7 |
+| 11. REPL & CLI | Not Started | 0/8 |
+| 12. Documentation | Not Started | 0/4 |
+
+**Build:** `zig build` | **Test:** `zig build test` | **Run:** `zig build run`
+
+---
+
 ## Phase 1: Project Setup
 - [x] Initialize Zig project with build.zig
 - [x] Set up build system with test configuration
@@ -23,13 +44,13 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write lexer tests for all token types
 
 ## Phase 3: AST Definition
-- [ ] Define expression nodes: literals, identifiers, binary ops, unary ops, function calls, field access, index access, tuple access, closures, match expressions
-- [ ] Define statement nodes: let bindings, var bindings, assignments, if statements, for loops, match statements, return, break
-- [ ] Define type nodes: primitive types, named types, generic types, function types, tuple types, array types
-- [ ] Define declaration nodes: function declarations, type declarations (sum types, product types), trait declarations, impl blocks, module declarations, imports
-- [ ] Define pattern nodes: literal patterns, identifier patterns, constructor patterns, record patterns, tuple patterns, or patterns, wildcard patterns, guard patterns
-- [ ] Define effect annotations on function types
-- [ ] Implement pretty-printer for AST debugging
+- [x] Define expression nodes: literals, identifiers, binary ops, unary ops, function calls, field access, index access, tuple access, closures, match expressions
+- [x] Define statement nodes: let bindings, var bindings, assignments, if statements, for loops, match statements, return, break
+- [x] Define type nodes: primitive types, named types, generic types, function types, tuple types, array types
+- [x] Define declaration nodes: function declarations, type declarations (sum types, product types), trait declarations, impl blocks, module declarations, imports
+- [x] Define pattern nodes: literal patterns, identifier patterns, constructor patterns, record patterns, tuple patterns, or patterns, wildcard patterns, guard patterns
+- [x] Define effect annotations on function types
+- [x] Implement pretty-printer for AST debugging
 
 ## Phase 4: Parser
 - [ ] Implement recursive descent parser framework with error recovery

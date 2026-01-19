@@ -4,12 +4,23 @@
 const std = @import("std");
 
 pub const lexer = @import("lexer/root.zig");
+pub const ast = @import("ast/root.zig");
 
+// Lexer exports
 pub const Token = lexer.Token;
 pub const TokenType = lexer.TokenType;
 pub const Lexer = lexer.Lexer;
 pub const Location = lexer.Location;
 pub const Span = lexer.Span;
+
+// AST exports
+pub const Expression = ast.Expression;
+pub const Statement = ast.Statement;
+pub const Type = ast.Type;
+pub const Declaration = ast.Declaration;
+pub const Pattern = ast.Pattern;
+pub const Program = ast.Program;
+pub const PrettyPrinter = ast.PrettyPrinter;
 
 /// Tokenize Kira source code
 pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !std.ArrayList(Token) {
@@ -19,6 +30,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !std.ArrayList
 
 test {
     _ = lexer;
+    _ = ast;
 }
 
 test "tokenize simple expression" {
