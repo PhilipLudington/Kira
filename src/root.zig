@@ -7,6 +7,7 @@ pub const lexer = @import("lexer/root.zig");
 pub const ast = @import("ast/root.zig");
 pub const parser_mod = @import("parser/root.zig");
 pub const symbols = @import("symbols/root.zig");
+pub const typechecker = @import("typechecker/root.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -38,6 +39,12 @@ pub const SymbolTable = symbols.SymbolTable;
 pub const Resolver = symbols.Resolver;
 pub const ResolveError = symbols.ResolveError;
 
+// Type checker exports
+pub const ResolvedType = typechecker.ResolvedType;
+pub const TypeChecker = typechecker.TypeChecker;
+pub const TypeCheckError = typechecker.TypeCheckError;
+pub const TypeCheckDiagnostic = typechecker.Diagnostic;
+
 /// Tokenize Kira source code
 pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !std.ArrayList(Token) {
     var lex = Lexer.init(source);
@@ -63,11 +70,20 @@ pub fn resolve(allocator: std.mem.Allocator, program: *const Program, table: *Sy
     return resolver.resolve(program);
 }
 
+/// Type check a resolved program
+pub fn typecheck(allocator: std.mem.Allocator, program: *const Program, table: *SymbolTable) TypeCheckError!void {
+    var checker = TypeChecker.init(allocator, table);
+    defer checker.deinit();
+
+    return checker.check(program);
+}
+
 test {
     _ = lexer;
     _ = ast;
     _ = parser_mod;
     _ = symbols;
+    _ = typechecker;
 }
 
 test "tokenize simple expression" {

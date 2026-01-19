@@ -13,7 +13,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 3. AST Definition | Complete | 7/7 |
 | 4. Parser | Complete | 20/20 |
 | 5. Symbol Table | Complete | 8/8 |
-| 6. Type Checker | Not Started | 0/15 |
+| 6. Type Checker | Complete | 15/15 |
 | 7. Effect Checker | Not Started | 0/9 |
 | 8. Pattern Matching | Not Started | 0/9 |
 | 9. Interpreter | Not Started | 0/12 |
@@ -85,21 +85,21 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Detect duplicate definitions and shadowing rules
 
 ## Phase 6: Type Checker
-- [ ] Implement type representation: primitives, named, generic, function, tuple, array
-- [ ] Verify all let/var bindings have explicit type annotations
-- [ ] Verify all function parameters have explicit type annotations
-- [ ] Verify all function return types are explicit
-- [ ] Check type compatibility in assignments
-- [ ] Type check binary and unary operations
-- [ ] Type check function calls with generic instantiation
-- [ ] Type check pattern matching for exhaustiveness
-- [ ] Type check record field access
-- [ ] Type check tuple indexing
-- [ ] Verify no implicit type conversions (require explicit `.as[T]`)
-- [ ] Check generic type parameter constraints
-- [ ] Validate trait implementations match trait signatures
-- [ ] Produce clear error messages with source locations
-- [ ] Write type checker tests
+- [x] Implement type representation: primitives, named, generic, function, tuple, array
+- [x] Verify all let/var bindings have explicit type annotations
+- [x] Verify all function parameters have explicit type annotations
+- [x] Verify all function return types are explicit
+- [x] Check type compatibility in assignments
+- [x] Type check binary and unary operations
+- [x] Type check function calls with generic instantiation
+- [x] Type check pattern matching for exhaustiveness
+- [x] Type check record field access
+- [x] Type check tuple indexing
+- [x] Verify no implicit type conversions (require explicit `.as[T]`)
+- [x] Check generic type parameter constraints
+- [x] Validate trait implementations match trait signatures
+- [x] Produce clear error messages with source locations
+- [x] Write type checker tests
 
 ## Phase 7: Effect Checker
 - [ ] Define effect types: `IO`, `Result[T, E]`, pure (no effect)
