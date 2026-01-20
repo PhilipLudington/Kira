@@ -1,0 +1,58 @@
+// Error Handling example in Kira
+// Demonstrates Result type patterns
+
+// Custom error type
+type ValidationError =
+    | TooShort
+    | TooLong
+    | EmptyInput
+
+// Validate string length
+fn validate_length(s: string, min: i32, max: i32) -> Result[string, ValidationError] {
+    let len: i32 = std.string.length(s)
+    if len == 0 {
+        return Err(EmptyInput)
+    }
+    if len < min {
+        return Err(TooShort)
+    }
+    if len > max {
+        return Err(TooLong)
+    }
+    return Ok(s)
+}
+
+// Convert error to string
+fn error_message(err: ValidationError) -> string {
+    match err {
+        TooShort => { return "Input is too short" }
+        TooLong => { return "Input is too long" }
+        EmptyInput => { return "Input cannot be empty" }
+    }
+}
+
+// Helper to format result
+fn format_result(result: Result[string, ValidationError]) -> string {
+    match result {
+        Ok(s) => { return "Valid: " + s }
+        Err(e) => { return "Error: " + error_message(e) }
+    }
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Error Handling Example")
+    std.io.println("======================")
+
+    // Test various inputs with min=3, max=10
+    let r1: Result[string, ValidationError] = validate_length("hello", 3, 10)
+    let r2: Result[string, ValidationError] = validate_length("hi", 3, 10)
+    let r3: Result[string, ValidationError] = validate_length("this is way too long", 3, 10)
+    let r4: Result[string, ValidationError] = validate_length("", 3, 10)
+
+    std.io.println("Testing validation (min=3, max=10):")
+    std.io.println("  'hello': " + format_result(r1))
+    std.io.println("  'hi': " + format_result(r2))
+    std.io.println("  'this is way too long': " + format_result(r3))
+    std.io.println("  '': " + format_result(r4))
+}

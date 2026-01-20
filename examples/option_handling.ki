@@ -1,0 +1,61 @@
+// Option Handling example in Kira
+// Demonstrates Option type patterns
+
+// Safe division that returns None for division by zero
+fn safe_divide(a: i32, b: i32) -> Option[i32] {
+    if b == 0 {
+        return None
+    }
+    return Some(a / b)
+}
+
+// Get value with default
+fn get_or_default(opt: Option[i32], default: i32) -> i32 {
+    match opt {
+        Some(value) => { return value }
+        None => { return default }
+    }
+}
+
+// Check if option has value
+fn is_some(opt: Option[i32]) -> bool {
+    match opt {
+        Some(_) => { return true }
+        None => { return false }
+    }
+}
+
+// Double the value if present
+fn double_option(opt: Option[i32]) -> Option[i32] {
+    match opt {
+        Some(value) => { return Some(value * 2) }
+        None => { return None }
+    }
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Option Handling Example")
+    std.io.println("=======================")
+
+    // Safe division examples
+    let r1: Option[i32] = safe_divide(10, 2)
+    let r2: Option[i32] = safe_divide(10, 0)
+
+    std.io.println("10 / 2 = " + to_string(get_or_default(r1, -1)))
+    std.io.println("10 / 0 = " + to_string(get_or_default(r2, -1)))
+
+    std.io.println("")
+    std.io.println("Checking values:")
+    std.io.println("  10/2 has value? " + to_string(is_some(r1)))
+    std.io.println("  10/0 has value? " + to_string(is_some(r2)))
+
+    // Transform option
+    std.io.println("")
+    std.io.println("Doubling values:")
+    let doubled: Option[i32] = double_option(r1)
+    std.io.println("  double(10/2) = " + to_string(get_or_default(doubled, -1)))
+
+    let doubled2: Option[i32] = double_option(r2)
+    std.io.println("  double(10/0) = " + to_string(get_or_default(doubled2, -1)))
+}

@@ -1,0 +1,98 @@
+// Temperature Conversion example in Kira
+// Demonstrates product types and conversions
+
+// Temperature scale as a sum type
+type Scale =
+    | Celsius
+    | Fahrenheit
+    | Kelvin
+
+// Temperature record
+type Temperature = {
+    value: f64,
+    scale: Scale
+}
+
+// Constructors
+fn celsius(v: f64) -> Temperature {
+    return Temperature { value: v, scale: Celsius }
+}
+
+fn fahrenheit(v: f64) -> Temperature {
+    return Temperature { value: v, scale: Fahrenheit }
+}
+
+fn kelvin(v: f64) -> Temperature {
+    return Temperature { value: v, scale: Kelvin }
+}
+
+// Convert to Celsius
+fn to_celsius(temp: Temperature) -> Temperature {
+    match temp.scale {
+        Celsius => { return temp }
+        Fahrenheit => {
+            let c: f64 = (temp.value - 32.0) * 5.0 / 9.0
+            return celsius(c)
+        }
+        Kelvin => {
+            let c: f64 = temp.value - 273.15
+            return celsius(c)
+        }
+    }
+}
+
+// Convert to Fahrenheit
+fn to_fahrenheit(temp: Temperature) -> Temperature {
+    match temp.scale {
+        Fahrenheit => { return temp }
+        Celsius => {
+            let f: f64 = temp.value * 9.0 / 5.0 + 32.0
+            return fahrenheit(f)
+        }
+        Kelvin => {
+            let c: f64 = temp.value - 273.15
+            let f: f64 = c * 9.0 / 5.0 + 32.0
+            return fahrenheit(f)
+        }
+    }
+}
+
+// Scale name
+fn scale_name(s: Scale) -> string {
+    match s {
+        Celsius => { return "C" }
+        Fahrenheit => { return "F" }
+        Kelvin => { return "K" }
+    }
+}
+
+// Format temperature
+fn format_temp(t: Temperature) -> string {
+    return to_string(t.value) + " " + scale_name(t.scale)
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Temperature Conversion Example")
+    std.io.println("==============================")
+
+    // Water boiling point
+    let boiling: Temperature = celsius(100.0)
+    std.io.println("Water boils at:")
+    std.io.println("  " + format_temp(boiling))
+    std.io.println("  " + format_temp(to_fahrenheit(boiling)))
+
+    // Body temperature in Fahrenheit
+    let body: Temperature = fahrenheit(98.6)
+    std.io.println("")
+    std.io.println("Body temperature:")
+    std.io.println("  " + format_temp(body))
+    std.io.println("  " + format_temp(to_celsius(body)))
+
+    // Absolute zero
+    let abs_zero: Temperature = kelvin(0.0)
+    std.io.println("")
+    std.io.println("Absolute zero:")
+    std.io.println("  " + format_temp(abs_zero))
+    std.io.println("  " + format_temp(to_celsius(abs_zero)))
+}

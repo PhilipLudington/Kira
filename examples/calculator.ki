@@ -1,0 +1,55 @@
+// Calculator example in Kira
+// Demonstrates sum types and pattern matching
+
+// Arithmetic expression as a sum type
+type Expr =
+    | Num(f64)
+    | Add(Expr, Expr)
+    | Sub(Expr, Expr)
+    | Mul(Expr, Expr)
+    | Neg(Expr)
+
+// Evaluate expression
+fn eval(expr: Expr) -> f64 {
+    match expr {
+        Num(n) => { return n }
+        Add(left, right) => { return eval(left) + eval(right) }
+        Sub(left, right) => { return eval(left) - eval(right) }
+        Mul(left, right) => { return eval(left) * eval(right) }
+        Neg(inner) => { return 0.0 - eval(inner) }
+    }
+}
+
+// Count operations
+fn count_ops(expr: Expr) -> i32 {
+    match expr {
+        Num(_) => { return 0 }
+        Add(l, r) => { return 1 + count_ops(l) + count_ops(r) }
+        Sub(l, r) => { return 1 + count_ops(l) + count_ops(r) }
+        Mul(l, r) => { return 1 + count_ops(l) + count_ops(r) }
+        Neg(e) => { return 1 + count_ops(e) }
+    }
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Calculator Example")
+    std.io.println("==================")
+
+    // Build: (3 + 4) * 2
+    let expr1: Expr = Mul(Add(Num(3.0), Num(4.0)), Num(2.0))
+    std.io.println("(3 + 4) * 2 = " + to_string(eval(expr1)))
+
+    // Build: 10 - (2 * 3)
+    let expr2: Expr = Sub(Num(10.0), Mul(Num(2.0), Num(3.0)))
+    std.io.println("10 - (2 * 3) = " + to_string(eval(expr2)))
+
+    // Build: -5
+    let expr3: Expr = Neg(Num(5.0))
+    std.io.println("-5 = " + to_string(eval(expr3)))
+
+    // Complex: ((1 + 2) * 3) - 4
+    let expr4: Expr = Sub(Mul(Add(Num(1.0), Num(2.0)), Num(3.0)), Num(4.0))
+    std.io.println("((1 + 2) * 3) - 4 = " + to_string(eval(expr4)))
+    std.io.println("  Operations: " + to_string(count_ops(expr4)))
+}

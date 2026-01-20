@@ -1,0 +1,84 @@
+// JSON Builder example in Kira
+// Demonstrates string manipulation and recursive types
+
+// JSON value as a sum type (simplified)
+type JsonValue =
+    | JsonNull
+    | JsonBool(bool)
+    | JsonNumber(i32)
+    | JsonString(string)
+
+// Convert JSON value to string
+fn json_to_string(value: JsonValue) -> string {
+    match value {
+        JsonNull => { return "null" }
+        JsonBool(b) => {
+            if b {
+                return "true"
+            }
+            return "false"
+        }
+        JsonNumber(n) => { return to_string(n) }
+        JsonString(s) => { return "\"" + s + "\"" }
+    }
+}
+
+// Helper for boolean to string
+fn bool_str(b: bool) -> string {
+    if b {
+        return "true"
+    }
+    return "false"
+}
+
+// Build a simple JSON object manually
+fn build_person_json(name: string, age: i32, active: bool) -> string {
+    let name_field: string = "\"name\": " + json_to_string(JsonString(name))
+    let age_field: string = "\"age\": " + json_to_string(JsonNumber(age))
+    let active_field: string = "\"active\": " + bool_str(active)
+
+    return "{" + name_field + ", " + age_field + ", " + active_field + "}"
+}
+
+// Pretty print with indentation
+fn indent(level: i32) -> string {
+    if level <= 0 {
+        return ""
+    }
+    return "  " + indent(level - 1)
+}
+
+fn build_pretty_json(name: string, age: i32) -> string {
+    let i1: string = indent(1)
+    return "{\n" + i1 + "\"name\": \"" + name + "\",\n" + i1 + "\"age\": " + to_string(age) + "\n}"
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("JSON Builder Example")
+    std.io.println("====================")
+
+    // Build some JSON values
+    std.io.println("")
+    std.io.println("JSON primitives:")
+    std.io.println("  null: " + json_to_string(JsonNull))
+    std.io.println("  true: " + json_to_string(JsonBool(true)))
+    std.io.println("  42: " + json_to_string(JsonNumber(42)))
+    std.io.println("  \"hello\": " + json_to_string(JsonString("hello")))
+
+    // Build a JSON object
+    std.io.println("")
+    std.io.println("JSON object (compact):")
+    let json1: string = build_person_json("Alice", 30, true)
+    std.io.println(json1)
+
+    std.io.println("")
+    std.io.println("JSON object (pretty):")
+    let json2: string = build_pretty_json("Bob", 25)
+    std.io.println(json2)
+
+    std.io.println("")
+    std.io.println("Another person:")
+    let json3: string = build_person_json("Charlie", 35, false)
+    std.io.println(json3)
+}

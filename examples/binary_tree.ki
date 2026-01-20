@@ -1,0 +1,86 @@
+// Binary Tree example in Kira
+// Demonstrates recursive algebraic data types
+
+// Binary tree sum type
+type Tree =
+    | Empty
+    | Node(i32, Tree, Tree)
+
+// Create a leaf node
+fn leaf(value: i32) -> Tree {
+    return Node(value, Empty, Empty)
+}
+
+// Count total nodes in tree
+fn size(tree: Tree) -> i32 {
+    match tree {
+        Empty => { return 0 }
+        Node(_, left, right) => { return 1 + size(left) + size(right) }
+    }
+}
+
+// Sum all values
+fn sum(tree: Tree) -> i32 {
+    match tree {
+        Empty => { return 0 }
+        Node(value, left, right) => { return value + sum(left) + sum(right) }
+    }
+}
+
+// Calculate tree height
+fn height(tree: Tree) -> i32 {
+    match tree {
+        Empty => { return 0 }
+        Node(_, left, right) => {
+            let lh: i32 = height(left)
+            let rh: i32 = height(right)
+            if lh > rh {
+                return 1 + lh
+            }
+            return 1 + rh
+        }
+    }
+}
+
+// Check if tree contains a value
+fn contains(tree: Tree, target: i32) -> bool {
+    match tree {
+        Empty => { return false }
+        Node(value, left, right) => {
+            if value == target {
+                return true
+            }
+            if contains(left, target) {
+                return true
+            }
+            return contains(right, target)
+        }
+    }
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Binary Tree Example")
+    std.io.println("===================")
+
+    // Build a sample tree:
+    //       5
+    //      / \
+    //     3   7
+    //    /     \
+    //   1       9
+    let tree: Tree = Node(5,
+        Node(3, leaf(1), Empty),
+        Node(7, Empty, leaf(9)))
+
+    std.io.println("Tree statistics:")
+    std.io.println("  Size: " + to_string(size(tree)))
+    std.io.println("  Height: " + to_string(height(tree)))
+    std.io.println("  Sum: " + to_string(sum(tree)))
+
+    std.io.println("")
+    std.io.println("Contains checks:")
+    std.io.println("  Contains 5? " + to_string(contains(tree, 5)))
+    std.io.println("  Contains 3? " + to_string(contains(tree, 3)))
+    std.io.println("  Contains 6? " + to_string(contains(tree, 6)))
+}

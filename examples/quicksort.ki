@@ -1,0 +1,68 @@
+// Quicksort example in Kira
+// Demonstrates recursion with lists
+
+// Quicksort algorithm (simplified for cons lists)
+// Since we don't have easy list destructuring, this shows the concept
+
+// Check if list is empty
+fn is_empty(list: List[i32]) -> bool {
+    return std.list.length(list) == 0
+}
+
+// Build a list of 5 elements for demo
+fn demo_list() -> List[i32] {
+    let empty: List[i32] = std.list.empty()
+    let l1: List[i32] = std.list.cons(5, empty)
+    let l2: List[i32] = std.list.cons(2, l1)
+    let l3: List[i32] = std.list.cons(8, l2)
+    let l4: List[i32] = std.list.cons(1, l3)
+    let l5: List[i32] = std.list.cons(9, l4)
+    return l5  // [9, 1, 8, 2, 5]
+}
+
+// Simple comparison function
+fn compare(a: i32, b: i32) -> i32 {
+    if a < b {
+        return -1
+    }
+    if a > b {
+        return 1
+    }
+    return 0
+}
+
+// Find minimum in range recursively
+fn find_min_recursive(current: i32, max: i32, min_so_far: i32) -> i32 {
+    if current > max {
+        return min_so_far
+    }
+    if current < min_so_far {
+        return find_min_recursive(current + 1, max, current)
+    }
+    return find_min_recursive(current + 1, max, min_so_far)
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Sorting Concepts Example")
+    std.io.println("========================")
+
+    // Create a demo list
+    let list: List[i32] = demo_list()
+    std.io.println("Demo list created with 5 elements")
+    std.io.println("List length: " + to_string(std.list.length(list)))
+
+    std.io.println("")
+    std.io.println("Comparison function demo:")
+    std.io.println("  compare(1, 2) = " + to_string(compare(1, 2)))
+    std.io.println("  compare(2, 1) = " + to_string(compare(2, 1)))
+    std.io.println("  compare(1, 1) = " + to_string(compare(1, 1)))
+
+    std.io.println("")
+    std.io.println("Finding minimum in 5..1:")
+    std.io.println("  min = " + to_string(find_min_recursive(1, 5, 999)))
+
+    std.io.println("")
+    std.io.println("Note: Full quicksort requires list destructuring")
+    std.io.println("which is limited in current Kira version.")
+}

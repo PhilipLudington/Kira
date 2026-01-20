@@ -1,0 +1,31 @@
+// Stack example in Kira
+// Demonstrates recursion and list operations
+
+// Push element onto stack (prepend)
+fn push(stack: List[i32], value: i32) -> List[i32] {
+    return std.list.cons(value, stack)
+}
+
+// Get stack size using stdlib
+fn stack_size(stack: List[i32]) -> i32 {
+    return std.list.length(stack)
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Stack Example")
+    std.io.println("=============")
+
+    // Start with empty stack using std.list.empty
+    let empty: List[i32] = std.list.empty()
+    std.io.println("Empty stack size: " + to_string(stack_size(empty)))
+
+    // Push items using cons
+    let s1: List[i32] = push(empty, 10)
+    let s2: List[i32] = push(s1, 20)
+    let s3: List[i32] = push(s2, 30)
+
+    std.io.println("After pushing 10, 20, 30:")
+    std.io.println("Stack size: " + to_string(stack_size(s3)))
+    std.io.println("Done!")
+}

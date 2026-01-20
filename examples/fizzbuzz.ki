@@ -1,0 +1,54 @@
+// FizzBuzz example in Kira
+// Demonstrates recursion and conditionals
+
+// Classic FizzBuzz for a single number
+fn fizzbuzz(n: i32) -> string {
+    let div3: bool = n % 3 == 0
+    let div5: bool = n % 5 == 0
+
+    if div3 and div5 {
+        return "FizzBuzz"
+    }
+    if div3 {
+        return "Fizz"
+    }
+    if div5 {
+        return "Buzz"
+    }
+    return to_string(n)
+}
+
+// Print FizzBuzz from current to max (recursive)
+effect fn print_fizzbuzz(current: i32, max: i32) -> void {
+    if current > max {
+        return
+    }
+    std.io.println(to_string(current) + ": " + fizzbuzz(current))
+    print_fizzbuzz(current + 1, max)
+}
+
+// Count how many FizzBuzzes in range (recursive)
+fn count_fizzbuzzes(current: i32, max: i32, count: i32) -> i32 {
+    if current > max {
+        return count
+    }
+    if fizzbuzz(current) == "FizzBuzz" {
+        return count_fizzbuzzes(current + 1, max, count + 1)
+    }
+    return count_fizzbuzzes(current + 1, max, count)
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("FizzBuzz Example")
+    std.io.println("================")
+    std.io.println("")
+
+    // Print FizzBuzz for 1 to 20
+    print_fizzbuzz(1, 20)
+
+    std.io.println("")
+    std.io.println("Statistics for 1-100:")
+    let fb_count: i32 = count_fizzbuzzes(1, 100, 0)
+    std.io.println("  FizzBuzz count: " + to_string(fb_count))
+}
