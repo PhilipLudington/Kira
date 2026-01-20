@@ -193,7 +193,7 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
         try formatParseError(stderr, path, source, err);
         return error.ParseError;
     };
-    _ = &program;
+    defer program.deinit(allocator);
 
     // Create symbol table
     var table = Kira.SymbolTable.init(allocator);
@@ -273,7 +273,7 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
         try formatParseError(stderr, path, source, err);
         return error.ParseError;
     };
-    _ = &program;
+    defer program.deinit(allocator);
 
     // Create symbol table
     var table = Kira.SymbolTable.init(allocator);
@@ -493,7 +493,7 @@ fn evalLine(
         try writer.writeAll(msg);
         return;
     };
-    _ = &program;
+    defer program.deinit(allocator);
 
     // Resolve
     Kira.resolve(allocator, &program, table) catch |err| {
@@ -609,7 +609,7 @@ fn evalType(
         try writer.writeAll(msg);
         return;
     };
-    _ = &program;
+    defer program.deinit(allocator);
 
     // Resolve
     Kira.resolve(allocator, &program, table) catch |err| {
@@ -663,7 +663,7 @@ fn loadFile(
         try writer.writeAll(msg);
         return error.ParseError;
     };
-    _ = &program;
+    defer program.deinit(allocator);
 
     // Resolve
     Kira.resolve(allocator, &program, table) catch |err| {

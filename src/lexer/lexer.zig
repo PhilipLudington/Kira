@@ -271,14 +271,14 @@ pub const Lexer = struct {
                     _ = self.advance();
                 }
                 self.updateNewlineState(.integer_literal);
-                return self.makeTokenAt(.integer_literal, self.source[start_location.offset..self.current], start_location);
+                return self.makeNumericTokenAt(.integer_literal, self.source[start_location.offset..self.current], start_location);
             } else if (next == 'b' or next == 'B') {
                 _ = self.advance();
                 while (!self.isAtEnd() and (self.peek() == '0' or self.peek() == '1' or self.peek() == '_')) {
                     _ = self.advance();
                 }
                 self.updateNewlineState(.integer_literal);
-                return self.makeTokenAt(.integer_literal, self.source[start_location.offset..self.current], start_location);
+                return self.makeNumericTokenAt(.integer_literal, self.source[start_location.offset..self.current], start_location);
             }
         }
 
@@ -318,7 +318,7 @@ pub const Lexer = struct {
 
         const tok_type: TokenType = if (is_float) .float_literal else .integer_literal;
         self.updateNewlineState(tok_type);
-        return self.makeTokenAt(tok_type, self.source[start_location.offset..self.current], start_location);
+        return self.makeNumericTokenAt(tok_type, self.source[start_location.offset..self.current], start_location);
     }
 
     fn scanIdentifier(self: *Lexer, start_location: Location) Token {
@@ -412,6 +412,16 @@ pub const Lexer = struct {
             },
         };
     }
+
+    fn makeNumericTokenAt(self: *Lexer, tok_type: TokenType, lexeme: []const u8, start: Location) Token {
+        var tok = self.makeTokenAt(tok_type, lexeme, start);
+        if (tok_type == .integer_literal) {
+            tok.literal_value = .{ .integer = parseIntegerLiteral(lexeme) };
+        } else if (tok_type == .float_literal) {
+            tok.literal_value = .{ .float = parseFloatLiteral(lexeme) };
+        }
+        return tok;
+    }
 };
 
 fn isDigit(c: u8) bool {
@@ -440,6 +450,107 @@ fn isTypeSuffix(s: []const u8) bool {
         if (std.mem.eql(u8, s, suffix)) return true;
     }
     return false;
+}
+
+/// Parse an integer literal from lexeme, handling hex, binary, underscores, and type suffixes
+fn parseIntegerLiteral(lexeme: []const u8) i128 {
+    if (lexeme.len == 0) return 0;
+
+    // Strip type suffix (i32, u64, etc.)
+    var end = lexeme.len;
+    if (end > 2 and (lexeme[end - 1] >= '0' and lexeme[end - 1] <= '9' or lexeme[end - 1] == '8')) {
+        // Possible type suffix like i32, u64, i128
+        var suffix_start = end;
+        while (suffix_start > 0 and ((lexeme[suffix_start - 1] >= '0' and lexeme[suffix_start - 1] <= '9') or
+            lexeme[suffix_start - 1] == 'i' or lexeme[suffix_start - 1] == 'u'))
+        {
+            suffix_start -= 1;
+            if (lexeme[suffix_start] == 'i' or lexeme[suffix_start] == 'u') {
+                const suffix = lexeme[suffix_start..end];
+                if (isTypeSuffix(suffix)) {
+                    end = suffix_start;
+                }
+                break;
+            }
+        }
+    }
+
+    const num_str = lexeme[0..end];
+    if (num_str.len == 0) return 0;
+
+    // Check for hex (0x) or binary (0b)
+    if (num_str.len > 2 and num_str[0] == '0') {
+        if (num_str[1] == 'x' or num_str[1] == 'X') {
+            return parseHexInt(num_str[2..]);
+        } else if (num_str[1] == 'b' or num_str[1] == 'B') {
+            return parseBinaryInt(num_str[2..]);
+        }
+    }
+
+    // Decimal with possible underscores
+    return parseDecimalInt(num_str);
+}
+
+fn parseHexInt(s: []const u8) i128 {
+    var result: i128 = 0;
+    for (s) |c| {
+        if (c == '_') continue;
+        result *= 16;
+        if (c >= '0' and c <= '9') {
+            result += c - '0';
+        } else if (c >= 'a' and c <= 'f') {
+            result += c - 'a' + 10;
+        } else if (c >= 'A' and c <= 'F') {
+            result += c - 'A' + 10;
+        }
+    }
+    return result;
+}
+
+fn parseBinaryInt(s: []const u8) i128 {
+    var result: i128 = 0;
+    for (s) |c| {
+        if (c == '_') continue;
+        result *= 2;
+        if (c == '1') result += 1;
+    }
+    return result;
+}
+
+fn parseDecimalInt(s: []const u8) i128 {
+    var result: i128 = 0;
+    for (s) |c| {
+        if (c == '_') continue;
+        if (c < '0' or c > '9') break; // Stop at non-digit (could be start of suffix)
+        result *= 10;
+        result += c - '0';
+    }
+    return result;
+}
+
+/// Parse a float literal from lexeme, handling underscores and type suffixes
+fn parseFloatLiteral(lexeme: []const u8) f64 {
+    if (lexeme.len == 0) return 0.0;
+
+    // Strip type suffix (f32, f64)
+    var end = lexeme.len;
+    if (end > 3 and lexeme[end - 2] == '3' and lexeme[end - 1] == '2' and lexeme[end - 3] == 'f') {
+        end -= 3;
+    } else if (end > 3 and lexeme[end - 2] == '6' and lexeme[end - 1] == '4' and lexeme[end - 3] == 'f') {
+        end -= 3;
+    }
+
+    // Build string without underscores
+    var buf: [64]u8 = undefined;
+    var buf_idx: usize = 0;
+    for (lexeme[0..end]) |c| {
+        if (c == '_') continue;
+        if (buf_idx >= buf.len - 1) break;
+        buf[buf_idx] = c;
+        buf_idx += 1;
+    }
+
+    return std.fmt.parseFloat(f64, buf[0..buf_idx]) catch 0.0;
 }
 
 test "lexer basics" {

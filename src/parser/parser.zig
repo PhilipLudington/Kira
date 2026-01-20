@@ -404,6 +404,7 @@ pub const Parser = struct {
         const generic_params = try self.parseOptionalGenericParams();
 
         try self.consume(.equal, "expected '=' after type name");
+        self.skipNewlines();
 
         const definition = try self.parseTypeDefinition();
 
@@ -435,7 +436,9 @@ pub const Parser = struct {
         errdefer variants.deinit(self.allocator);
 
         while (self.match(.pipe)) {
+            self.skipNewlines();
             try variants.append(self.allocator, try self.parseVariant());
+            self.skipNewlines(); // Skip newlines before checking for next pipe
         }
 
         return Declaration.SumType{

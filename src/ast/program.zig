@@ -36,6 +36,21 @@ pub const Program = struct {
         };
     }
 
+    /// Free memory allocated for this program's top-level structures.
+    /// Note: This frees the slices allocated during parsing (imports, declarations).
+    /// A full recursive cleanup of all AST nodes would be more complex.
+    pub fn deinit(self: *Program, allocator: std.mem.Allocator) void {
+        // Free imports slice if it was heap-allocated (not empty literal)
+        if (self.imports.len > 0) {
+            allocator.free(self.imports);
+        }
+        // Free declarations slice if it was heap-allocated (not empty literal)
+        if (self.declarations.len > 0) {
+            allocator.free(self.declarations);
+        }
+        self.* = undefined;
+    }
+
     /// Get the module path if declared
     pub fn modulePath(self: Program) ?[][]const u8 {
         if (self.module_decl) |mod| {
