@@ -1,0 +1,5 @@
+// Hello World in Kira
+
+effect fn main() -> void {
+    std.io.println("Hello, Kira!")
+}

@@ -577,12 +577,12 @@ pub const Interpreter = struct {
 
     /// Call a function with given arguments
     fn callFunction(self: *Interpreter, func: Value.FunctionValue, args: []const Value, caller_env: *Environment) InterpreterError!Value {
-        if (args.len != func.parameters.len) {
-            return error.ArityMismatch;
-        }
-
         switch (func.body) {
             .ast_body => |body| {
+                // Check arity for AST functions
+                if (args.len != func.parameters.len) {
+                    return error.ArityMismatch;
+                }
                 // Create new environment for function call
                 const base_env = func.captured_env orelse caller_env;
                 var func_env = Environment.initWithParent(self.arenaAlloc(), base_env);
@@ -666,6 +666,20 @@ pub const Interpreter = struct {
                 .none, .err => default,
                 else => error.TypeMismatch,
             };
+        }
+
+        // For records (like std.io), treat method call as field access + function call
+        if (obj == .record) {
+            if (obj.record.fields.get(call.method)) |field_value| {
+                if (field_value == .function) {
+                    // Evaluate arguments
+                    const args = try self.arenaAlloc().alloc(Value, call.arguments.len);
+                    for (call.arguments, 0..) |arg, i| {
+                        args[i] = try self.evalExpression(arg, env);
+                    }
+                    return self.callFunction(field_value.function, args, env);
+                }
+            }
         }
 
         // For user-defined methods, we would need trait/impl lookup

@@ -18,7 +18,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 8. Pattern Matching | Complete | 9/9 |
 | 9. Interpreter | Complete | 12/12 |
 | 10. Standard Library | Complete | 7/7 |
-| 11. REPL & CLI | Not Started | 0/8 |
+| 11. REPL & CLI | Complete | 8/8 |
 | 12. Documentation | Not Started | 0/4 |
 
 **Build:** `zig build` | **Test:** `zig build test` | **Run:** `zig build run`
@@ -147,14 +147,14 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write standard library tests
 
 ## Phase 11: REPL & CLI
-- [ ] Implement REPL with readline support
-- [ ] Add `:type` command to show expression types
-- [ ] Add `:load` command to load `.ki` files
-- [ ] Add `:help` command
-- [ ] Implement `kira run <file.ki>` command
-- [ ] Implement `kira check <file.ki>` for type/effect checking without execution
-- [ ] Add error formatting with source context and suggestions
-- [ ] Support `--version` and `--help` flags
+- [x] Implement REPL with basic command history (readline-style editing deferred)
+- [x] Add `:type` command to show expression types
+- [x] Add `:load` command to load `.ki` files
+- [x] Add `:help` command
+- [x] Implement `kira run <file.ki>` command
+- [x] Implement `kira check <file.ki>` for type/effect checking without execution
+- [x] Add error formatting with source context and suggestions
+- [x] Support `--version` and `--help` flags
 
 ## Phase 12: Documentation & Examples
 - [ ] Write language tutorial
