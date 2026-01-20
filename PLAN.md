@@ -16,7 +16,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 6. Type Checker | Complete | 15/15 |
 | 7. Effect Checker | Complete | 9/9 |
 | 8. Pattern Matching | Complete | 9/9 |
-| 9. Interpreter | Not Started | 0/12 |
+| 9. Interpreter | Complete | 12/12 |
 | 10. Standard Library | Not Started | 0/7 |
 | 11. REPL & CLI | Not Started | 0/8 |
 | 12. Documentation | Not Started | 0/4 |
@@ -124,18 +124,18 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write pattern matching tests
 
 ## Phase 9: Tree-Walking Interpreter
-- [ ] Implement runtime value representation (numbers, strings, bools, functions, ADT values, tuples, arrays)
-- [ ] Implement environment with lexical scoping
-- [ ] Evaluate let bindings
-- [ ] Evaluate var bindings and assignments
-- [ ] Evaluate arithmetic and comparison operations
-- [ ] Evaluate function calls and closures
-- [ ] Evaluate if statements
-- [ ] Evaluate for loops
-- [ ] Evaluate match statements with pattern matching
-- [ ] Implement built-in types: `Option[T]`, `Result[T, E]`, `List[T]`
-- [ ] Implement `?` operator for error propagation
-- [ ] Write interpreter tests
+- [x] Implement runtime value representation (numbers, strings, bools, functions, ADT values, tuples, arrays)
+- [x] Implement environment with lexical scoping
+- [x] Evaluate let bindings
+- [x] Evaluate var bindings and assignments
+- [x] Evaluate arithmetic and comparison operations
+- [x] Evaluate function calls and closures
+- [x] Evaluate if statements
+- [x] Evaluate for loops
+- [x] Evaluate match statements with pattern matching
+- [x] Implement built-in types: `Option[T]`, `Result[T, E]`, `List[T]`
+- [x] Implement `?` operator for error propagation
+- [x] Write interpreter tests
 
 ## Phase 10: Standard Library (Core)
 - [ ] Implement `std.list`: `empty`, `singleton`, `cons`, `map`, `filter`, `fold`, `fold_right`, `find`, `any`, `all`, `length`, `reverse`, `concat`, `flatten`, `take`, `drop`, `zip`

@@ -8,6 +8,7 @@ pub const ast = @import("ast/root.zig");
 pub const parser_mod = @import("parser/root.zig");
 pub const symbols = @import("symbols/root.zig");
 pub const typechecker = @import("typechecker/root.zig");
+pub const interpreter_mod = @import("interpreter/root.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -45,6 +46,12 @@ pub const TypeChecker = typechecker.TypeChecker;
 pub const TypeCheckError = typechecker.TypeCheckError;
 pub const TypeCheckDiagnostic = typechecker.Diagnostic;
 
+// Interpreter exports
+pub const Value = interpreter_mod.Value;
+pub const Environment = interpreter_mod.Environment;
+pub const Interpreter = interpreter_mod.Interpreter;
+pub const InterpreterError = interpreter_mod.InterpreterError;
+
 /// Tokenize Kira source code
 pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !std.ArrayList(Token) {
     var lex = Lexer.init(source);
@@ -78,12 +85,24 @@ pub fn typecheck(allocator: std.mem.Allocator, program: *const Program, table: *
     return checker.check(program);
 }
 
+/// Interpret a type-checked program
+pub fn interpret(allocator: std.mem.Allocator, program: *const Program, table: *SymbolTable) InterpreterError!?Value {
+    var interp = Interpreter.init(allocator, table);
+    defer interp.deinit();
+
+    // Register built-in functions
+    try interpreter_mod.registerBuiltins(allocator, &interp.global_env);
+
+    return interp.interpret(program);
+}
+
 test {
     _ = lexer;
     _ = ast;
     _ = parser_mod;
     _ = symbols;
     _ = typechecker;
+    _ = interpreter_mod;
 }
 
 test "tokenize simple expression" {
