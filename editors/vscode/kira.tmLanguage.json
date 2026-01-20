@@ -1,0 +1,211 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Kira",
+  "scopeName": "source.kira",
+  "fileTypes": ["ki"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#constants" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.kira",
+          "match": "///.*$"
+        },
+        {
+          "name": "comment.line.module-doc.kira",
+          "match": "//!.*$"
+        },
+        {
+          "name": "comment.line.double-slash.kira",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.kira",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.kira",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.kira",
+              "match": "\\\\[nrt\\\\\"0]"
+            },
+            {
+              "name": "meta.interpolation.kira",
+              "begin": "\\{",
+              "end": "\\}",
+              "patterns": [
+                { "include": "$self" }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.kira",
+          "match": "'(\\\\[nrt\\\\']|[^'\\\\])'"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.kira",
+          "match": "\\b0x[0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.kira",
+          "match": "\\b0b[01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.kira",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.kira",
+          "match": "\\b[0-9][0-9_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.kira",
+          "match": "\\b(if|else|match|for|return|break)\\b"
+        },
+        {
+          "name": "keyword.declaration.kira",
+          "match": "\\b(fn|let|var|type|module|import|pub|effect|trait|impl|const)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.kira",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "keyword.operator.kira",
+          "match": "\\b(is|in|as)\\b"
+        },
+        {
+          "name": "keyword.other.kira",
+          "match": "\\b(where|self|Self)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.kira",
+          "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64|bool|char|string|void)\\b"
+        },
+        {
+          "name": "storage.type.builtin.kira",
+          "match": "\\b(Option|Result|List|IO)\\b"
+        },
+        {
+          "name": "entity.name.type.kira",
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.kira",
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(?=\\()"
+        },
+        {
+          "name": "entity.name.function.kira",
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(?=\\[)"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.kira",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.kira",
+          "match": "(\\+|-|\\*|/|%)"
+        },
+        {
+          "name": "keyword.operator.assignment.kira",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arrow.kira",
+          "match": "(->|=>)"
+        },
+        {
+          "name": "keyword.operator.optional.kira",
+          "match": "(\\?\\?|\\?)"
+        },
+        {
+          "name": "keyword.operator.range.kira",
+          "match": "(\\.\\.\\.|\\.\\.|\\.\\.=)"
+        },
+        {
+          "name": "keyword.operator.path.kira",
+          "match": "::"
+        },
+        {
+          "name": "keyword.operator.pipe.kira",
+          "match": "\\|"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.kira",
+          "match": "[,;]"
+        },
+        {
+          "name": "punctuation.colon.kira",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.brackets.kira",
+          "match": "[\\[\\]\\{\\}\\(\\)]"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.kira",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.option.kira",
+          "match": "\\b(Some|None)\\b"
+        },
+        {
+          "name": "constant.language.result.kira",
+          "match": "\\b(Ok|Err)\\b"
+        },
+        {
+          "name": "constant.language.list.kira",
+          "match": "\\b(Cons|Nil)\\b"
+        }
+      ]
+    }
+  }
+}

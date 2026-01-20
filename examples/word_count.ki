@@ -1,0 +1,105 @@
+// Word Count example in Kira
+// Demonstrates string processing, lists, and higher-order functions
+
+// Count words in a string (pure function)
+fn count_words(text: string) -> i32 {
+    let words: List[string] = std.string.split(text, " ")
+    let trimmed: List[string] = std.list.map[string, string](
+        words,
+        fn(w: string) -> string { return std.string.trim(w) }
+    )
+    let non_empty: List[string] = std.list.filter[string](
+        trimmed,
+        fn(w: string) -> bool { return std.string.length(w) > 0 }
+    )
+    return std.list.length[string](non_empty)
+}
+
+// Count lines in a string (pure function)
+fn count_lines(text: string) -> i32 {
+    let lines: List[string] = std.string.split(text, "\n")
+    return std.list.length[string](lines)
+}
+
+// Count characters in a string (pure function)
+fn count_chars(text: string) -> i32 {
+    return std.string.length(text)
+}
+
+// Product type for statistics
+type TextStats = {
+    chars: i32,
+    words: i32,
+    lines: i32
+}
+
+// Compute all statistics (pure function)
+fn analyze_text(text: string) -> TextStats {
+    return TextStats {
+        chars: count_chars(text),
+        words: count_words(text),
+        lines: count_lines(text)
+    }
+}
+
+// Format statistics for display (pure function)
+fn format_stats(stats: TextStats) -> string {
+    return "Characters: " + to_string(stats.chars) + "\n" +
+           "Words: " + to_string(stats.words) + "\n" +
+           "Lines: " + to_string(stats.lines)
+}
+
+// Analyze a file and print statistics
+effect fn analyze_file(path: string) -> void {
+    std.io.println("Analyzing file: " + path)
+    std.io.println("")
+
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            // Pure computation
+            let stats: TextStats = analyze_text(content)
+            let output: string = format_stats(stats)
+
+            // Effectful I/O
+            std.io.println(output)
+        }
+        Err(e) => {
+            std.io.println("Error reading file: " + e)
+        }
+    }
+}
+
+// Interactive mode: analyze text from stdin
+effect fn interactive_mode() -> void {
+    std.io.println("Enter text to analyze (single line):")
+    match std.io.read_line() {
+        Ok(text) => {
+            let stats: TextStats = analyze_text(text)
+            std.io.println("")
+            std.io.println(format_stats(stats))
+        }
+        Err(e) => {
+            std.io.println("Error reading input: " + e)
+        }
+    }
+}
+
+// Entry point - demonstrate with sample text
+effect fn main() -> void {
+    std.io.println("Word Count Demo")
+    std.io.println("===============")
+    std.io.println("")
+
+    // Sample text for demonstration
+    let sample: string = "Hello World! This is a sample text.\nIt has multiple lines.\nKira is great for text processing."
+
+    std.io.println("Sample text:")
+    std.io.println("------------")
+    std.io.println(sample)
+    std.io.println("")
+    std.io.println("Statistics:")
+    std.io.println("-----------")
+
+    let stats: TextStats = analyze_text(sample)
+    std.io.println(format_stats(stats))
+}

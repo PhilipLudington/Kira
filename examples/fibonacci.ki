@@ -1,0 +1,56 @@
+// Fibonacci example in Kira
+// Demonstrates recursion and pure functions
+
+// Pure recursive fibonacci function
+// Returns the nth fibonacci number
+fn fibonacci(n: i32) -> i32 {
+    if n <= 0 {
+        return 0
+    }
+    if n == 1 {
+        return 1
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+// Tail-recursive fibonacci using an accumulator
+// More efficient for larger values
+fn fibonacci_tail(n: i32, a: i32, b: i32) -> i32 {
+    if n == 0 {
+        return a
+    }
+    if n == 1 {
+        return b
+    }
+    return fibonacci_tail(n - 1, b, a + b)
+}
+
+// Wrapper for the tail-recursive version
+fn fibonacci_fast(n: i32) -> i32 {
+    return fibonacci_tail(n, 0, 1)
+}
+
+// Print first n fibonacci numbers
+effect fn print_fibonacci_sequence(n: i32) -> void {
+    var i: i32 = 0
+    for _ in 0..n {
+        let fib: i32 = fibonacci_fast(i)
+        std.io.println("fib(" + to_string(i) + ") = " + to_string(fib))
+        i = i + 1
+    }
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Fibonacci Sequence Demo")
+    std.io.println("=======================")
+    std.io.println("")
+
+    // Print first 10 fibonacci numbers
+    print_fibonacci_sequence(10)
+
+    std.io.println("")
+    std.io.println("Computing fib(20)...")
+    let result: i32 = fibonacci_fast(20)
+    std.io.println("fib(20) = " + to_string(result))
+}

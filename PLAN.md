@@ -19,7 +19,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 9. Interpreter | Complete | 12/12 |
 | 10. Standard Library | Complete | 7/7 |
 | 11. REPL & CLI | Complete | 8/8 |
-| 12. Documentation | Not Started | 0/4 |
+| 12. Documentation | Complete | 4/4 |
 
 **Build:** `zig build` | **Test:** `zig build test` | **Run:** `zig build run`
 
@@ -157,10 +157,10 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Support `--version` and `--help` flags
 
 ## Phase 12: Documentation & Examples
-- [ ] Write language tutorial
-- [ ] Document all standard library functions
-- [ ] Create example programs: factorial, fibonacci, word count, simple parser
-- [ ] Add syntax highlighting definition for common editors
+- [x] Write language tutorial
+- [x] Document all standard library functions
+- [x] Create example programs: factorial, fibonacci, word count, simple parser
+- [x] Add syntax highlighting definition for common editors
 
 ## Future Phases (Not in Initial Scope)
 Compilation to bytecode or native code

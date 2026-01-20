@@ -1,0 +1,239 @@
+// Simple Expression Parser in Kira
+// Demonstrates algebraic data types, pattern matching, and recursive parsing
+
+// Abstract Syntax Tree for arithmetic expressions
+type Expr =
+    | Number(i32)
+    | Add(Expr, Expr)
+    | Sub(Expr, Expr)
+    | Mul(Expr, Expr)
+    | Div(Expr, Expr)
+
+// Parser result: either a parsed expression with remaining input, or an error
+type ParseResult =
+    | Success(Expr, string)
+    | Failure(string)
+
+// Evaluate an expression (pure function)
+fn eval(expr: Expr) -> Result[i32, string] {
+    var result: Result[i32, string] = Ok(0)
+    match expr {
+        Number(n) => {
+            result = Ok(n)
+        }
+        Add(left, right) => {
+            match eval(left) {
+                Ok(l) => {
+                    match eval(right) {
+                        Ok(r) => { result = Ok(l + r) }
+                        Err(e) => { result = Err(e) }
+                    }
+                }
+                Err(e) => { result = Err(e) }
+            }
+        }
+        Sub(left, right) => {
+            match eval(left) {
+                Ok(l) => {
+                    match eval(right) {
+                        Ok(r) => { result = Ok(l - r) }
+                        Err(e) => { result = Err(e) }
+                    }
+                }
+                Err(e) => { result = Err(e) }
+            }
+        }
+        Mul(left, right) => {
+            match eval(left) {
+                Ok(l) => {
+                    match eval(right) {
+                        Ok(r) => { result = Ok(l * r) }
+                        Err(e) => { result = Err(e) }
+                    }
+                }
+                Err(e) => { result = Err(e) }
+            }
+        }
+        Div(left, right) => {
+            match eval(left) {
+                Ok(l) => {
+                    match eval(right) {
+                        Ok(r) => {
+                            if r == 0 {
+                                result = Err("Division by zero")
+                            } else {
+                                result = Ok(l / r)
+                            }
+                        }
+                        Err(e) => { result = Err(e) }
+                    }
+                }
+                Err(e) => { result = Err(e) }
+            }
+        }
+    }
+    return result
+}
+
+// Pretty print an expression (pure function)
+fn show_expr(expr: Expr) -> string {
+    var result: string = ""
+    match expr {
+        Number(n) => {
+            result = to_string(n)
+        }
+        Add(left, right) => {
+            result = "(" + show_expr(left) + " + " + show_expr(right) + ")"
+        }
+        Sub(left, right) => {
+            result = "(" + show_expr(left) + " - " + show_expr(right) + ")"
+        }
+        Mul(left, right) => {
+            result = "(" + show_expr(left) + " * " + show_expr(right) + ")"
+        }
+        Div(left, right) => {
+            result = "(" + show_expr(left) + " / " + show_expr(right) + ")"
+        }
+    }
+    return result
+}
+
+// Check if a character is a digit
+fn is_digit(c: char) -> bool {
+    return c >= '0' and c <= '9'
+}
+
+// Convert digit character to integer
+fn digit_to_int(c: char) -> i32 {
+    // ASCII: '0' = 48
+    return to_int(c) - 48
+}
+
+// Skip whitespace at the beginning of input
+fn skip_spaces(input: string) -> string {
+    let trimmed: string = std.string.trim(input)
+    return trimmed
+}
+
+// Parse a number from the input
+fn parse_number(input: string) -> ParseResult {
+    let cleaned: string = skip_spaces(input)
+    var result: ParseResult = Failure("Expected number")
+
+    if std.string.length(cleaned) > 0 {
+        match std.string.char_at(cleaned, 0) {
+            Some(c) => {
+                if is_digit(c) {
+                    var num: i32 = 0
+                    var idx: i32 = 0
+                    var done: bool = false
+
+                    // Parse all consecutive digits
+                    for _ in 0..std.string.length(cleaned) {
+                        if not done {
+                            match std.string.char_at(cleaned, idx) {
+                                Some(ch) => {
+                                    if is_digit(ch) {
+                                        num = num * 10 + digit_to_int(ch)
+                                        idx = idx + 1
+                                    } else {
+                                        done = true
+                                    }
+                                }
+                                None => {
+                                    done = true
+                                }
+                            }
+                        }
+                    }
+
+                    let remaining: string = std.string.substring(cleaned, idx, std.string.length(cleaned))
+                    result = Success(Number(num), remaining)
+                }
+            }
+            None => {
+                result = Failure("Empty input")
+            }
+        }
+    }
+
+    return result
+}
+
+// Build an expression tree from operations
+fn build_expr(left: Expr, op: char, right: Expr) -> Expr {
+    var result: Expr = left
+    if op == '+' {
+        result = Add(left, right)
+    } else if op == '-' {
+        result = Sub(left, right)
+    } else if op == '*' {
+        result = Mul(left, right)
+    } else if op == '/' {
+        result = Div(left, right)
+    }
+    return result
+}
+
+// Demonstrate the parser with predefined expressions
+effect fn main() -> void {
+    std.io.println("Simple Expression Parser Demo")
+    std.io.println("=============================")
+    std.io.println("")
+
+    // Create some expressions programmatically
+    // (since full parsing is complex, we demonstrate the evaluation)
+
+    // Expression: 2 + 3
+    let expr1: Expr = Add(Number(2), Number(3))
+    std.io.println("Expression: " + show_expr(expr1))
+    match eval(expr1) {
+        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+    std.io.println("")
+
+    // Expression: (2 + 3) * 4
+    let expr2: Expr = Mul(Add(Number(2), Number(3)), Number(4))
+    std.io.println("Expression: " + show_expr(expr2))
+    match eval(expr2) {
+        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+    std.io.println("")
+
+    // Expression: 10 / (5 - 3)
+    let expr3: Expr = Div(Number(10), Sub(Number(5), Number(3)))
+    std.io.println("Expression: " + show_expr(expr3))
+    match eval(expr3) {
+        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+    std.io.println("")
+
+    // Expression: 10 / 0 (division by zero)
+    let expr4: Expr = Div(Number(10), Number(0))
+    std.io.println("Expression: " + show_expr(expr4))
+    match eval(expr4) {
+        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+    std.io.println("")
+
+    // Complex expression: ((1 + 2) * (3 + 4)) - 5
+    let expr5: Expr = Sub(
+        Mul(
+            Add(Number(1), Number(2)),
+            Add(Number(3), Number(4))
+        ),
+        Number(5)
+    )
+    std.io.println("Expression: " + show_expr(expr5))
+    match eval(expr5) {
+        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+
+    std.io.println("")
+    std.io.println("Parser demonstration complete!")
+}

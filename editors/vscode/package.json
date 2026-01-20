@@ -1,0 +1,30 @@
+{
+  "name": "kira-language",
+  "displayName": "Kira Language",
+  "description": "Syntax highlighting for the Kira programming language",
+  "version": "0.1.0",
+  "publisher": "kira-lang",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "kira",
+        "aliases": ["Kira", "kira"],
+        "extensions": [".ki"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kira",
+        "scopeName": "source.kira",
+        "path": "./kira.tmLanguage.json"
+      }
+    ]
+  }
+}
