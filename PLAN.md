@@ -17,7 +17,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 7. Effect Checker | Complete | 9/9 |
 | 8. Pattern Matching | Complete | 9/9 |
 | 9. Interpreter | Complete | 12/12 |
-| 10. Standard Library | Not Started | 0/7 |
+| 10. Standard Library | Complete | 7/7 |
 | 11. REPL & CLI | Not Started | 0/8 |
 | 12. Documentation | Not Started | 0/4 |
 
@@ -138,13 +138,13 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write interpreter tests
 
 ## Phase 10: Standard Library (Core)
-- [ ] Implement `std.list`: `empty`, `singleton`, `cons`, `map`, `filter`, `fold`, `fold_right`, `find`, `any`, `all`, `length`, `reverse`, `concat`, `flatten`, `take`, `drop`, `zip`
-- [ ] Implement `std.option`: `map`, `and_then`, `unwrap_or`, `is_some`, `is_none`
-- [ ] Implement `std.result`: `map`, `map_err`, `and_then`, `unwrap_or`, `is_ok`, `is_err`
-- [ ] Implement `std.string`: `length`, `split`, `trim`, `concat`, `contains`, `starts_with`, `ends_with`
-- [ ] Implement `std.io` (effect module): `print`, `println`, `read_line`
-- [ ] Implement `std.fs` (effect module): `read_file`, `write_file`, `exists`, `remove`
-- [ ] Write standard library tests
+- [x] Implement `std.list`: `empty`, `singleton`, `cons`, `map`, `filter`, `fold`, `fold_right`, `find`, `any`, `all`, `length`, `reverse`, `concat`, `flatten`, `take`, `drop`, `zip`
+- [x] Implement `std.option`: `map`, `and_then`, `unwrap_or`, `is_some`, `is_none`
+- [x] Implement `std.result`: `map`, `map_err`, `and_then`, `unwrap_or`, `is_ok`, `is_err`
+- [x] Implement `std.string`: `length`, `split`, `trim`, `concat`, `contains`, `starts_with`, `ends_with`
+- [x] Implement `std.io` (effect module): `print`, `println`, `read_line`
+- [x] Implement `std.fs` (effect module): `read_file`, `write_file`, `exists`, `remove`
+- [x] Write standard library tests
 
 ## Phase 11: REPL & CLI
 - [ ] Implement REPL with readline support

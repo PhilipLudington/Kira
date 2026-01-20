@@ -93,6 +93,9 @@ pub fn interpret(allocator: std.mem.Allocator, program: *const Program, table: *
     // Register built-in functions
     try interpreter_mod.registerBuiltins(allocator, &interp.global_env);
 
+    // Register standard library
+    try interpreter_mod.registerStdlib(allocator, &interp.global_env);
+
     return interp.interpret(program);
 }
 
