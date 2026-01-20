@@ -38,6 +38,18 @@ pub const Diagnostic = struct {
     span: Span,
     kind: DiagnosticKind,
     related: ?[]const RelatedInfo,
+    /// Whether the message was dynamically allocated and needs freeing
+    owns_message: bool = true,
+
+    /// Free allocated memory
+    pub fn deinit(self: *Diagnostic, allocator: Allocator) void {
+        if (self.owns_message and self.message.len > 0) {
+            allocator.free(self.message);
+        }
+        if (self.related) |rel| {
+            allocator.free(rel);
+        }
+    }
 
     /// Format the diagnostic for display
     pub fn format(
@@ -413,6 +425,7 @@ test "diagnostic formatting" {
         .span = span,
         .kind = .err,
         .related = null,
+        .owns_message = false, // String literal, not allocated
     };
 
     var buf: [256]u8 = undefined;

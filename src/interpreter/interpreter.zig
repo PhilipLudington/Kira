@@ -90,7 +90,7 @@ pub const Interpreter = struct {
 
     /// Process an import declaration and create aliases if needed
     fn processImport(self: *Interpreter, import_decl: *const Declaration.ImportDecl, env: *Environment) InterpreterError!void {
-        // If the import has specific items, check for aliases
+        // If the import has specific items, handle them
         if (import_decl.items) |items| {
             for (items) |item| {
                 // If there's an alias, create a binding from alias to original
@@ -102,8 +102,143 @@ pub const Interpreter = struct {
                     }
                 }
             }
+        } else {
+            // Whole-module import: need to make the module accessible via its path
+            // e.g., `import src.json` should make `src.json.X` accessible
+            // This is handled by registerModuleNamespace in main.zig
         }
         _ = self;
+    }
+
+    /// Register a module namespace value at the given path.
+    /// For example, for path ["src", "json"], this creates:
+    /// - A record for "json" containing the module's exports
+    /// - A record for "src" containing "json"
+    /// - Defines "src" in the environment (or merges with existing)
+    pub fn registerModuleNamespace(
+        self: *Interpreter,
+        path: []const []const u8,
+        declarations: []const Declaration,
+        env: *Environment,
+    ) InterpreterError!void {
+        if (path.len == 0) return;
+
+        // Create the innermost module record with all exports
+        var module_fields = std.StringArrayHashMapUnmanaged(Value){};
+
+        // Register all public declarations as fields in the module record
+        for (declarations) |*decl| {
+            switch (decl.kind) {
+                .function_decl => |f| {
+                    if (f.is_public or true) { // For now, export all
+                        const func_value = Value{
+                            .function = .{
+                                .name = f.name,
+                                .parameters = self.extractParamNames(f.parameters) catch continue,
+                                .body = if (f.body) |body| .{ .ast_body = body } else continue,
+                                .captured_env = null,
+                                .is_effect = f.is_effect,
+                            },
+                        };
+                        module_fields.put(self.arenaAlloc(), f.name, func_value) catch continue;
+                    }
+                },
+                .const_decl => |c| {
+                    if (c.is_public or true) {
+                        const value = self.evalExpression(c.value, env) catch continue;
+                        module_fields.put(self.arenaAlloc(), c.name, value) catch continue;
+                    }
+                },
+                .type_decl => |t| {
+                    // For sum types, register variant constructors
+                    if (t.is_public or true) {
+                        switch (t.definition) {
+                            .sum_type => |st| {
+                                for (st.variants) |variant| {
+                                    // Create variant constructor value
+                                    const variant_val = Value{
+                                        .variant = .{
+                                            .name = variant.name,
+                                            .fields = null,
+                                        },
+                                    };
+                                    module_fields.put(self.arenaAlloc(), variant.name, variant_val) catch continue;
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+
+        var module_value = Value{
+            .record = .{
+                .type_name = null,
+                .fields = module_fields,
+            },
+        };
+
+        // Build the nested structure from innermost to outermost
+        // For path ["src", "json"], we work from "json" outward to "src"
+        var i: usize = path.len - 1;
+        while (i > 0) {
+            i -= 1;
+            // Check if this level already exists
+            if (env.get(path[i])) |existing| {
+                if (existing.value == .record) {
+                    // Merge: add the inner module to the existing record
+                    var merged_fields = existing.value.record.fields;
+                    merged_fields.put(self.arenaAlloc(), path[i + 1], module_value) catch return error.OutOfMemory;
+                    module_value = Value{
+                        .record = .{
+                            .type_name = null,
+                            .fields = merged_fields,
+                        },
+                    };
+                    // Update the binding
+                    env.assign(path[i], module_value) catch {
+                        // If assign fails, try to redefine
+                        env.define(path[i], module_value, false) catch {};
+                    };
+                    return;
+                }
+            }
+
+            // Create a new record containing the inner module
+            var outer_fields = std.StringArrayHashMapUnmanaged(Value){};
+            outer_fields.put(self.arenaAlloc(), path[i + 1], module_value) catch return error.OutOfMemory;
+            module_value = Value{
+                .record = .{
+                    .type_name = null,
+                    .fields = outer_fields,
+                },
+            };
+        }
+
+        // Define or update the root module in the environment
+        const root_name = path[0];
+        if (env.get(root_name)) |existing| {
+            if (existing.value == .record and path.len > 1) {
+                // Merge the new module into existing record
+                var merged_fields = existing.value.record.fields;
+                merged_fields.put(self.arenaAlloc(), path[1], if (path.len > 1)
+                    (if (module_value == .record) module_value.record.fields.get(path[1]) orelse module_value else module_value)
+                else
+                    module_value) catch return error.OutOfMemory;
+                const merged_value = Value{
+                    .record = .{
+                        .type_name = null,
+                        .fields = merged_fields,
+                    },
+                };
+                env.assign(root_name, merged_value) catch {};
+                return;
+            }
+        }
+
+        env.define(root_name, module_value, false) catch {};
     }
 
     /// Register a top-level declaration in the environment

@@ -64,6 +64,19 @@ pub const Parser = struct {
         self.errors.deinit(self.allocator);
     }
 
+    /// Get collected parse errors
+    pub fn getErrors(self: *Parser) []const ErrorInfo {
+        return self.errors.items;
+    }
+
+    /// Get the first error if any
+    pub fn getFirstError(self: *Parser) ?ErrorInfo {
+        if (self.errors.items.len > 0) {
+            return self.errors.items[0];
+        }
+        return null;
+    }
+
     /// Parse a complete program
     pub fn parseProgram(self: *Parser) ParseError!Program {
         var module_decl: ?Declaration.ModuleDecl = null;
@@ -1461,6 +1474,17 @@ pub const Parser = struct {
                 } }, self.makeSpan(expr.span.start));
             } else {
                 break;
+            }
+        }
+
+        // Check for qualified record literal: expr.Type { ... } where Type starts with uppercase
+        // This handles patterns like `module.TypeName { field: value }`
+        if (self.check(.left_brace)) {
+            if (expr.kind == .field_access) {
+                const field_name = expr.kind.field_access.field;
+                if (field_name.len > 0 and isUpperCase(field_name[0])) {
+                    return self.parseRecordLiteral(try self.allocExpr(expr));
+                }
             }
         }
 

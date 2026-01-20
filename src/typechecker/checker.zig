@@ -72,6 +72,10 @@ pub const TypeChecker = struct {
 
     /// Free all resources
     pub fn deinit(self: *TypeChecker) void {
+        // Free each diagnostic's allocated message and related info
+        for (self.diagnostics.items) |*diag| {
+            diag.deinit(self.allocator);
+        }
         self.diagnostics.deinit(self.allocator);
         self.type_env.deinit(self.allocator);
         self.type_var_substitutions.deinit(self.allocator);
@@ -1905,13 +1909,6 @@ test "effect: try operator in pure function forbidden" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-    // Free diagnostic messages
-    defer {
-        for (checker.diagnostics.items) |diag| {
-            allocator.free(diag.message);
-        }
-    }
-
     // Not in an effect function
     checker.in_effect_function = false;
 
@@ -1957,12 +1954,6 @@ test "effect: try operator in effect function allowed" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-    // Free diagnostic messages
-    defer {
-        for (checker.diagnostics.items) |diag| {
-            allocator.free(diag.message);
-        }
-    }
 
     // In an effect function - this should allow try operator
     checker.in_effect_function = true;
@@ -2014,12 +2005,6 @@ test "effect: try on Result in non-Result function forbidden" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-    // Free diagnostic messages and allocated types
-    defer {
-        for (checker.diagnostics.items) |diag| {
-            allocator.free(diag.message);
-        }
-    }
 
     // In an effect function (to pass E4 check)
     checker.in_effect_function = true;
@@ -2078,12 +2063,6 @@ test "effect: main function must have IO effect" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-    // Free diagnostic messages
-    defer {
-        for (checker.diagnostics.items) |diag| {
-            allocator.free(diag.message);
-        }
-    }
 
     // Create a return type
     var return_type = Type.primitive(.void_type, span);
@@ -2144,12 +2123,6 @@ test "effect: main function with effect keyword allowed" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-    // Free diagnostic messages
-    defer {
-        for (checker.diagnostics.items) |diag| {
-            allocator.free(diag.message);
-        }
-    }
 
     // Create a return type
     var return_type = Type.primitive(.void_type, span);

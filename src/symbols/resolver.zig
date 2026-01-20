@@ -66,6 +66,16 @@ pub const Diagnostic = struct {
         message: []const u8,
         span: Span,
     };
+
+    /// Free allocated memory
+    pub fn deinit(self: *Diagnostic, allocator: Allocator) void {
+        if (self.message.len > 0) {
+            allocator.free(self.message);
+        }
+        if (self.related) |rel| {
+            allocator.free(rel);
+        }
+    }
 };
 
 /// The AST resolver
@@ -116,6 +126,10 @@ pub const Resolver = struct {
 
     /// Free all resources
     pub fn deinit(self: *Resolver) void {
+        // Free each diagnostic's allocated message
+        for (self.diagnostics.items) |*diag| {
+            diag.deinit(self.allocator);
+        }
         self.diagnostics.deinit(self.allocator);
         self.pending_imports.deinit(self.allocator);
     }
@@ -558,11 +572,13 @@ pub const Resolver = struct {
     ) ResolveError!void {
         // Look up the module being imported
         var path_builder = std.ArrayListUnmanaged(u8){};
+        errdefer path_builder.deinit(self.allocator);
         for (import_decl.path, 0..) |segment, i| {
             if (i > 0) try path_builder.append(self.allocator, '.');
             try path_builder.appendSlice(self.allocator, segment);
         }
         const path_str = try path_builder.toOwnedSlice(self.allocator);
+        defer self.allocator.free(path_str); // Free after use since this is just for lookup
 
         var module_scope_id = self.table.getModuleScope(path_str);
 

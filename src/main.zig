@@ -188,11 +188,85 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     };
     defer allocator.free(source);
 
-    // Parse
-    var program = Kira.parse(allocator, source) catch |err| {
-        try formatParseError(stderr, path, source, err);
+    // Parse with detailed error information
+    var parse_result = Kira.parseWithErrors(allocator, source);
+
+    if (parse_result.hasErrors()) {
+        defer parse_result.deinit();
+        // Format and print detailed parse errors with line/column info
+        for (parse_result.errors) |err| {
+            var buf: [1024]u8 = undefined;
+            if (err.expected) |expected| {
+                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s} (expected {s}, found {s})\n", .{
+                    path,
+                    err.line,
+                    err.column,
+                    err.message,
+                    expected,
+                    err.found orelse "unknown",
+                }) catch "Parse error\n";
+                stderr.writeAll(msg) catch {};
+            } else {
+                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s}\n", .{
+                    path,
+                    err.line,
+                    err.column,
+                    err.message,
+                }) catch "Parse error\n";
+                stderr.writeAll(msg) catch {};
+            }
+
+            // Print the source line for context
+            if (err.line > 0) {
+                var line_num: u32 = 1;
+                var line_start: usize = 0;
+                var line_end: usize = 0;
+
+                // Find the line in source
+                for (source, 0..) |c, i| {
+                    if (c == '\n') {
+                        if (line_num == err.line) {
+                            line_end = i;
+                            break;
+                        }
+                        line_num += 1;
+                        line_start = i + 1;
+                    }
+                }
+                if (line_end == 0 and line_num == err.line) {
+                    line_end = source.len;
+                }
+
+                if (line_end > line_start) {
+                    const line_content = source[line_start..line_end];
+                    var line_buf: [512]u8 = undefined;
+                    const line_msg = std.fmt.bufPrint(&line_buf, "  {s}\n", .{line_content}) catch "";
+                    stderr.writeAll(line_msg) catch {};
+
+                    // Print caret pointing to the column
+                    if (err.column > 0 and err.column <= line_content.len + 1) {
+                        var caret_buf: [512]u8 = undefined;
+                        @memset(caret_buf[0..err.column + 1], ' ');
+                        caret_buf[err.column + 1] = '^';
+                        caret_buf[err.column + 2] = '\n';
+                        stderr.writeAll(caret_buf[0 .. err.column + 3]) catch {};
+                    }
+                }
+            }
+        }
+        return error.ParseError;
+    }
+
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        try stderr.writeAll("error[parse]: Unknown parse error\n");
         return error.ParseError;
     };
+    // Transfer ownership - clear from result so it won't be deinited
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| {
+        arena.deinit();
+    }
     defer program.deinit();
 
     // Create symbol table
@@ -258,9 +332,30 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     try Kira.interpreter_mod.registerStdlib(allocator, &interp.global_env);
 
     // Register declarations from loaded modules first
+    // Create module namespace structures so qualified names like `src.json.X` work
     var modules_iter = loader.loadedModulesIterator();
     while (modules_iter.next()) |entry| {
         if (entry.value_ptr.program) |mod_program| {
+            // Parse module path from the key (e.g., "src.json" -> ["src", "json"])
+            var path_segments = std.ArrayListUnmanaged([]const u8){};
+            defer path_segments.deinit(allocator);
+
+            var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
+            while (path_iter.next()) |segment| {
+                path_segments.append(allocator, segment) catch continue;
+            }
+
+            // Register the module namespace with its proper path
+            if (path_segments.items.len > 0) {
+                interp.registerModuleNamespace(
+                    path_segments.items,
+                    mod_program.declarations,
+                    &interp.global_env,
+                ) catch {};
+            }
+
+            // Also register declarations directly for backward compatibility
+            // (allows using imported items without qualification if explicitly imported)
             for (mod_program.declarations) |*mod_decl| {
                 // Skip module declarations, only register functions/types/etc
                 if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
@@ -313,11 +408,85 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     };
     defer allocator.free(source);
 
-    // Parse
-    var program = Kira.parse(allocator, source) catch |err| {
-        try formatParseError(stderr, path, source, err);
+    // Parse with detailed error information
+    var parse_result = Kira.parseWithErrors(allocator, source);
+
+    if (parse_result.hasErrors()) {
+        defer parse_result.deinit();
+        // Format and print detailed parse errors with line/column info
+        for (parse_result.errors) |err| {
+            var buf: [1024]u8 = undefined;
+            if (err.expected) |expected| {
+                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s} (expected {s}, found {s})\n", .{
+                    path,
+                    err.line,
+                    err.column,
+                    err.message,
+                    expected,
+                    err.found orelse "unknown",
+                }) catch "Parse error\n";
+                stderr.writeAll(msg) catch {};
+            } else {
+                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s}\n", .{
+                    path,
+                    err.line,
+                    err.column,
+                    err.message,
+                }) catch "Parse error\n";
+                stderr.writeAll(msg) catch {};
+            }
+
+            // Print the source line for context
+            if (err.line > 0) {
+                var line_num: u32 = 1;
+                var line_start: usize = 0;
+                var line_end: usize = 0;
+
+                // Find the line in source
+                for (source, 0..) |c, i| {
+                    if (c == '\n') {
+                        if (line_num == err.line) {
+                            line_end = i;
+                            break;
+                        }
+                        line_num += 1;
+                        line_start = i + 1;
+                    }
+                }
+                if (line_end == 0 and line_num == err.line) {
+                    line_end = source.len;
+                }
+
+                if (line_end > line_start) {
+                    const line_content = source[line_start..line_end];
+                    var line_buf: [512]u8 = undefined;
+                    const line_msg = std.fmt.bufPrint(&line_buf, "  {s}\n", .{line_content}) catch "";
+                    stderr.writeAll(line_msg) catch {};
+
+                    // Print caret pointing to the column
+                    if (err.column > 0 and err.column <= line_content.len + 1) {
+                        var caret_buf: [512]u8 = undefined;
+                        @memset(caret_buf[0..err.column + 1], ' ');
+                        caret_buf[err.column + 1] = '^';
+                        caret_buf[err.column + 2] = '\n';
+                        stderr.writeAll(caret_buf[0 .. err.column + 3]) catch {};
+                    }
+                }
+            }
+        }
+        return error.ParseError;
+    }
+
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        try stderr.writeAll("error[parse]: Unknown parse error\n");
         return error.ParseError;
     };
+    // Transfer ownership - clear from result so it won't be deinited
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| {
+        arena.deinit();
+    }
     defer program.deinit();
 
     // Create symbol table

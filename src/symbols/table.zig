@@ -78,7 +78,20 @@ pub const SymbolTable = struct {
         }
         self.scopes.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
+
+        // Free the string keys in module_scopes (they were allocated by the resolver)
+        var key_iter = self.module_scopes.keyIterator();
+        while (key_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
         self.module_scopes.deinit(self.allocator);
+
+        // Free the methods arrays in implementations
+        for (self.implementations.items) |impl| {
+            if (impl.methods.len > 0) {
+                self.allocator.free(impl.methods);
+            }
+        }
         self.implementations.deinit(self.allocator);
     }
 

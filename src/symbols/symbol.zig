@@ -304,15 +304,13 @@ pub const Symbol = struct {
                 }
                 allocator.free(t.methods);
             },
-            .module => |*m| {
-                if (m.path.len > 0) {
-                    allocator.free(m.path);
-                }
+            .module => {
+                // Module paths point to AST data owned by the program arena,
+                // not allocated by the symbol table allocator, so don't free them here
             },
-            .import_alias => |*i| {
-                if (i.source_path.len > 0) {
-                    allocator.free(i.source_path);
-                }
+            .import_alias => {
+                // Import alias source paths point to AST data owned by the program arena,
+                // not allocated by the symbol table allocator, so don't free them here
             },
             .variable, .type_param => {},
         }
