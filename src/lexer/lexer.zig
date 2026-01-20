@@ -432,8 +432,8 @@ fn isIdentifierPart(c: u8) bool {
 
 fn isTypeSuffix(s: []const u8) bool {
     const suffixes = [_][]const u8{
-        "i8",  "i16", "i32",  "i64",  "i128",
-        "u8",  "u16", "u32",  "u64",  "u128",
+        "i8",  "i16", "i32", "i64", "i128",
+        "u8",  "u16", "u32", "u64", "u128",
         "f32", "f64",
     };
     for (suffixes) |suffix| {
@@ -463,10 +463,10 @@ test "lexer operators" {
     defer tokens.deinit(std.testing.allocator);
 
     const expected = [_]TokenType{
-        .plus,          .minus,         .star,           .slash,
-        .percent,       .equal_equal,   .bang_equal,     .less,
-        .greater,       .less_equal,    .greater_equal,  .arrow,
-        .fat_arrow,     .colon_colon,   .question_question, .dot_dot,
+        .plus,          .minus,       .star,              .slash,
+        .percent,       .equal_equal, .bang_equal,        .less,
+        .greater,       .less_equal,  .greater_equal,     .arrow,
+        .fat_arrow,     .colon_colon, .question_question, .dot_dot,
         .dot_dot_equal, .eof,
     };
 
@@ -507,13 +507,13 @@ test "lexer keywords" {
     defer tokens.deinit(std.testing.allocator);
 
     const expected = [_]TokenType{
-        .fn_keyword,     .let,            .type_keyword,  .module,
-        .import,         .pub_keyword,    .effect,        .trait,
-        .impl,           .const_keyword,  .var_keyword,   .if_keyword,
-        .else_keyword,   .match,          .for_keyword,   .return_keyword,
-        .break_keyword,  .true_keyword,   .false_keyword, .self_keyword,
-        .self_type,      .and_keyword,    .or_keyword,    .not_keyword,
-        .is_keyword,     .in_keyword,     .as_keyword,    .where,
+        .fn_keyword,    .let,           .type_keyword,  .module,
+        .import,        .pub_keyword,   .effect,        .trait,
+        .impl,          .const_keyword, .var_keyword,   .if_keyword,
+        .else_keyword,  .match,         .for_keyword,   .return_keyword,
+        .break_keyword, .true_keyword,  .false_keyword, .self_keyword,
+        .self_type,     .and_keyword,   .or_keyword,    .not_keyword,
+        .is_keyword,    .in_keyword,    .as_keyword,    .where,
         .eof,
     };
 

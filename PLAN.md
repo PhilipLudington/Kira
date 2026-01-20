@@ -14,7 +14,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 4. Parser | Complete | 20/20 |
 | 5. Symbol Table | Complete | 8/8 |
 | 6. Type Checker | Complete | 15/15 |
-| 7. Effect Checker | Not Started | 0/9 |
+| 7. Effect Checker | Complete | 9/9 |
 | 8. Pattern Matching | Not Started | 0/9 |
 | 9. Interpreter | Not Started | 0/12 |
 | 10. Standard Library | Not Started | 0/7 |
@@ -102,15 +102,15 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write type checker tests
 
 ## Phase 7: Effect Checker
-- [ ] Define effect types: `IO`, `Result[T, E]`, pure (no effect)
-- [ ] Track effect annotations on function types
-- [ ] Verify pure functions only call pure functions
-- [ ] Verify effect functions can call both pure and effectful code
-- [ ] Check `?` operator usage only in effect functions returning `Result`
-- [ ] Validate main function has `IO` effect
-- [ ] Track effect propagation through call chains
-- [ ] Produce clear error messages for purity violations
-- [ ] Write effect checker tests
+- [x] Define effect types: `IO`, `Result[T, E]`, pure (no effect)
+- [x] Track effect annotations on function types
+- [x] Verify pure functions only call pure functions
+- [x] Verify effect functions can call both pure and effectful code
+- [x] Check `?` operator usage only in effect functions returning `Result`
+- [x] Validate main function has `IO` effect
+- [x] Track effect propagation through call chains
+- [x] Produce clear error messages for purity violations
+- [x] Write effect checker tests
 
 ## Phase 8: Pattern Match Compiler
 - [ ] Implement exhaustiveness checking for match statements

@@ -997,8 +997,14 @@ pub const Resolver = struct {
                 try self.resolvePattern(t.pattern, t.expected_type, false);
             },
             // Literals, wildcards, rest, and ranges don't bind
-            .wildcard, .rest, .range,
-            .integer_literal, .float_literal, .string_literal, .char_literal, .bool_literal,
+            .wildcard,
+            .rest,
+            .range,
+            .integer_literal,
+            .float_literal,
+            .string_literal,
+            .char_literal,
+            .bool_literal,
             => {},
         }
     }

@@ -335,6 +335,45 @@ pub fn effectViolation(
     };
 }
 
+/// Error for try operator in pure function
+pub fn tryInPureFunction(
+    allocator: Allocator,
+    span: Span,
+) !Diagnostic {
+    return .{
+        .message = try allocator.dupe(u8, "'?' operator can only be used in effect functions"),
+        .span = span,
+        .kind = .err,
+        .related = null,
+    };
+}
+
+/// Error for try on Result when function doesn't return Result
+pub fn tryResultMismatch(
+    allocator: Allocator,
+    span: Span,
+) !Diagnostic {
+    return .{
+        .message = try allocator.dupe(u8, "'?' on Result requires function to return Result type"),
+        .span = span,
+        .kind = .err,
+        .related = null,
+    };
+}
+
+/// Error for main function without IO effect
+pub fn mainMustHaveIOEffect(
+    allocator: Allocator,
+    span: Span,
+) !Diagnostic {
+    return .{
+        .message = try allocator.dupe(u8, "'main' function must be declared with 'effect' keyword"),
+        .span = span,
+        .kind = .err,
+        .related = null,
+    };
+}
+
 /// Create a simple error with a message
 pub fn simpleError(
     allocator: Allocator,
