@@ -79,9 +79,7 @@ test "interpreter: string literal" {
 
     const result = try evalSource(allocator, source);
     try testing.expect(result != null);
-    // Note: Parser currently stores string literals with quotes
-    // This should be fixed in the parser, but for now we test actual behavior
-    try testing.expectEqualStrings("\"hello\"", result.?.string);
+    try testing.expectEqualStrings("hello", result.?.string);
 }
 
 // ============================================================================
