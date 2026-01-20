@@ -69,6 +69,10 @@ pub const SymbolTable = struct {
 
     /// Free all resources
     pub fn deinit(self: *SymbolTable) void {
+        // Free nested allocations in each symbol
+        for (self.symbols.items) |*sym| {
+            sym.deinit(self.allocator);
+        }
         for (self.scopes.items) |*scope| {
             scope.deinit(self.allocator);
         }

@@ -247,6 +247,76 @@ pub const Symbol = struct {
             else => false,
         };
     }
+
+    /// Free all nested allocations in this symbol
+    pub fn deinit(self: *Symbol, allocator: std.mem.Allocator) void {
+        switch (self.kind) {
+            .function => |*f| {
+                if (f.generic_params) |gp| {
+                    allocator.free(gp);
+                }
+                if (f.parameter_types.len > 0) {
+                    allocator.free(f.parameter_types);
+                }
+                if (f.parameter_names.len > 0) {
+                    allocator.free(f.parameter_names);
+                }
+            },
+            .type_def => |*t| {
+                if (t.generic_params) |gp| {
+                    allocator.free(gp);
+                }
+                switch (t.definition) {
+                    .sum_type => |*s| {
+                        for (s.variants) |*v| {
+                            if (v.fields) |*fields| {
+                                switch (fields.*) {
+                                    .record_fields => |rf| allocator.free(rf),
+                                    .tuple_fields => {},
+                                }
+                            }
+                        }
+                        allocator.free(s.variants);
+                    },
+                    .product_type => |*p| {
+                        allocator.free(p.fields);
+                    },
+                    .alias => {},
+                }
+            },
+            .trait_def => |*t| {
+                if (t.generic_params) |gp| {
+                    allocator.free(gp);
+                }
+                if (t.super_traits) |st| {
+                    allocator.free(st);
+                }
+                for (t.methods) |*m| {
+                    if (m.generic_params) |gp| {
+                        allocator.free(gp);
+                    }
+                    if (m.parameter_types.len > 0) {
+                        allocator.free(m.parameter_types);
+                    }
+                    if (m.parameter_names.len > 0) {
+                        allocator.free(m.parameter_names);
+                    }
+                }
+                allocator.free(t.methods);
+            },
+            .module => |*m| {
+                if (m.path.len > 0) {
+                    allocator.free(m.path);
+                }
+            },
+            .import_alias => |*i| {
+                if (i.source_path.len > 0) {
+                    allocator.free(i.source_path);
+                }
+            },
+            .variable, .type_param => {},
+        }
+    }
 };
 
 /// Scope identifier

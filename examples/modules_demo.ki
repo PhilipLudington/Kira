@@ -1,0 +1,132 @@
+// modules_demo.ki - Simple demonstration of modules and imports
+// This is a single-file example showing module syntax
+
+// ============================================================
+// This file demonstrates MODULE DECLARATION syntax.
+// In a real project, you would split this into multiple files.
+// ============================================================
+
+module demo.math
+
+// -------------------- Public Types --------------------
+
+// Public type - can be imported by other modules
+pub type Point = {
+    x: f64,
+    y: f64
+}
+
+// Public type - a simple fraction
+pub type Fraction = {
+    numerator: i32,
+    denominator: i32
+}
+
+// -------------------- Public Functions --------------------
+
+// Public function - create a point
+pub fn point(x: f64, y: f64) -> Point {
+    return Point { x: x, y: y }
+}
+
+// Public function - distance squared between two points
+pub fn distance_squared(a: Point, b: Point) -> f64 {
+    let dx: f64 = b.x - a.x
+    let dy: f64 = b.y - a.y
+    return dx * dx + dy * dy
+}
+
+// Public function - midpoint between two points
+pub fn midpoint(a: Point, b: Point) -> Point {
+    return Point {
+        x: (a.x + b.x) / 2.0,
+        y: (a.y + b.y) / 2.0
+    }
+}
+
+// Public function - create a fraction
+pub fn fraction(num: i32, denom: i32) -> Fraction {
+    return Fraction { numerator: num, denominator: denom }
+}
+
+// Public function - add fractions
+pub fn add_fractions(a: Fraction, b: Fraction) -> Fraction {
+    return Fraction {
+        numerator: a.numerator * b.denominator + b.numerator * a.denominator,
+        denominator: a.denominator * b.denominator
+    }
+}
+
+// Public function - multiply fractions
+pub fn multiply_fractions(a: Fraction, b: Fraction) -> Fraction {
+    return Fraction {
+        numerator: a.numerator * b.numerator,
+        denominator: a.denominator * b.denominator
+    }
+}
+
+// -------------------- Private Functions --------------------
+
+// Private function - NOT accessible from other modules
+fn square(x: f64) -> f64 {
+    return x * x
+}
+
+// Private helper - only used internally
+fn gcd(a: i32, b: i32) -> i32 {
+    if b == 0 {
+        return a
+    } else {
+        return gcd(b, a % b)
+    }
+}
+
+// ============================================================
+// HOW TO IMPORT (in another file):
+// ============================================================
+//
+// // Import entire module - use qualified names
+// import demo.math
+// let p: demo.math.Point = demo.math.point(1.0, 2.0)
+//
+// // Import specific items - use directly
+// import demo.math.{ Point, point, midpoint }
+// let p: Point = point(1.0, 2.0)
+// let m: Point = midpoint(p, point(3.0, 4.0))
+//
+// // Import with aliases
+// import demo.math.{ Point as Pt, distance_squared as dist_sq }
+// let p: Pt = point(0.0, 0.0)
+// let d: f64 = dist_sq(p, point(3.0, 4.0))  // 25.0
+//
+// // Note: private functions like square() and gcd() cannot be imported!
+// ============================================================
+
+// Example usage within the same module
+fn main() -> f64 {
+    // Create some points
+    let origin: Point = point(0.0, 0.0)
+    let p1: Point = point(3.0, 4.0)
+    let p2: Point = point(6.0, 8.0)
+
+    // Calculate distance squared (should be 25.0 for 3-4-5 triangle)
+    let dist_sq: f64 = distance_squared(origin, p1)
+
+    // Find midpoint
+    let mid: Point = midpoint(p1, p2)  // (4.5, 6.0)
+
+    // Work with fractions
+    let half: Fraction = fraction(1, 2)
+    let third: Fraction = fraction(1, 3)
+
+    // Add fractions: 1/2 + 1/3 = 5/6
+    let sum: Fraction = add_fractions(half, third)
+
+    // Multiply fractions: 1/2 * 1/3 = 1/6
+    let product: Fraction = multiply_fractions(half, third)
+
+    // We can call private functions within this module
+    let sq: f64 = square(5.0)  // 25.0
+
+    return dist_sq
+}

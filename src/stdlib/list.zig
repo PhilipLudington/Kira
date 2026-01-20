@@ -495,6 +495,21 @@ fn applyFunction(allocator: Allocator, func: Value, args: []const Value) Interpr
 // Tests
 // ============================================================================
 
+/// Helper to free a list and all its cons cells (for testing only)
+fn freeList(allocator: std.mem.Allocator, val: Value) void {
+    switch (val) {
+        .cons => |c| {
+            // Recursively free tail first
+            freeList(allocator, c.tail.*);
+            // Then free head and tail pointers
+            allocator.destroy(c.head);
+            allocator.destroy(c.tail);
+        },
+        .nil => {},
+        else => {},
+    }
+}
+
 test "list construction" {
     const allocator = std.testing.allocator;
 
@@ -502,20 +517,38 @@ test "list construction" {
     const empty = try listEmpty(allocator, &.{});
     try std.testing.expect(empty == .nil);
 
-    // Singleton
-    const single = try listSingleton(allocator, &.{Value{ .integer = 42 }});
-    try std.testing.expect(single == .cons);
-    try std.testing.expectEqual(@as(i128, 42), single.cons.head.integer);
-    try std.testing.expect(single.cons.tail.* == .nil);
+    // Singleton - test then free
+    {
+        const single = try listSingleton(allocator, &.{Value{ .integer = 42 }});
+        defer freeList(allocator, single);
+        try std.testing.expect(single == .cons);
+        try std.testing.expectEqual(@as(i128, 42), single.cons.head.integer);
+        try std.testing.expect(single.cons.tail.* == .nil);
+    }
 
-    // Cons
-    const list = try listCons(allocator, &.{ Value{ .integer = 1 }, single });
-    try std.testing.expect(list == .cons);
-    try std.testing.expectEqual(@as(i128, 1), list.cons.head.integer);
+    // Cons - create fresh list, listCons creates copies of inner pointers
+    // so we only need to free the outermost cons cells
+    {
+        const base = try listSingleton(allocator, &.{Value{ .integer = 2 }});
+        const list = try listCons(allocator, &.{ Value{ .integer = 1 }, base });
+        defer {
+            // Free the outer cons cell (list) head/tail
+            allocator.destroy(list.cons.head);
+            allocator.destroy(list.cons.tail);
+            // Free the inner cons cell (base) head/tail
+            allocator.destroy(base.cons.head);
+            allocator.destroy(base.cons.tail);
+        }
+        try std.testing.expect(list == .cons);
+        try std.testing.expectEqual(@as(i128, 1), list.cons.head.integer);
+    }
 }
 
 test "list length" {
-    const allocator = std.testing.allocator;
+    // Use arena for tests with multiple allocations
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Empty list
     const empty_len = try listLength(allocator, &.{Value{ .nil = {} }});
@@ -532,7 +565,9 @@ test "list length" {
 }
 
 test "list reverse" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Build [1, 2, 3]
     const list = try buildList(allocator, &.{
@@ -551,7 +586,9 @@ test "list reverse" {
 }
 
 test "list take and drop" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Build [1, 2, 3, 4, 5]
     const list = try buildList(allocator, &.{
@@ -575,7 +612,9 @@ test "list take and drop" {
 }
 
 test "list concat" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     const list1 = try buildList(allocator, &.{
         Value{ .integer = 1 },

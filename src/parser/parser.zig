@@ -111,6 +111,7 @@ pub const Parser = struct {
             .declarations = try declarations.toOwnedSlice(self.allocator),
             .module_doc = module_doc,
             .source_path = null,
+            .arena = null, // Arena is set by caller (Kira.parse)
         };
     }
 

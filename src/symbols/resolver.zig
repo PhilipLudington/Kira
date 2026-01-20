@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const ast = @import("../ast/root.zig");
 const symbol_mod = @import("symbol.zig");
 const table_mod = @import("table.zig");
+const modules = @import("../modules/root.zig");
 
 pub const Declaration = ast.Declaration;
 pub const Statement = ast.Statement;
@@ -78,6 +79,8 @@ pub const Resolver = struct {
     pending_imports: std.ArrayListUnmanaged(PendingImport),
     /// Whether we're in the first (declaration) pass
     first_pass: bool,
+    /// Optional module loader for cross-file imports
+    module_loader: ?*modules.ModuleLoader,
 
     const PendingImport = struct {
         decl: Declaration.ImportDecl,
@@ -94,6 +97,20 @@ pub const Resolver = struct {
             .current_module = &.{},
             .pending_imports = .{},
             .first_pass = true,
+            .module_loader = null,
+        };
+    }
+
+    /// Create a new resolver with a module loader for cross-file imports
+    pub fn initWithLoader(allocator: Allocator, table: *SymbolTable, loader: *modules.ModuleLoader) Resolver {
+        return .{
+            .allocator = allocator,
+            .table = table,
+            .diagnostics = .{},
+            .current_module = &.{},
+            .pending_imports = .{},
+            .first_pass = true,
+            .module_loader = loader,
         };
     }
 
@@ -107,6 +124,29 @@ pub const Resolver = struct {
     pub fn resolve(self: *Resolver, program: *const Program) ResolveError!void {
         // First pass: collect all top-level declarations
         self.first_pass = true;
+
+        // Handle module declaration if present
+        if (program.module_decl) |mod| {
+            const span = Span{
+                .start = .{ .line = 1, .column = 1, .offset = 0 },
+                .end = .{ .line = 1, .column = 1, .offset = 0 },
+            };
+            try self.resolveModuleDecl(&mod, span);
+        }
+
+        // Queue all imports for later resolution
+        for (program.imports) |import_decl| {
+            try self.pending_imports.append(self.allocator, .{
+                .decl = import_decl,
+                .scope_id = self.table.current_scope_id,
+                .span = Span{
+                    .start = .{ .line = 1, .column = 1, .offset = 0 },
+                    .end = .{ .line = 1, .column = 1, .offset = 0 },
+                },
+            });
+        }
+
+        // Process other declarations
         for (program.declarations) |*decl| {
             try self.resolveDeclaration(decl);
         }
@@ -398,7 +438,7 @@ pub const Resolver = struct {
         });
     }
 
-    /// Resolve module declaration
+    /// Resolve module declaration - returns true if a module scope was entered (caller must leave it)
     fn resolveModuleDecl(
         self: *Resolver,
         module_decl: *const Declaration.ModuleDecl,
@@ -418,7 +458,7 @@ pub const Resolver = struct {
         // Register module scope
         try self.table.registerModule(path_str, module_scope_id);
 
-        // Create module symbol in parent scope
+        // Create module symbol in parent scope (temporarily leave to define it)
         try self.table.leaveScope();
 
         const module_name = module_decl.path[module_decl.path.len - 1];
@@ -440,6 +480,9 @@ pub const Resolver = struct {
             }
             return err;
         };
+
+        // Re-enter module scope so subsequent declarations are added there
+        try self.table.setCurrentScope(module_scope_id);
 
         // Set current module
         self.current_module = module_decl.path;
@@ -521,7 +564,19 @@ pub const Resolver = struct {
         }
         const path_str = try path_builder.toOwnedSlice(self.allocator);
 
-        const module_scope_id = self.table.getModuleScope(path_str);
+        var module_scope_id = self.table.getModuleScope(path_str);
+
+        // If not found and we have a loader, try to load it from file
+        if (module_scope_id == null and self.module_loader != null) {
+            module_scope_id = self.module_loader.?.loadModule(path_str) catch |err| {
+                const err_name = @errorName(err);
+                var err_buf: [256]u8 = undefined;
+                const err_msg = std.fmt.bufPrint(&err_buf, "Failed to load module '{s}': {s}", .{ path_str, err_name }) catch "Failed to load module";
+                try self.addError("{s}", .{err_msg}, span);
+                return;
+            };
+        }
+
         if (module_scope_id == null) {
             // Module might not be loaded yet - add a warning but don't fail
             try self.addWarning("Module '{s}' not found", .{path_str}, span);

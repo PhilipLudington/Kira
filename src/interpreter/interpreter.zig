@@ -58,8 +58,9 @@ pub const Interpreter = struct {
         self.arena.deinit();
     }
 
-    /// Get arena allocator for temporary allocations
-    fn arenaAlloc(self: *Interpreter) Allocator {
+    /// Get arena allocator for allocations that live for the interpreter's lifetime.
+    /// Used for stdlib and builtin registrations.
+    pub fn arenaAlloc(self: *Interpreter) Allocator {
         return self.arena.allocator();
     }
 
@@ -68,6 +69,11 @@ pub const Interpreter = struct {
         // First pass: register all top-level declarations
         for (program.declarations) |*decl| {
             try self.registerDeclaration(decl, &self.global_env);
+        }
+
+        // Process import declarations and create aliases
+        for (program.imports) |import_decl| {
+            try self.processImport(&import_decl, &self.global_env);
         }
 
         // Look for main function
@@ -82,8 +88,26 @@ pub const Interpreter = struct {
         return null;
     }
 
+    /// Process an import declaration and create aliases if needed
+    fn processImport(self: *Interpreter, import_decl: *const Declaration.ImportDecl, env: *Environment) InterpreterError!void {
+        // If the import has specific items, check for aliases
+        if (import_decl.items) |items| {
+            for (items) |item| {
+                // If there's an alias, create a binding from alias to original
+                if (item.alias) |alias| {
+                    // Look up the original name in the environment
+                    if (env.get(item.name)) |original| {
+                        // Create alias binding
+                        try env.define(alias, original.value, original.is_mutable);
+                    }
+                }
+            }
+        }
+        _ = self;
+    }
+
     /// Register a top-level declaration in the environment
-    fn registerDeclaration(self: *Interpreter, decl: *const Declaration, env: *Environment) InterpreterError!void {
+    pub fn registerDeclaration(self: *Interpreter, decl: *const Declaration, env: *Environment) InterpreterError!void {
         switch (decl.kind) {
             .function_decl => |f| {
                 const func_value = Value{

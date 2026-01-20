@@ -1,0 +1,121 @@
+// main.ki - Demonstrates importing from user-defined modules
+// This file imports types and functions from geometry.shapes
+
+module geometry.main
+
+// Import specific items from our shapes module
+import geometry.shapes.{ Vec2, Rectangle, Circle }
+import geometry.shapes.{ vec2, add, scale, dot }
+import geometry.shapes.{ rect, rect_area, rect_contains }
+import geometry.shapes.{ circle, circle_area, circle_contains }
+
+// We can also use aliases for imports
+import geometry.shapes.{ subtract as sub, length_squared as len_sq }
+
+// A bounding box type using imported Vec2
+type BoundingBox = {
+    min: Vec2,
+    max: Vec2
+}
+
+// Create a bounding box from two corners
+fn make_bbox(x1: f64, y1: f64, x2: f64, y2: f64) -> BoundingBox {
+    return BoundingBox {
+        min: vec2(x1, y1),
+        max: vec2(x2, y2)
+    }
+}
+
+// Get the center of a bounding box
+fn bbox_center(bb: BoundingBox) -> Vec2 {
+    let sum: Vec2 = add(bb.min, bb.max)
+    return scale(sum, 0.5)
+}
+
+// Get the diagonal vector of a bounding box
+fn bbox_diagonal(bb: BoundingBox) -> Vec2 {
+    return sub(bb.max, bb.min)  // Using aliased import
+}
+
+// Get the squared diagonal length
+fn bbox_diagonal_length_sq(bb: BoundingBox) -> f64 {
+    let diag: Vec2 = bbox_diagonal(bb)
+    return len_sq(diag)  // Using aliased import
+}
+
+// Example computations using imported types and functions
+fn example_vectors() -> Vec2 {
+    let a: Vec2 = vec2(3.0, 4.0)
+    let b: Vec2 = vec2(1.0, 2.0)
+
+    // Vector operations
+    let sum: Vec2 = add(a, b)           // (4.0, 6.0)
+    let diff: Vec2 = sub(a, b)          // (2.0, 2.0)
+    let scaled: Vec2 = scale(a, 2.0)    // (6.0, 8.0)
+    let product: f64 = dot(a, b)        // 3*1 + 4*2 = 11
+
+    return sum
+}
+
+fn example_rectangle() -> f64 {
+    // Create a rectangle at (0,0) with width 10 and height 5
+    let r: Rectangle = rect(0.0, 0.0, 10.0, 5.0)
+
+    // Calculate area
+    let area: f64 = rect_area(r)  // 50.0
+
+    // Check if points are inside
+    let inside: Vec2 = vec2(5.0, 2.5)
+    let outside: Vec2 = vec2(15.0, 2.5)
+
+    let check1: bool = rect_contains(r, inside)   // true
+    let check2: bool = rect_contains(r, outside)  // false
+
+    return area
+}
+
+fn example_circle() -> f64 {
+    // Create a circle centered at (5,5) with radius 3
+    let c: Circle = circle(5.0, 5.0, 3.0)
+
+    // Calculate area (approximately 28.27)
+    let area: f64 = circle_area(c)
+
+    // Check if points are inside
+    let center: Vec2 = vec2(5.0, 5.0)
+    let edge: Vec2 = vec2(8.0, 5.0)
+    let outside: Vec2 = vec2(10.0, 10.0)
+
+    let check1: bool = circle_contains(c, center)   // true
+    let check2: bool = circle_contains(c, edge)     // true (on edge)
+    let check3: bool = circle_contains(c, outside)  // false
+
+    return area
+}
+
+fn example_bounding_box() -> Vec2 {
+    // Create a bounding box
+    let bb: BoundingBox = make_bbox(0.0, 0.0, 10.0, 6.0)
+
+    // Get center point
+    let center: Vec2 = bbox_center(bb)  // (5.0, 3.0)
+
+    // Get diagonal
+    let diag: Vec2 = bbox_diagonal(bb)  // (10.0, 6.0)
+
+    // Get squared diagonal length
+    let diag_len_sq: f64 = bbox_diagonal_length_sq(bb)  // 136.0
+
+    return center
+}
+
+// Main computation - runs all examples
+fn main() -> f64 {
+    let v: Vec2 = example_vectors()
+    let rect_area: f64 = example_rectangle()
+    let circle_area: f64 = example_circle()
+    let center: Vec2 = example_bounding_box()
+
+    // Return sum of areas as a simple result
+    return rect_area + circle_area
+}

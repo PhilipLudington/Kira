@@ -13,7 +13,7 @@ const Value = Kira.Value;
 fn evalSource(allocator: std.mem.Allocator, source: []const u8) !?Value {
     // Parse
     var program = try Kira.parse(allocator, source);
-    _ = &program;
+    defer program.deinit();
 
     // Create symbol table
     var table = Kira.SymbolTable.init(allocator);

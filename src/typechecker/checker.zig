@@ -2113,6 +2113,7 @@ test "effect: main function must have IO effect" {
         .declarations = @constCast(&[_]Declaration{decl}),
         .module_doc = null,
         .source_path = null,
+        .arena = null,
     };
 
     // Check the program
@@ -2178,6 +2179,7 @@ test "effect: main function with effect keyword allowed" {
         .declarations = @constCast(&[_]Declaration{decl}),
         .module_doc = null,
         .source_path = null,
+        .arena = null,
     };
 
     // Check the program

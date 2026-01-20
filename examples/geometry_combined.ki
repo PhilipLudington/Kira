@@ -1,0 +1,173 @@
+// geometry_combined.ki - Geometry example demonstrating modules
+// Since cross-file imports aren't yet implemented, this shows
+// the module/import syntax in a single runnable file.
+
+module geometry
+
+// ==================== Types ====================
+
+pub type Vec2 = {
+    x: f64,
+    y: f64
+}
+
+pub type Rectangle = {
+    origin: Vec2,
+    width: f64,
+    height: f64
+}
+
+pub type Circle = {
+    center: Vec2,
+    radius: f64
+}
+
+type BoundingBox = {
+    min: Vec2,
+    max: Vec2
+}
+
+// ==================== Vector Operations ====================
+
+pub fn vec2(x: f64, y: f64) -> Vec2 {
+    return Vec2 { x: x, y: y }
+}
+
+pub fn add(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2 { x: a.x + b.x, y: a.y + b.y }
+}
+
+pub fn subtract(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2 { x: a.x - b.x, y: a.y - b.y }
+}
+
+pub fn scale(v: Vec2, factor: f64) -> Vec2 {
+    return Vec2 { x: v.x * factor, y: v.y * factor }
+}
+
+pub fn dot(a: Vec2, b: Vec2) -> f64 {
+    return a.x * b.x + a.y * b.y
+}
+
+pub fn length_squared(v: Vec2) -> f64 {
+    return dot(v, v)
+}
+
+// ==================== Rectangle Operations ====================
+
+pub fn rect(x: f64, y: f64, width: f64, height: f64) -> Rectangle {
+    return Rectangle {
+        origin: vec2(x, y),
+        width: width,
+        height: height
+    }
+}
+
+pub fn rect_area(r: Rectangle) -> f64 {
+    return r.width * r.height
+}
+
+pub fn rect_perimeter(r: Rectangle) -> f64 {
+    return 2.0 * (r.width + r.height)
+}
+
+pub fn rect_contains(r: Rectangle, p: Vec2) -> bool {
+    return p.x >= r.origin.x and
+           p.x <= r.origin.x + r.width and
+           p.y >= r.origin.y and
+           p.y <= r.origin.y + r.height
+}
+
+pub fn rect_center(r: Rectangle) -> Vec2 {
+    return Vec2 {
+        x: r.origin.x + r.width / 2.0,
+        y: r.origin.y + r.height / 2.0
+    }
+}
+
+// ==================== Circle Operations ====================
+
+pub fn circle(x: f64, y: f64, radius: f64) -> Circle {
+    return Circle {
+        center: vec2(x, y),
+        radius: radius
+    }
+}
+
+pub fn circle_area(c: Circle) -> f64 {
+    return pi() * c.radius * c.radius
+}
+
+pub fn circle_circumference(c: Circle) -> f64 {
+    return 2.0 * pi() * c.radius
+}
+
+pub fn circle_contains(c: Circle, p: Vec2) -> bool {
+    let diff: Vec2 = subtract(p, c.center)
+    return length_squared(diff) <= c.radius * c.radius
+}
+
+// ==================== Bounding Box Operations ====================
+
+fn make_bbox(x1: f64, y1: f64, x2: f64, y2: f64) -> BoundingBox {
+    return BoundingBox {
+        min: vec2(x1, y1),
+        max: vec2(x2, y2)
+    }
+}
+
+fn bbox_center(bb: BoundingBox) -> Vec2 {
+    let sum: Vec2 = add(bb.min, bb.max)
+    return scale(sum, 0.5)
+}
+
+fn bbox_diagonal(bb: BoundingBox) -> Vec2 {
+    return subtract(bb.max, bb.min)
+}
+
+// ==================== Private Helpers ====================
+
+fn pi() -> f64 {
+    return 3.14159265358979
+}
+
+// ==================== Main ====================
+
+fn main() -> f64 {
+    // Vector examples
+    let a: Vec2 = vec2(3.0, 4.0)
+    let b: Vec2 = vec2(1.0, 2.0)
+    let sum: Vec2 = add(a, b)
+    let dist_sq: f64 = length_squared(a)  // 25.0 (3-4-5 triangle)
+
+    // Rectangle examples
+    let r: Rectangle = rect(0.0, 0.0, 10.0, 5.0)
+    let area: f64 = rect_area(r)  // 50.0
+    let perim: f64 = rect_perimeter(r)  // 30.0
+    let center: Vec2 = rect_center(r)  // (5.0, 2.5)
+
+    let inside: Vec2 = vec2(5.0, 2.5)
+    let outside: Vec2 = vec2(15.0, 2.5)
+    let check1: bool = rect_contains(r, inside)   // true
+    let check2: bool = rect_contains(r, outside)  // false
+
+    // Circle examples
+    let c: Circle = circle(0.0, 0.0, 5.0)
+    let c_area: f64 = circle_area(c)  // ~78.54
+    let c_circ: f64 = circle_circumference(c)  // ~31.42
+
+    let at_center: Vec2 = vec2(0.0, 0.0)
+    let at_edge: Vec2 = vec2(5.0, 0.0)
+    let far_away: Vec2 = vec2(10.0, 10.0)
+    let in_circle1: bool = circle_contains(c, at_center)  // true
+    let in_circle2: bool = circle_contains(c, at_edge)    // true
+    let in_circle3: bool = circle_contains(c, far_away)   // false
+
+    // Bounding box examples
+    let bb: BoundingBox = make_bbox(0.0, 0.0, 10.0, 6.0)
+    let bb_center: Vec2 = bbox_center(bb)  // (5.0, 3.0)
+    let diag: Vec2 = bbox_diagonal(bb)  // (10.0, 6.0)
+
+    // Return combined result: rect_area + circle_area
+    return area + c_area  // ~128.54
+}

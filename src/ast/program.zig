@@ -25,6 +25,10 @@ pub const Program = struct {
     /// Source file path (for error reporting)
     source_path: ?[]const u8,
 
+    /// Arena allocator that owns all AST node allocations.
+    /// When present, deinit will free the entire arena at once.
+    arena: ?std.heap.ArenaAllocator,
+
     /// Create an empty program
     pub fn empty() Program {
         return .{
@@ -33,20 +37,17 @@ pub const Program = struct {
             .declarations = &[_]Declaration{},
             .module_doc = null,
             .source_path = null,
+            .arena = null,
         };
     }
 
-    /// Free memory allocated for this program's top-level structures.
-    /// Note: This frees the slices allocated during parsing (imports, declarations).
-    /// A full recursive cleanup of all AST nodes would be more complex.
-    pub fn deinit(self: *Program, allocator: std.mem.Allocator) void {
-        // Free imports slice if it was heap-allocated (not empty literal)
-        if (self.imports.len > 0) {
-            allocator.free(self.imports);
-        }
-        // Free declarations slice if it was heap-allocated (not empty literal)
-        if (self.declarations.len > 0) {
-            allocator.free(self.declarations);
+    /// Free all memory allocated for this program.
+    /// If an arena is present, this frees all AST nodes at once.
+    /// Otherwise, only top-level slices are freed (legacy behavior).
+    pub fn deinit(self: *Program) void {
+        if (self.arena) |*arena| {
+            // Arena owns all allocations - free everything at once
+            arena.deinit();
         }
         self.* = undefined;
     }

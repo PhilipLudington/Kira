@@ -193,14 +193,36 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
         try formatParseError(stderr, path, source, err);
         return error.ParseError;
     };
-    defer program.deinit(allocator);
+    defer program.deinit();
 
     // Create symbol table
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
-    // Resolve symbols
-    Kira.resolve(allocator, &program, &table) catch |err| {
+    // Create module loader for cross-file imports
+    var loader = Kira.ModuleLoader.init(allocator, &table);
+    defer loader.deinit();
+
+    // Add search paths: parent directory and directory containing the main file
+    // The parent directory is added first because module paths like "geometry.shapes"
+    // expect to find "geometry/shapes.ki" from a package root
+    if (std.fs.path.dirname(path)) |dir| {
+        // Add parent directory as the package root
+        if (std.fs.path.dirname(dir)) |parent| {
+            loader.addSearchPath(parent) catch {};
+        }
+        // Also add the directory containing the file as a fallback
+        loader.addSearchPath(dir) catch {};
+    }
+
+    // Resolve symbols (using loader for cross-file imports)
+    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+        // Check for loader errors first
+        for (loader.getErrors()) |load_err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Module load error: {s} - {s}\n", .{ load_err.module_path, load_err.message }) catch "Module load error\n";
+            stderr.writeAll(msg) catch {};
+        }
         try formatResolveError(stderr, path, source, err);
         return error.ResolveError;
     };
@@ -225,8 +247,31 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
         }
     }
 
-    // Interpret
-    const result = Kira.interpret(allocator, &program, &table) catch |err| {
+    // Create interpreter
+    var interp = Kira.Interpreter.init(allocator, &table);
+    defer interp.deinit();
+
+    // Register built-in functions
+    try Kira.interpreter_mod.registerBuiltins(allocator, &interp.global_env);
+
+    // Register standard library
+    try Kira.interpreter_mod.registerStdlib(allocator, &interp.global_env);
+
+    // Register declarations from loaded modules first
+    var modules_iter = loader.loadedModulesIterator();
+    while (modules_iter.next()) |entry| {
+        if (entry.value_ptr.program) |mod_program| {
+            for (mod_program.declarations) |*mod_decl| {
+                // Skip module declarations, only register functions/types/etc
+                if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
+                    interp.registerDeclaration(mod_decl, &interp.global_env) catch {};
+                }
+            }
+        }
+    }
+
+    // Interpret the main program
+    const result = interp.interpret(&program) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {}\n", .{err}) catch "Runtime error\n";
         try stderr.writeAll(msg);
@@ -273,14 +318,36 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
         try formatParseError(stderr, path, source, err);
         return error.ParseError;
     };
-    defer program.deinit(allocator);
+    defer program.deinit();
 
     // Create symbol table
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
-    // Resolve symbols
-    Kira.resolve(allocator, &program, &table) catch |err| {
+    // Create module loader for cross-file imports
+    var loader = Kira.ModuleLoader.init(allocator, &table);
+    defer loader.deinit();
+
+    // Add search paths: parent directory and directory containing the main file
+    // The parent directory is added first because module paths like "geometry.shapes"
+    // expect to find "geometry/shapes.ki" from a package root
+    if (std.fs.path.dirname(path)) |dir| {
+        // Add parent directory as the package root
+        if (std.fs.path.dirname(dir)) |parent| {
+            loader.addSearchPath(parent) catch {};
+        }
+        // Also add the directory containing the file as a fallback
+        loader.addSearchPath(dir) catch {};
+    }
+
+    // Resolve symbols (using loader for cross-file imports)
+    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+        // Check for loader errors first
+        for (loader.getErrors()) |load_err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Module load error: {s} - {s}\n", .{ load_err.module_path, load_err.message }) catch "Module load error\n";
+            stderr.writeAll(msg) catch {};
+        }
         try formatResolveError(stderr, path, source, err);
         return error.ResolveError;
     };
@@ -493,7 +560,7 @@ fn evalLine(
         try writer.writeAll(msg);
         return;
     };
-    defer program.deinit(allocator);
+    defer program.deinit();
 
     // Resolve
     Kira.resolve(allocator, &program, table) catch |err| {
@@ -609,7 +676,7 @@ fn evalType(
         try writer.writeAll(msg);
         return;
     };
-    defer program.deinit(allocator);
+    defer program.deinit();
 
     // Resolve
     Kira.resolve(allocator, &program, table) catch |err| {
@@ -663,7 +730,7 @@ fn loadFile(
         try writer.writeAll(msg);
         return error.ParseError;
     };
-    defer program.deinit(allocator);
+    defer program.deinit();
 
     // Resolve
     Kira.resolve(allocator, &program, table) catch |err| {
