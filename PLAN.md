@@ -15,7 +15,7 @@ A functional programming language with explicit types, explicit effects, and no 
 | 5. Symbol Table | Complete | 8/8 |
 | 6. Type Checker | Complete | 15/15 |
 | 7. Effect Checker | Complete | 9/9 |
-| 8. Pattern Matching | Not Started | 0/9 |
+| 8. Pattern Matching | Complete | 9/9 |
 | 9. Interpreter | Not Started | 0/12 |
 | 10. Standard Library | Not Started | 0/7 |
 | 11. REPL & CLI | Not Started | 0/8 |
@@ -113,15 +113,15 @@ A functional programming language with explicit types, explicit effects, and no 
 - [x] Write effect checker tests
 
 ## Phase 8: Pattern Match Compiler
-- [ ] Implement exhaustiveness checking for match statements
-- [ ] Check for unreachable patterns (dead code)
-- [ ] Compile constructor patterns with binding extraction
-- [ ] Compile record patterns with field matching
-- [ ] Compile tuple patterns
-- [ ] Compile or-patterns (`|`)
-- [ ] Compile guard patterns (`if` conditions)
-- [ ] Handle nested patterns
-- [ ] Write pattern matching tests
+- [x] Implement exhaustiveness checking for match statements
+- [x] Check for unreachable patterns (dead code)
+- [x] Compile constructor patterns with binding extraction
+- [x] Compile record patterns with field matching
+- [x] Compile tuple patterns
+- [x] Compile or-patterns (`|`)
+- [x] Compile guard patterns (`if` conditions)
+- [x] Handle nested patterns
+- [x] Write pattern matching tests
 
 ## Phase 9: Tree-Walking Interpreter
 - [ ] Implement runtime value representation (numbers, strings, bools, functions, ADT values, tuples, arrays)

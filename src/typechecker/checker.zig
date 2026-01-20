@@ -13,6 +13,7 @@ const types_mod = @import("types.zig");
 const errors_mod = @import("errors.zig");
 const unify = @import("unify.zig");
 const instantiate_mod = @import("instantiate.zig");
+const pattern_compiler_mod = @import("pattern_compiler.zig");
 
 pub const Expression = ast.Expression;
 pub const Statement = ast.Statement;
@@ -903,9 +904,16 @@ pub const TypeChecker = struct {
         // Check each arm and ensure all return the same type
         var result_type: ?ResolvedType = null;
 
+        // Collect patterns for exhaustiveness checking
+        var patterns = std.ArrayListUnmanaged(*const Pattern){};
+        defer patterns.deinit(self.allocator);
+
         for (me.arms) |arm| {
             // Check pattern against subject type
             try self.checkPattern(arm.pattern, subject_type);
+
+            // Collect pattern for exhaustiveness checking
+            try patterns.append(self.allocator, arm.pattern);
 
             // Check guard if present
             if (arm.guard) |guard| {
@@ -944,6 +952,9 @@ pub const TypeChecker = struct {
                 result_type = arm_type;
             }
         }
+
+        // Check exhaustiveness
+        try self.checkMatchExhaustiveness(patterns.items, subject_type, span);
 
         return result_type orelse ResolvedType.voidType(span);
     }
@@ -1303,8 +1314,15 @@ pub const TypeChecker = struct {
             .match_statement => |match_stmt| {
                 const subject_type = try self.checkExpression(match_stmt.subject);
 
+                // Collect patterns for exhaustiveness checking
+                var patterns = std.ArrayListUnmanaged(*const Pattern){};
+                defer patterns.deinit(self.allocator);
+
                 for (match_stmt.arms) |arm| {
                     try self.checkPattern(arm.pattern, subject_type);
+
+                    // Collect pattern for exhaustiveness checking
+                    try patterns.append(self.allocator, arm.pattern);
 
                     if (arm.guard) |guard| {
                         const guard_type = try self.checkExpression(guard);
@@ -1322,7 +1340,8 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                // TODO: Check exhaustiveness
+                // Check exhaustiveness
+                try self.checkMatchExhaustiveness(patterns.items, subject_type, stmt.span);
             },
 
             .return_statement => |ret| {
@@ -1757,6 +1776,44 @@ pub const TypeChecker = struct {
                 }
             }
         }
+    }
+
+    // ========== Pattern Match Exhaustiveness ==========
+
+    /// Check if a match expression/statement is exhaustive
+    fn checkMatchExhaustiveness(
+        self: *TypeChecker,
+        patterns: []const *const Pattern,
+        subject_type: ResolvedType,
+        span: Span,
+    ) TypeCheckError!void {
+        var compiler = pattern_compiler_mod.PatternCompiler.init(
+            self.allocator,
+            self.symbol_table,
+            &self.diagnostics,
+        );
+
+        const result = compiler.checkExhaustiveness(patterns, subject_type, span) catch |err| {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+            };
+        };
+
+        // Report non-exhaustive match
+        if (!result.is_exhaustive) {
+            compiler.reportNonExhaustive(result, span) catch |err| {
+                return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                };
+            };
+        }
+
+        // Report unreachable patterns as warnings
+        compiler.reportUnreachablePatterns(result, patterns) catch |err| {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+            };
+        };
     }
 
     // ========== Helper Functions ==========
