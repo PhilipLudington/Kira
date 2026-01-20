@@ -248,12 +248,25 @@ pub const Symbol = struct {
         };
     }
 
-    /// Free all nested allocations in this symbol
+    /// Free all nested allocations in this symbol.
+    ///
+    /// NOTE: This function is intentionally conservative about freeing memory.
+    /// Some arrays (like parameter_types, parameter_names) are allocated by the
+    /// resolver using toOwnedSlice(), but their contents (the actual types and
+    /// names) point to AST data owned by the program arena.
+    ///
+    /// Due to complex ownership patterns between the symbol table, resolver,
+    /// type checker, and program arena, we only free top-level arrays that we
+    /// are confident are solely owned by the symbol table.
     pub fn deinit(self: *Symbol, allocator: std.mem.Allocator) void {
         switch (self.kind) {
             .function => |*f| {
+                // These arrays were allocated by the resolver using toOwnedSlice()
+                // The contents (Type pointers and name slices) point to AST memory
                 if (f.generic_params) |gp| {
-                    allocator.free(gp);
+                    if (gp.len > 0) {
+                        allocator.free(gp);
+                    }
                 }
                 if (f.parameter_types.len > 0) {
                     allocator.free(f.parameter_types);
@@ -264,45 +277,63 @@ pub const Symbol = struct {
             },
             .type_def => |*t| {
                 if (t.generic_params) |gp| {
-                    allocator.free(gp);
+                    if (gp.len > 0) {
+                        allocator.free(gp);
+                    }
                 }
                 switch (t.definition) {
                     .sum_type => |*s| {
-                        for (s.variants) |*v| {
-                            if (v.fields) |*fields| {
-                                switch (fields.*) {
-                                    .record_fields => |rf| allocator.free(rf),
-                                    .tuple_fields => {},
+                        if (s.variants.len > 0) {
+                            for (s.variants) |*v| {
+                                if (v.fields) |*fields| {
+                                    switch (fields.*) {
+                                        .record_fields => |rf| {
+                                            if (rf.len > 0) {
+                                                allocator.free(rf);
+                                            }
+                                        },
+                                        .tuple_fields => {
+                                            // Tuple fields point to AST types, don't free
+                                        },
+                                    }
                                 }
                             }
+                            allocator.free(s.variants);
                         }
-                        allocator.free(s.variants);
                     },
                     .product_type => |*p| {
-                        allocator.free(p.fields);
+                        if (p.fields.len > 0) {
+                            allocator.free(p.fields);
+                        }
                     },
-                    .alias => {},
+                    .alias => {
+                        // Alias points to AST type, don't free
+                    },
                 }
             },
             .trait_def => |*t| {
                 if (t.generic_params) |gp| {
-                    allocator.free(gp);
-                }
-                if (t.super_traits) |st| {
-                    allocator.free(st);
-                }
-                for (t.methods) |*m| {
-                    if (m.generic_params) |gp| {
+                    if (gp.len > 0) {
                         allocator.free(gp);
                     }
-                    if (m.parameter_types.len > 0) {
-                        allocator.free(m.parameter_types);
-                    }
-                    if (m.parameter_names.len > 0) {
-                        allocator.free(m.parameter_names);
-                    }
                 }
-                allocator.free(t.methods);
+                // super_traits points to AST data, don't free
+                if (t.methods.len > 0) {
+                    for (t.methods) |*m| {
+                        if (m.generic_params) |gp| {
+                            if (gp.len > 0) {
+                                allocator.free(gp);
+                            }
+                        }
+                        if (m.parameter_types.len > 0) {
+                            allocator.free(m.parameter_types);
+                        }
+                        if (m.parameter_names.len > 0) {
+                            allocator.free(m.parameter_names);
+                        }
+                    }
+                    allocator.free(t.methods);
+                }
             },
             .module => {
                 // Module paths point to AST data owned by the program arena,
@@ -312,7 +343,9 @@ pub const Symbol = struct {
                 // Import alias source paths point to AST data owned by the program arena,
                 // not allocated by the symbol table allocator, so don't free them here
             },
-            .variable, .type_param => {},
+            .variable, .type_param => {
+                // Variable binding_type and type_param constraints point to AST data
+            },
         }
     }
 };

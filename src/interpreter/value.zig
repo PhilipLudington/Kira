@@ -226,16 +226,36 @@ pub const Value = union(enum) {
         try self.write(writer);
     }
 
-    /// Write value to writer
+    /// Write value to writer (for user-facing output)
     pub fn write(self: Value, writer: anytype) !void {
+        try self.writeImpl(writer, false);
+    }
+
+    /// Write value to writer with debug formatting (shows quotes around strings)
+    pub fn writeDebug(self: Value, writer: anytype) !void {
+        try self.writeImpl(writer, true);
+    }
+
+    /// Internal write implementation
+    fn writeImpl(self: Value, writer: anytype, debug_mode: bool) !void {
         switch (self) {
             .integer => |v| try writer.print("{d}", .{v}),
             .float => |v| try writer.print("{d}", .{v}),
-            .string => |v| try writer.print("\"{s}\"", .{v}),
+            .string => |v| {
+                if (debug_mode) {
+                    try writer.print("\"{s}\"", .{v});
+                } else {
+                    try writer.writeAll(v);
+                }
+            },
             .char => |v| {
                 var buf: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(v, &buf) catch 1;
-                try writer.print("'{s}'", .{buf[0..len]});
+                if (debug_mode) {
+                    try writer.print("'{s}'", .{buf[0..len]});
+                } else {
+                    try writer.writeAll(buf[0..len]);
+                }
             },
             .boolean => |v| try writer.print("{}", .{v}),
             .void => try writer.writeAll("()"),
@@ -245,7 +265,7 @@ pub const Value = union(enum) {
                 try writer.writeAll("(");
                 for (t, 0..) |v, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try v.write(writer);
+                    try v.writeImpl(writer, debug_mode);
                 }
                 try writer.writeAll(")");
             },
@@ -253,7 +273,7 @@ pub const Value = union(enum) {
                 try writer.writeAll("[");
                 for (a, 0..) |v, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try v.write(writer);
+                    try v.writeImpl(writer, debug_mode);
                 }
                 try writer.writeAll("]");
             },
@@ -267,7 +287,7 @@ pub const Value = union(enum) {
                 for (r.fields.keys(), r.fields.values()) |key, val| {
                     if (!first) try writer.writeAll(", ");
                     try writer.print("{s}: ", .{key});
-                    try val.write(writer);
+                    try val.writeImpl(writer, debug_mode);
                     first = false;
                 }
                 try writer.writeAll(" }");
@@ -287,7 +307,7 @@ pub const Value = union(enum) {
                             try writer.writeAll("(");
                             for (t, 0..) |val, i| {
                                 if (i > 0) try writer.writeAll(", ");
-                                try val.write(writer);
+                                try val.writeImpl(writer, debug_mode);
                             }
                             try writer.writeAll(")");
                         },
@@ -297,7 +317,7 @@ pub const Value = union(enum) {
                             for (r.keys(), r.values()) |key, val| {
                                 if (!first) try writer.writeAll(", ");
                                 try writer.print("{s}: ", .{key});
-                                try val.write(writer);
+                                try val.writeImpl(writer, debug_mode);
                                 first = false;
                             }
                             try writer.writeAll(" }");
@@ -307,38 +327,38 @@ pub const Value = union(enum) {
             },
             .some => |v| {
                 try writer.writeAll("Some(");
-                try v.write(writer);
+                try v.writeImpl(writer, debug_mode);
                 try writer.writeAll(")");
             },
             .ok => |v| {
                 try writer.writeAll("Ok(");
-                try v.write(writer);
+                try v.writeImpl(writer, debug_mode);
                 try writer.writeAll(")");
             },
             .err => |v| {
                 try writer.writeAll("Err(");
-                try v.write(writer);
+                try v.writeImpl(writer, debug_mode);
                 try writer.writeAll(")");
             },
             .cons => |c| {
                 try writer.writeAll("[");
-                try c.head.write(writer);
+                try c.head.writeImpl(writer, debug_mode);
                 var current: Value = c.tail.*;
                 while (current == .cons) {
                     try writer.writeAll(", ");
-                    try current.cons.head.write(writer);
+                    try current.cons.head.writeImpl(writer, debug_mode);
                     current = current.cons.tail.*;
                 }
                 try writer.writeAll("]");
             },
             .io => |v| {
                 try writer.writeAll("IO(");
-                try v.write(writer);
+                try v.writeImpl(writer, debug_mode);
                 try writer.writeAll(")");
             },
             .reference => |r| {
                 try writer.writeAll("&");
-                try r.write(writer);
+                try r.writeImpl(writer, debug_mode);
             },
         }
     }

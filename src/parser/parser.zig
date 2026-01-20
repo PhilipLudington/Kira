@@ -1566,8 +1566,14 @@ pub const Parser = struct {
         if (self.check(.string_literal)) {
             const tok = self.advance();
             // TODO: Check for interpolated string
+            // Strip the surrounding quotes from the lexeme
+            const raw_lexeme = tok.lexeme;
+            const string_content = if (raw_lexeme.len >= 2 and raw_lexeme[0] == '"' and raw_lexeme[raw_lexeme.len - 1] == '"')
+                raw_lexeme[1 .. raw_lexeme.len - 1]
+            else
+                raw_lexeme;
             return Expression.init(.{ .string_literal = .{
-                .value = tok.lexeme,
+                .value = string_content,
             } }, tok.span);
         }
 
@@ -1693,15 +1699,21 @@ pub const Parser = struct {
                     var args = std.ArrayListUnmanaged(*Expression){};
                     errdefer args.deinit(self.allocator);
 
+                    self.skipNewlines();
+
                     if (!self.check(.right_paren)) {
                         try args.append(self.allocator, try self.allocExpr(try self.parseExpression()));
+                        self.skipNewlines();
 
                         while (self.match(.comma)) {
+                            self.skipNewlines();
                             if (self.check(.right_paren)) break;
                             try args.append(self.allocator, try self.allocExpr(try self.parseExpression()));
+                            self.skipNewlines();
                         }
                     }
 
+                    self.skipNewlines();
                     try self.consume(.right_paren, "expected ')' after variant arguments");
                     return Expression.init(.{ .variant_constructor = .{
                         .variant_name = name,
@@ -1983,7 +1995,13 @@ pub const Parser = struct {
         // String literal
         if (self.check(.string_literal)) {
             const tok = self.advance();
-            return Pattern.init(.{ .string_literal = tok.lexeme }, tok.span);
+            // Strip the surrounding quotes from the lexeme
+            const raw_lexeme = tok.lexeme;
+            const string_content = if (raw_lexeme.len >= 2 and raw_lexeme[0] == '"' and raw_lexeme[raw_lexeme.len - 1] == '"')
+                raw_lexeme[1 .. raw_lexeme.len - 1]
+            else
+                raw_lexeme;
+            return Pattern.init(.{ .string_literal = string_content }, tok.span);
         }
 
         // Char literal

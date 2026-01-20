@@ -173,42 +173,141 @@ pub const Interpreter = struct {
             }
         }
 
-        var module_value = Value{
+        const leaf_module = Value{
             .record = .{
                 .type_name = null,
                 .fields = module_fields,
             },
         };
 
-        // Build the nested structure from innermost to outermost
-        // For path ["src", "json"], we work from "json" outward to "src"
-        var i: usize = path.len - 1;
-        while (i > 0) {
-            i -= 1;
-            // Check if this level already exists
-            if (env.get(path[i])) |existing| {
+        // For a path like ["src", "json"], we need to:
+        // 1. Create/update "src" record in the environment
+        // 2. Add "json" as a field in "src"
+        //
+        // We also need to handle cases where "src" already exists and contains other modules.
+
+        if (path.len == 1) {
+            // Simple case: single-segment path like "json"
+            // Just define it directly
+            if (env.get(path[0])) |existing| {
                 if (existing.value == .record) {
-                    // Merge: add the inner module to the existing record
-                    var merged_fields = existing.value.record.fields;
-                    merged_fields.put(self.arenaAlloc(), path[i + 1], module_value) catch return error.OutOfMemory;
-                    module_value = Value{
-                        .record = .{
-                            .type_name = null,
-                            .fields = merged_fields,
-                        },
-                    };
-                    // Update the binding
-                    env.assign(path[i], module_value) catch {
-                        // If assign fails, try to redefine
-                        env.define(path[i], module_value, false) catch {};
-                    };
+                    // Merge new exports into existing module
+                    var merged = existing.value.record.fields;
+                    var field_iter = module_fields.iterator();
+                    while (field_iter.next()) |entry| {
+                        merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                    }
+                    env.assign(path[0], Value{ .record = .{ .type_name = null, .fields = merged } }) catch {};
                     return;
                 }
             }
+            env.define(path[0], leaf_module, false) catch {};
+            return;
+        }
 
-            // Create a new record containing the inner module
-            var outer_fields = std.StringArrayHashMapUnmanaged(Value){};
-            outer_fields.put(self.arenaAlloc(), path[i + 1], module_value) catch return error.OutOfMemory;
+        // Multi-segment path: need to create nested structure
+        // For ["src", "json"], create src.json
+
+        // Start with the root segment
+        const root_name = path[0];
+        var current_record: std.StringArrayHashMapUnmanaged(Value) = undefined;
+
+        // Get or create the root record
+        if (env.get(root_name)) |existing| {
+            if (existing.value == .record) {
+                current_record = existing.value.record.fields;
+            } else {
+                // Root exists but isn't a record - create a new empty record
+                current_record = std.StringArrayHashMapUnmanaged(Value){};
+            }
+        } else {
+            current_record = std.StringArrayHashMapUnmanaged(Value){};
+        }
+
+        // Navigate/create intermediate segments
+        // For ["src", "json", "utils"], we need src -> json -> utils
+        var i: usize = 1;
+        while (i < path.len - 1) : (i += 1) {
+            const segment = path[i];
+            if (current_record.get(segment)) |existing| {
+                if (existing == .record) {
+                    // Use existing intermediate record
+                    current_record = existing.record.fields;
+                } else {
+                    // Overwrite non-record with empty record
+                    const new_fields = std.StringArrayHashMapUnmanaged(Value){};
+                    current_record.put(self.arenaAlloc(), segment, Value{
+                        .record = .{ .type_name = null, .fields = new_fields },
+                    }) catch return error.OutOfMemory;
+                    current_record = new_fields;
+                }
+            } else {
+                // Create new intermediate record
+                const new_fields = std.StringArrayHashMapUnmanaged(Value){};
+                current_record.put(self.arenaAlloc(), segment, Value{
+                    .record = .{ .type_name = null, .fields = new_fields },
+                }) catch return error.OutOfMemory;
+                current_record = new_fields;
+            }
+        }
+
+        // Add the leaf module at the final segment
+        const leaf_name = path[path.len - 1];
+        if (current_record.get(leaf_name)) |existing| {
+            if (existing == .record) {
+                // Merge new exports into existing module
+                var merged = existing.record.fields;
+                var field_iter = module_fields.iterator();
+                while (field_iter.next()) |entry| {
+                    merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                }
+                current_record.put(self.arenaAlloc(), leaf_name, Value{
+                    .record = .{ .type_name = null, .fields = merged },
+                }) catch return error.OutOfMemory;
+            } else {
+                current_record.put(self.arenaAlloc(), leaf_name, leaf_module) catch return error.OutOfMemory;
+            }
+        } else {
+            current_record.put(self.arenaAlloc(), leaf_name, leaf_module) catch return error.OutOfMemory;
+        }
+
+        // Now rebuild the full tree and define it at the root
+        // We need to rebuild from the current_record back up to root
+        // This is necessary because we modified the leaf, but the intermediate
+        // records need to reflect those changes
+
+        // Simple approach: just rebuild the whole thing by re-evaluating
+        // Actually, we can just update the root with the modified structure
+        // since all records share the same underlying hashmaps
+
+        // The issue is that when we get existing.value.record.fields, we get a copy
+        // of the hashmap, not a reference. So modifications don't propagate.
+        // We need to rebuild the entire structure.
+
+        // Rebuild from innermost to outermost
+        var module_value = leaf_module;
+        var j: usize = path.len - 1;
+        while (j > 0) {
+            j -= 1;
+
+            var outer_fields: std.StringArrayHashMapUnmanaged(Value) = undefined;
+
+            if (j == 0) {
+                // At root level, check for existing record to merge with
+                if (env.get(path[0])) |existing| {
+                    if (existing.value == .record) {
+                        outer_fields = existing.value.record.fields;
+                    } else {
+                        outer_fields = std.StringArrayHashMapUnmanaged(Value){};
+                    }
+                } else {
+                    outer_fields = std.StringArrayHashMapUnmanaged(Value){};
+                }
+            } else {
+                outer_fields = std.StringArrayHashMapUnmanaged(Value){};
+            }
+
+            outer_fields.put(self.arenaAlloc(), path[j + 1], module_value) catch return error.OutOfMemory;
             module_value = Value{
                 .record = .{
                     .type_name = null,
@@ -217,28 +316,11 @@ pub const Interpreter = struct {
             };
         }
 
-        // Define or update the root module in the environment
-        const root_name = path[0];
-        if (env.get(root_name)) |existing| {
-            if (existing.value == .record and path.len > 1) {
-                // Merge the new module into existing record
-                var merged_fields = existing.value.record.fields;
-                merged_fields.put(self.arenaAlloc(), path[1], if (path.len > 1)
-                    (if (module_value == .record) module_value.record.fields.get(path[1]) orelse module_value else module_value)
-                else
-                    module_value) catch return error.OutOfMemory;
-                const merged_value = Value{
-                    .record = .{
-                        .type_name = null,
-                        .fields = merged_fields,
-                    },
-                };
-                env.assign(root_name, merged_value) catch {};
-                return;
-            }
-        }
-
-        env.define(root_name, module_value, false) catch {};
+        // Define the root
+        env.define(root_name, module_value, false) catch {
+            // If already defined, try to update
+            env.assign(root_name, module_value) catch {};
+        };
     }
 
     /// Register a top-level declaration in the environment

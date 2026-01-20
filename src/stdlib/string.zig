@@ -36,6 +36,7 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "substring", root.makeBuiltin("substring", &stringSubstring));
     try fields.put(allocator, "char_at", root.makeBuiltin("char_at", &stringCharAt));
     try fields.put(allocator, "index_of", root.makeBuiltin("index_of", &stringIndexOf));
+    try fields.put(allocator, "equals", root.makeBuiltin("equals", &stringEquals));
 
     return Value{
         .record = .{
@@ -332,6 +333,23 @@ fn stringIndexOf(allocator: Allocator, args: []const Value) InterpreterError!Val
     return Value{ .none = {} };
 }
 
+/// Check if two strings are equal: equals(str1, str2) -> bool
+fn stringEquals(_: Allocator, args: []const Value) InterpreterError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+
+    const str1 = switch (args[0]) {
+        .string => |s| s,
+        else => return error.TypeMismatch,
+    };
+
+    const str2 = switch (args[1]) {
+        .string => |s| s,
+        else => return error.TypeMismatch,
+    };
+
+    return Value{ .boolean = std.mem.eql(u8, str1, str2) };
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -402,4 +420,17 @@ test "string substring" {
         Value{ .integer = 5 },
     });
     try std.testing.expectEqualStrings("hello", result.string);
+}
+
+test "string equals" {
+    const allocator = std.testing.allocator;
+
+    const equal = try stringEquals(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "hello" } });
+    try std.testing.expect(equal.boolean);
+
+    const not_equal = try stringEquals(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "world" } });
+    try std.testing.expect(!not_equal.boolean);
+
+    const empty_equal = try stringEquals(allocator, &.{ Value{ .string = "" }, Value{ .string = "" } });
+    try std.testing.expect(empty_equal.boolean);
 }

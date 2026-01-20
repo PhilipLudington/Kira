@@ -23,6 +23,7 @@ pub const option = @import("option.zig");
 pub const result = @import("result.zig");
 pub const string = @import("string.zig");
 pub const int = @import("int.zig");
+pub const float = @import("float.zig");
 pub const io = @import("io.zig");
 pub const fs = @import("fs.zig");
 
@@ -39,6 +40,7 @@ pub fn registerStdlib(allocator: Allocator, env: *Environment) !void {
     try std_fields.put(allocator, "result", try result.createModule(allocator));
     try std_fields.put(allocator, "string", try string.createModule(allocator));
     try std_fields.put(allocator, "int", try int.createModule(allocator));
+    try std_fields.put(allocator, "float", try float.createModule(allocator));
     try std_fields.put(allocator, "io", try io.createModule(allocator));
     try std_fields.put(allocator, "fs", try fs.createModule(allocator));
 
@@ -90,6 +92,7 @@ test {
     _ = result;
     _ = string;
     _ = int;
+    _ = float;
     _ = io;
     _ = fs;
 }
