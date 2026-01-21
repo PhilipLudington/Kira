@@ -325,11 +325,11 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     var interp = Kira.Interpreter.init(allocator, &table);
     defer interp.deinit();
 
-    // Register built-in functions
-    try Kira.interpreter_mod.registerBuiltins(allocator, &interp.global_env);
-
-    // Register standard library
-    try Kira.interpreter_mod.registerStdlib(allocator, &interp.global_env);
+    // Register built-in functions and standard library
+    // Use arena allocator so Value allocations are freed with the interpreter
+    const arena_alloc = interp.arenaAlloc();
+    try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
+    try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
 
     // Register declarations from loaded modules first
     // Create module namespace structures so qualified names like `src.json.X` work
@@ -565,12 +565,17 @@ fn runRepl(allocator: Allocator) !void {
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
+    // Arena for Value allocations (freed when REPL exits)
+    var value_arena = std.heap.ArenaAllocator.init(allocator);
+    defer value_arena.deinit();
+    const arena_alloc = value_arena.allocator();
+
     var global_env = Kira.Environment.init(allocator);
     defer global_env.deinit();
 
-    // Register builtins and stdlib
-    try Kira.interpreter_mod.registerBuiltins(allocator, &global_env);
-    try Kira.interpreter_mod.registerStdlib(allocator, &global_env);
+    // Register builtins and stdlib using arena allocator
+    try Kira.interpreter_mod.registerBuiltins(arena_alloc, &global_env);
+    try Kira.interpreter_mod.registerStdlib(arena_alloc, &global_env);
 
     var show_tokens = false;
     var line_buf: [8192]u8 = undefined;
@@ -618,11 +623,12 @@ fn runRepl(allocator: Allocator) !void {
                     try stdout.writeAll("Token display disabled\n");
                 }
             } else if (std.mem.eql(u8, trimmed, ":clear")) {
-                // Reset environment
+                // Reset environment and arena - use _ to explicitly discard the result
                 global_env.deinit();
+                _ = value_arena.reset(.retain_capacity);
                 global_env = Kira.Environment.init(allocator);
-                try Kira.interpreter_mod.registerBuiltins(allocator, &global_env);
-                try Kira.interpreter_mod.registerStdlib(allocator, &global_env);
+                try Kira.interpreter_mod.registerBuiltins(arena_alloc, &global_env);
+                try Kira.interpreter_mod.registerStdlib(arena_alloc, &global_env);
                 try stdout.writeAll("Environment cleared\n");
             } else if (std.mem.startsWith(u8, trimmed, ":type ")) {
                 const expr_text = trimmed[6..];
@@ -762,9 +768,10 @@ fn evalLine(
     defer interp.deinit();
 
     // Copy existing bindings to interpreter's global env
-    // (This is a simplified approach - a full implementation would share the environment)
-    try Kira.interpreter_mod.registerBuiltins(allocator, &interp.global_env);
-    try Kira.interpreter_mod.registerStdlib(allocator, &interp.global_env);
+    // Use arena allocator so Value allocations are freed with the interpreter
+    const interp_arena = interp.arenaAlloc();
+    try Kira.interpreter_mod.registerBuiltins(interp_arena, &interp.global_env);
+    try Kira.interpreter_mod.registerStdlib(interp_arena, &interp.global_env);
 
     // Copy user-defined bindings
     var binding_iter = env.bindings.iterator();
@@ -926,8 +933,10 @@ fn loadFile(
     var interp = Kira.Interpreter.init(allocator, table);
     defer interp.deinit();
 
-    try Kira.interpreter_mod.registerBuiltins(allocator, &interp.global_env);
-    try Kira.interpreter_mod.registerStdlib(allocator, &interp.global_env);
+    // Use arena allocator so Value allocations are freed with the interpreter
+    const interp_arena = interp.arenaAlloc();
+    try Kira.interpreter_mod.registerBuiltins(interp_arena, &interp.global_env);
+    try Kira.interpreter_mod.registerStdlib(interp_arena, &interp.global_env);
 
     _ = interp.interpret(&program) catch |err| {
         var buf: [256]u8 = undefined;

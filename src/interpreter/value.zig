@@ -76,9 +76,41 @@ pub const Value = union(enum) {
         fields: std.StringArrayHashMapUnmanaged(Value),
 
         pub fn deinit(self: *RecordValue, allocator: Allocator) void {
+            // Recursively free nested Values before freeing the hashmap
+            for (self.fields.values()) |*val| {
+                val.deinit(allocator);
+            }
             self.fields.deinit(allocator);
         }
     };
+
+    /// Free all nested allocations in this Value
+    pub fn deinit(self: *Value, allocator: Allocator) void {
+        switch (self.*) {
+            .record => |*r| r.deinit(allocator),
+            .variant => |*v| {
+                if (v.fields) |*fields| {
+                    switch (fields.*) {
+                        .tuple => |t| {
+                            for (t) |*val| {
+                                var mval = val.*;
+                                mval.deinit(allocator);
+                            }
+                        },
+                        .record => |*r| {
+                            for (r.values()) |*val| {
+                                val.deinit(allocator);
+                            }
+                            r.deinit(allocator);
+                        },
+                    }
+                }
+            },
+            // These types don't have heap allocations that we own
+            // (strings point to source, pointers are arena-allocated)
+            else => {},
+        }
+    }
 
     /// Function value with captured environment
     pub const FunctionValue = struct {
@@ -402,6 +434,8 @@ pub const Environment = struct {
     }
 
     /// Clean up the environment
+    /// Note: Values inside bindings are expected to be allocated with an arena allocator
+    /// that outlives the environment, so we only free the bindings hashmap itself.
     pub fn deinit(self: *Environment) void {
         self.bindings.deinit(self.allocator);
     }

@@ -88,6 +88,50 @@ pub const PatternSpace = union(enum) {
         end: ?i128,
         inclusive: bool,
     };
+
+    /// Free all nested allocations in a PatternSpace
+    pub fn deinit(self: *PatternSpace, allocator: Allocator) void {
+        switch (self.*) {
+            .constructor => |*c| {
+                for (c.arguments) |*arg| {
+                    var arg_copy = arg.*;
+                    arg_copy.deinit(allocator);
+                }
+                if (c.arguments.len > 0) {
+                    allocator.free(c.arguments);
+                }
+            },
+            .tuple => |t| {
+                for (t) |*elem| {
+                    var elem_copy = elem.*;
+                    elem_copy.deinit(allocator);
+                }
+                if (t.len > 0) {
+                    allocator.free(t);
+                }
+            },
+            .record => |*r| {
+                for (r.fields) |*field| {
+                    var space_copy = field.space;
+                    space_copy.deinit(allocator);
+                }
+                if (r.fields.len > 0) {
+                    allocator.free(r.fields);
+                }
+            },
+            .union_space => |u| {
+                for (u) |*alt| {
+                    var alt_copy = alt.*;
+                    alt_copy.deinit(allocator);
+                }
+                if (u.len > 0) {
+                    allocator.free(u);
+                }
+            },
+            // These don't have heap allocations
+            .any, .empty, .bool_value, .int_value, .char_value, .string_value, .float_value, .range => {},
+        }
+    }
 };
 
 /// Result of exhaustiveness checking
@@ -95,6 +139,16 @@ pub const ExhaustivenessResult = struct {
     is_exhaustive: bool,
     missing_patterns: []MissingPattern,
     unreachable_arms: []usize,
+
+    /// Clean up allocated slices
+    pub fn deinit(self: *ExhaustivenessResult, allocator: Allocator) void {
+        if (self.missing_patterns.len > 0) {
+            allocator.free(self.missing_patterns);
+        }
+        if (self.unreachable_arms.len > 0) {
+            allocator.free(self.unreachable_arms);
+        }
+    }
 };
 
 /// Describes a missing pattern for error reporting
@@ -134,12 +188,20 @@ pub const PatternCompiler = struct {
 
         // Convert patterns to pattern spaces
         var spaces = std.ArrayListUnmanaged(PatternSpace){};
-        defer spaces.deinit(self.allocator);
+        defer {
+            // Free nested allocations in each PatternSpace before freeing the list
+            for (spaces.items) |*space| {
+                space.deinit(self.allocator);
+            }
+            spaces.deinit(self.allocator);
+        }
         for (patterns) |pattern| {
             try spaces.append(self.allocator, try self.patternToSpace(pattern));
         }
 
         // Check for unreachable patterns (each pattern should add new coverage)
+        // Note: 'covered' contains copies/references to items from 'spaces', so we don't
+        // deinit its items separately (they're cleaned up when spaces is cleaned up)
         var covered = std.ArrayListUnmanaged(PatternSpace){};
         defer covered.deinit(self.allocator);
         for (spaces.items, 0..) |space, i| {

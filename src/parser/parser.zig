@@ -1572,8 +1572,14 @@ pub const Parser = struct {
                 raw_lexeme[1 .. raw_lexeme.len - 1]
             else
                 raw_lexeme;
+            // Process escape sequences
+            const processed_content = self.processStringEscapes(string_content) catch |err| {
+                return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                };
+            };
             return Expression.init(.{ .string_literal = .{
-                .value = string_content,
+                .value = processed_content,
             } }, tok.span);
         }
 
@@ -2360,6 +2366,117 @@ pub const Parser = struct {
         const suffix: ?[]const u8 = if (end < lexeme.len) lexeme[end..] else null;
 
         return ParsedFloat{ .value = value, .suffix = suffix };
+    }
+
+    /// Process escape sequences in a string literal content (without surrounding quotes)
+    fn processStringEscapes(self: *Parser, content: []const u8) ![]const u8 {
+        // First pass: check if there are any escape sequences
+        var has_escapes = false;
+        for (content) |c| {
+            if (c == '\\') {
+                has_escapes = true;
+                break;
+            }
+        }
+
+        // If no escapes, return the original slice
+        if (!has_escapes) {
+            return content;
+        }
+
+        // Second pass: process escape sequences
+        var result = std.ArrayListUnmanaged(u8){};
+        errdefer result.deinit(self.allocator);
+
+        var i: usize = 0;
+        while (i < content.len) {
+            if (content[i] == '\\' and i + 1 < content.len) {
+                const escaped_char: u8 = switch (content[i + 1]) {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '\\' => '\\',
+                    '"' => '"',
+                    '\'' => '\'',
+                    '0' => 0,
+                    'x' => blk: {
+                        // Hex escape: \xNN
+                        if (i + 3 < content.len) {
+                            const hex_chars = content[i + 2 .. i + 4];
+                            const val = std.fmt.parseInt(u8, hex_chars, 16) catch {
+                                // Invalid hex, just output the literal characters
+                                try result.append(self.allocator, '\\');
+                                break :blk content[i + 1];
+                            };
+                            i += 4;
+                            try result.append(self.allocator, val);
+                            continue;
+                        } else {
+                            try result.append(self.allocator, '\\');
+                            break :blk content[i + 1];
+                        }
+                    },
+                    'u' => blk: {
+                        // Unicode escape: \uNNNN or \u{N...}
+                        if (i + 2 < content.len and content[i + 2] == '{') {
+                            // Find closing brace
+                            var end: usize = i + 3;
+                            while (end < content.len and content[end] != '}') : (end += 1) {}
+                            if (end < content.len) {
+                                const hex_str = content[i + 3 .. end];
+                                const codepoint = std.fmt.parseInt(u21, hex_str, 16) catch {
+                                    try result.append(self.allocator, '\\');
+                                    break :blk content[i + 1];
+                                };
+                                // Encode as UTF-8
+                                var utf8_buf: [4]u8 = undefined;
+                                const utf8_len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch {
+                                    try result.append(self.allocator, '\\');
+                                    break :blk content[i + 1];
+                                };
+                                for (utf8_buf[0..utf8_len]) |byte| {
+                                    try result.append(self.allocator, byte);
+                                }
+                                i = end + 1;
+                                continue;
+                            }
+                        } else if (i + 5 < content.len) {
+                            // \uNNNN format
+                            const hex_str = content[i + 2 .. i + 6];
+                            const codepoint = std.fmt.parseInt(u21, hex_str, 16) catch {
+                                try result.append(self.allocator, '\\');
+                                break :blk content[i + 1];
+                            };
+                            // Encode as UTF-8
+                            var utf8_buf: [4]u8 = undefined;
+                            const utf8_len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch {
+                                try result.append(self.allocator, '\\');
+                                break :blk content[i + 1];
+                            };
+                            for (utf8_buf[0..utf8_len]) |byte| {
+                                try result.append(self.allocator, byte);
+                            }
+                            i += 6;
+                            continue;
+                        }
+                        try result.append(self.allocator, '\\');
+                        break :blk content[i + 1];
+                    },
+                    else => blk: {
+                        // Unknown escape, output backslash and the character
+                        try result.append(self.allocator, '\\');
+                        break :blk content[i + 1];
+                    },
+                };
+                try result.append(self.allocator, escaped_char);
+                i += 2;
+            } else {
+                try result.append(self.allocator, content[i]);
+                i += 1;
+            }
+        }
+
+        return try result.toOwnedSlice(self.allocator);
     }
 
     fn parseCharValue(self: *Parser, lexeme: []const u8) u21 {

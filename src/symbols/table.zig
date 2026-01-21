@@ -79,7 +79,7 @@ pub const SymbolTable = struct {
         self.scopes.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
 
-        // Free the string keys in module_scopes (they were allocated by the resolver)
+        // Free the string keys in module_scopes (duped in registerModule, owned by table)
         var key_iter = self.module_scopes.keyIterator();
         while (key_iter.next()) |key| {
             self.allocator.free(key.*);
@@ -262,9 +262,18 @@ pub const SymbolTable = struct {
 
     // ========== Module Management ==========
 
-    /// Register a module scope
+    /// Register a module scope for cross-module lookups.
+    /// The path is duped internally - caller retains ownership of the original.
     pub fn registerModule(self: *SymbolTable, path: []const u8, scope_id: ScopeId) !void {
-        try self.module_scopes.put(self.allocator, path, scope_id);
+        // Check if this path already exists - if so, just update the value without duping
+        if (self.module_scopes.contains(path)) {
+            try self.module_scopes.put(self.allocator, path, scope_id);
+            return;
+        }
+        // Dupe the key so we have ownership and can safely free it in deinit
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+        try self.module_scopes.put(self.allocator, owned_path, scope_id);
     }
 
     /// Get a module's scope by path

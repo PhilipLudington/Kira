@@ -468,6 +468,7 @@ pub const Resolver = struct {
             try path_builder.appendSlice(self.allocator, segment);
         }
         const path_str = try path_builder.toOwnedSlice(self.allocator);
+        defer self.allocator.free(path_str); // registerModule dupes it internally
 
         // Register module scope
         try self.table.registerModule(path_str, module_scope_id);

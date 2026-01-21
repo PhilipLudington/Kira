@@ -54,6 +54,8 @@ pub const TypeChecker = struct {
     self_type: ?ResolvedType,
     /// Whether we're in an effect function
     in_effect_function: bool,
+    /// Arena for temporary type allocations during type checking
+    type_arena: std.heap.ArenaAllocator,
 
     /// Create a new type checker
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) TypeChecker {
@@ -67,6 +69,7 @@ pub const TypeChecker = struct {
             .type_var_substitutions = .{},
             .self_type = null,
             .in_effect_function = false,
+            .type_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
@@ -79,6 +82,13 @@ pub const TypeChecker = struct {
         self.diagnostics.deinit(self.allocator);
         self.type_env.deinit(self.allocator);
         self.type_var_substitutions.deinit(self.allocator);
+        // Free all temporary type allocations at once
+        self.type_arena.deinit();
+    }
+
+    /// Get allocator for temporary type allocations
+    fn typeAllocator(self: *TypeChecker) Allocator {
+        return self.type_arena.allocator();
     }
 
     // ========== Main Entry Point ==========
@@ -147,16 +157,17 @@ pub const TypeChecker = struct {
 
             .generic => |g| {
                 // Look up the base type
+                const type_alloc = self.typeAllocator();
                 if (self.symbol_table.lookup(g.base)) |sym| {
                     var resolved_args = std.ArrayListUnmanaged(ResolvedType){};
                     for (g.type_arguments) |arg| {
-                        try resolved_args.append(self.allocator, try self.resolveAstType(arg));
+                        try resolved_args.append(type_alloc, try self.resolveAstType(arg));
                     }
                     return .{
                         .kind = .{ .instantiated = .{
                             .base_symbol_id = sym.id,
                             .base_name = g.base,
-                            .type_arguments = try resolved_args.toOwnedSlice(self.allocator),
+                            .type_arguments = try resolved_args.toOwnedSlice(type_alloc),
                         } },
                         .span = ast_type.span,
                     };
@@ -167,17 +178,18 @@ pub const TypeChecker = struct {
             },
 
             .function => |f| {
+                const type_alloc = self.typeAllocator();
                 var resolved_params = std.ArrayListUnmanaged(ResolvedType){};
                 for (f.parameter_types) |param| {
-                    try resolved_params.append(self.allocator, try self.resolveAstType(param));
+                    try resolved_params.append(type_alloc, try self.resolveAstType(param));
                 }
 
-                const resolved_return = try self.allocator.create(ResolvedType);
+                const resolved_return = try type_alloc.create(ResolvedType);
                 resolved_return.* = try self.resolveAstType(f.return_type);
 
                 return .{
                     .kind = .{ .function = .{
-                        .parameter_types = try resolved_params.toOwnedSlice(self.allocator),
+                        .parameter_types = try resolved_params.toOwnedSlice(type_alloc),
                         .return_type = resolved_return,
                         .effect = f.effect_type,
                     } },
@@ -186,20 +198,22 @@ pub const TypeChecker = struct {
             },
 
             .tuple => |t| {
+                const type_alloc = self.typeAllocator();
                 var resolved_elements = std.ArrayListUnmanaged(ResolvedType){};
                 for (t.element_types) |elem| {
-                    try resolved_elements.append(self.allocator, try self.resolveAstType(elem));
+                    try resolved_elements.append(type_alloc, try self.resolveAstType(elem));
                 }
                 return .{
                     .kind = .{ .tuple = .{
-                        .element_types = try resolved_elements.toOwnedSlice(self.allocator),
+                        .element_types = try resolved_elements.toOwnedSlice(type_alloc),
                     } },
                     .span = ast_type.span,
                 };
             },
 
             .array => |a| {
-                const resolved_elem = try self.allocator.create(ResolvedType);
+                const type_alloc = self.typeAllocator();
+                const resolved_elem = try type_alloc.create(ResolvedType);
                 resolved_elem.* = try self.resolveAstType(a.element_type);
                 return .{
                     .kind = .{ .array = .{
@@ -211,7 +225,8 @@ pub const TypeChecker = struct {
             },
 
             .io_type => |inner| {
-                const resolved_inner = try self.allocator.create(ResolvedType);
+                const type_alloc = self.typeAllocator();
+                const resolved_inner = try type_alloc.create(ResolvedType);
                 resolved_inner.* = try self.resolveAstType(inner);
                 return .{
                     .kind = .{ .io = resolved_inner },
@@ -220,10 +235,11 @@ pub const TypeChecker = struct {
             },
 
             .result_type => |r| {
-                const resolved_ok = try self.allocator.create(ResolvedType);
+                const type_alloc = self.typeAllocator();
+                const resolved_ok = try type_alloc.create(ResolvedType);
                 resolved_ok.* = try self.resolveAstType(r.ok_type);
 
-                const resolved_err = try self.allocator.create(ResolvedType);
+                const resolved_err = try type_alloc.create(ResolvedType);
                 resolved_err.* = try self.resolveAstType(r.err_type);
 
                 return .{
@@ -236,7 +252,8 @@ pub const TypeChecker = struct {
             },
 
             .option_type => |inner| {
-                const resolved_inner = try self.allocator.create(ResolvedType);
+                const type_alloc = self.typeAllocator();
+                const resolved_inner = try type_alloc.create(ResolvedType);
                 resolved_inner.* = try self.resolveAstType(inner);
                 return .{
                     .kind = .{ .option = resolved_inner },
@@ -263,30 +280,32 @@ pub const TypeChecker = struct {
                     return resolved;
                 }
                 // Keep as type variable - extract trait names from constraints
+                const type_alloc = self.typeAllocator();
                 var constraint_names: ?[][]const u8 = null;
                 if (tv.constraints) |constraints| {
                     var names = std.ArrayListUnmanaged([]const u8){};
                     for (constraints) |c| {
-                        try names.append(self.allocator, c.trait_name);
+                        try names.append(type_alloc, c.trait_name);
                     }
-                    constraint_names = try names.toOwnedSlice(self.allocator);
+                    constraint_names = try names.toOwnedSlice(type_alloc);
                 }
                 return ResolvedType.typeVar(tv.name, constraint_names, ast_type.span);
             },
 
             .path => |p| {
                 // Look up the path in the symbol table
+                const type_alloc = self.typeAllocator();
                 if (self.symbol_table.lookupPath(p.segments)) |sym| {
                     if (p.generic_args) |args| {
                         var resolved_args = std.ArrayListUnmanaged(ResolvedType){};
                         for (args) |arg| {
-                            try resolved_args.append(self.allocator, try self.resolveAstType(arg));
+                            try resolved_args.append(type_alloc, try self.resolveAstType(arg));
                         }
                         return .{
                             .kind = .{ .instantiated = .{
                                 .base_symbol_id = sym.id,
                                 .base_name = p.segments[p.segments.len - 1],
-                                .type_arguments = try resolved_args.toOwnedSlice(self.allocator),
+                                .type_arguments = try resolved_args.toOwnedSlice(type_alloc),
                             } },
                             .span = ast_type.span,
                         };
@@ -399,13 +418,14 @@ pub const TypeChecker = struct {
             .match_expr => |me| try self.checkMatchExpr(me, expr.span),
 
             .tuple_literal => |tl| {
+                const type_alloc = self.typeAllocator();
                 var element_types = std.ArrayListUnmanaged(ResolvedType){};
                 for (tl.elements) |elem| {
-                    try element_types.append(self.allocator, try self.checkExpression(elem));
+                    try element_types.append(type_alloc, try self.checkExpression(elem));
                 }
                 return .{
                     .kind = .{ .tuple = .{
-                        .element_types = try element_types.toOwnedSlice(self.allocator),
+                        .element_types = try element_types.toOwnedSlice(type_alloc),
                     } },
                     .span = expr.span,
                 };
@@ -435,7 +455,8 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                const elem_type_ptr = try self.allocator.create(ResolvedType);
+                const type_alloc = self.typeAllocator();
+                const elem_type_ptr = try type_alloc.create(ResolvedType);
                 elem_type_ptr.* = first_type;
 
                 return .{
@@ -656,17 +677,18 @@ pub const TypeChecker = struct {
                                         const resolved = try self.resolveAstType(field.field_type);
                                         // Create substitution from generic params to concrete args
                                         if (type_def.generic_params) |params| {
+                                            const type_alloc = self.typeAllocator();
                                             var param_names = std.ArrayListUnmanaged([]const u8){};
                                             for (params) |gp| {
-                                                try param_names.append(self.allocator, gp.name);
+                                                try param_names.append(type_alloc, gp.name);
                                             }
                                             var subst = try instantiate_mod.createSubstitution(
-                                                self.allocator,
-                                                try param_names.toOwnedSlice(self.allocator),
+                                                type_alloc,
+                                                try param_names.toOwnedSlice(type_alloc),
                                                 inst.type_arguments,
                                             );
-                                            defer subst.deinit(self.allocator);
-                                            return try instantiate_mod.instantiate(self.allocator, resolved, &subst);
+                                            defer subst.deinit(type_alloc);
+                                            return try instantiate_mod.instantiate(type_alloc, resolved, &subst);
                                         }
                                         return resolved;
                                     }
@@ -862,9 +884,10 @@ pub const TypeChecker = struct {
         }
 
         // Resolve parameter types
+        const type_alloc = self.typeAllocator();
         var param_types = std.ArrayListUnmanaged(ResolvedType){};
         for (closure.parameters) |param| {
-            try param_types.append(self.allocator, try self.resolveAstType(param.param_type));
+            try param_types.append(type_alloc, try self.resolveAstType(param.param_type));
         }
 
         // Resolve return type
@@ -879,12 +902,12 @@ pub const TypeChecker = struct {
         }
 
         // Build function type
-        const return_type_ptr = try self.allocator.create(ResolvedType);
+        const return_type_ptr = try type_alloc.create(ResolvedType);
         return_type_ptr.* = return_type;
 
         return .{
             .kind = .{ .function = .{
-                .parameter_types = try param_types.toOwnedSlice(self.allocator),
+                .parameter_types = try param_types.toOwnedSlice(type_alloc),
                 .return_type = return_type_ptr,
                 .effect = if (closure.is_effect) .io else null,
             } },
@@ -977,14 +1000,15 @@ pub const TypeChecker = struct {
         }
 
         // Anonymous record - build tuple of field types
+        const type_alloc = self.typeAllocator();
         var field_types = std.ArrayListUnmanaged(ResolvedType){};
         for (rl.fields) |field| {
-            try field_types.append(self.allocator, try self.checkExpression(field.value));
+            try field_types.append(type_alloc, try self.checkExpression(field.value));
         }
 
         return .{
             .kind = .{ .tuple = .{
-                .element_types = try field_types.toOwnedSlice(self.allocator),
+                .element_types = try field_types.toOwnedSlice(type_alloc),
             } },
             .span = span,
         };
@@ -1013,7 +1037,8 @@ pub const TypeChecker = struct {
             if (vc.arguments) |args| {
                 if (args.len == 1) {
                     const inner_type = try self.checkExpression(args[0]);
-                    const inner_ptr = try self.allocator.create(ResolvedType);
+                    const type_alloc = self.typeAllocator();
+                    const inner_ptr = try type_alloc.create(ResolvedType);
                     inner_ptr.* = inner_type;
                     return .{
                         .kind = .{ .option = inner_ptr },
@@ -1100,7 +1125,8 @@ pub const TypeChecker = struct {
 
         // Range type - for now return as array of element type
         const elem = elem_type orelse ResolvedType.primitive(.i32, span);
-        const elem_ptr = try self.allocator.create(ResolvedType);
+        const type_alloc = self.typeAllocator();
+        const elem_ptr = try type_alloc.create(ResolvedType);
         elem_ptr.* = elem;
 
         return .{
@@ -1797,11 +1823,12 @@ pub const TypeChecker = struct {
             &self.diagnostics,
         );
 
-        const result = compiler.checkExhaustiveness(patterns, subject_type, span) catch |err| {
+        var result = compiler.checkExhaustiveness(patterns, subject_type, span) catch |err| {
             return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
             };
         };
+        defer result.deinit(self.allocator);
 
         // Report non-exhaustive match
         if (!result.is_exhaustive) {
@@ -1827,17 +1854,18 @@ pub const TypeChecker = struct {
         return switch (sym.kind) {
             .variable => |v| try self.resolveAstType(v.binding_type),
             .function => |f| {
+                const type_alloc = self.typeAllocator();
                 var param_types = std.ArrayListUnmanaged(ResolvedType){};
                 for (f.parameter_types) |pt| {
-                    try param_types.append(self.allocator, try self.resolveAstType(pt));
+                    try param_types.append(type_alloc, try self.resolveAstType(pt));
                 }
 
-                const return_type = try self.allocator.create(ResolvedType);
+                const return_type = try type_alloc.create(ResolvedType);
                 return_type.* = try self.resolveAstType(f.return_type);
 
                 return .{
                     .kind = .{ .function = .{
-                        .parameter_types = try param_types.toOwnedSlice(self.allocator),
+                        .parameter_types = try param_types.toOwnedSlice(type_alloc),
                         .return_type = return_type,
                         .effect = if (f.is_effect) .io else null,
                     } },

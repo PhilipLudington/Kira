@@ -824,9 +824,12 @@ pub const Interpreter = struct {
                 if (args.len != func.parameters.len) {
                     return error.ArityMismatch;
                 }
-                // Create new environment for function call
+                // Create new environment for function call on the heap (arena)
+                // This is important because closures may capture this environment,
+                // and we need it to outlive the function call.
                 const base_env = func.captured_env orelse caller_env;
-                var func_env = Environment.initWithParent(self.arenaAlloc(), base_env);
+                const func_env = try self.arenaAlloc().create(Environment);
+                func_env.* = Environment.initWithParent(self.arenaAlloc(), base_env);
 
                 // Bind parameters
                 for (func.parameters, 0..) |param, i| {
@@ -835,7 +838,7 @@ pub const Interpreter = struct {
 
                 // Execute body
                 for (body) |stmt| {
-                    self.evalStatement(&stmt, &func_env) catch |err| {
+                    self.evalStatement(&stmt, func_env) catch |err| {
                         if (err == error.ReturnEncountered) {
                             const result = self.return_value orelse Value{ .void = {} };
                             self.return_value = null;
@@ -961,21 +964,24 @@ pub const Interpreter = struct {
         const subject = try self.evalExpression(match.subject, env);
 
         for (match.arms) |arm| {
-            var arm_env = Environment.initWithParent(self.arenaAlloc(), env);
+            // Heap-allocate arm environment since closures in the arm body
+            // may capture it and outlive this scope
+            const arm_env = try self.arenaAlloc().create(Environment);
+            arm_env.* = Environment.initWithParent(self.arenaAlloc(), env);
 
-            if (try self.matchPattern(arm.pattern, subject, &arm_env)) {
+            if (try self.matchPattern(arm.pattern, subject, arm_env)) {
                 // Check guard if present
                 if (arm.guard) |guard| {
-                    const guard_val = try self.evalExpression(guard, &arm_env);
+                    const guard_val = try self.evalExpression(guard, arm_env);
                     if (!guard_val.isTruthy()) continue;
                 }
 
                 // Evaluate body
                 return switch (arm.body) {
-                    .expression => |expr| self.evalExpression(expr, &arm_env),
+                    .expression => |expr| self.evalExpression(expr, arm_env),
                     .block => |stmts| {
                         for (stmts) |stmt| {
-                            self.evalStatement(&stmt, &arm_env) catch |err| {
+                            self.evalStatement(&stmt, arm_env) catch |err| {
                                 if (err == error.ReturnEncountered) {
                                     return self.return_value orelse Value{ .void = {} };
                                 }
@@ -1178,9 +1184,11 @@ pub const Interpreter = struct {
             .break_statement => |b| try self.evalBreakStatement(b, env),
             .expression_statement => |expr| _ = try self.evalExpression(expr, env),
             .block => |stmts| {
-                var block_env = Environment.initWithParent(self.arenaAlloc(), env);
+                // Heap-allocate block environment since closures may capture it
+                const block_env = try self.arenaAlloc().create(Environment);
+                block_env.* = Environment.initWithParent(self.arenaAlloc(), env);
                 for (stmts) |s| {
-                    try self.evalStatement(&s, &block_env);
+                    try self.evalStatement(&s, block_env);
                 }
             },
         }
@@ -1218,16 +1226,20 @@ pub const Interpreter = struct {
         const condition = try self.evalExpression(ifs.condition, env);
 
         if (condition.isTruthy()) {
-            var then_env = Environment.initWithParent(self.arenaAlloc(), env);
+            // Heap-allocate then environment since closures may capture it
+            const then_env = try self.arenaAlloc().create(Environment);
+            then_env.* = Environment.initWithParent(self.arenaAlloc(), env);
             for (ifs.then_branch) |stmt| {
-                try self.evalStatement(&stmt, &then_env);
+                try self.evalStatement(&stmt, then_env);
             }
         } else if (ifs.else_branch) |else_b| {
             switch (else_b) {
                 .block => |stmts| {
-                    var else_env = Environment.initWithParent(self.arenaAlloc(), env);
+                    // Heap-allocate else environment since closures may capture it
+                    const else_env = try self.arenaAlloc().create(Environment);
+                    else_env.* = Environment.initWithParent(self.arenaAlloc(), env);
                     for (stmts) |stmt| {
-                        try self.evalStatement(&stmt, &else_env);
+                        try self.evalStatement(&stmt, else_env);
                     }
                 },
                 .else_if => |else_if| try self.evalStatement(else_if, env),
@@ -1242,11 +1254,13 @@ pub const Interpreter = struct {
         switch (iterable) {
             .array => |arr| {
                 for (arr) |elem| {
-                    var loop_env = Environment.initWithParent(self.arenaAlloc(), env);
-                    try self.bindPattern(fl.pattern, elem, &loop_env, false);
+                    // Heap-allocate loop environment since closures may capture it
+                    const loop_env = try self.arenaAlloc().create(Environment);
+                    loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+                    try self.bindPattern(fl.pattern, elem, loop_env, false);
 
                     for (fl.body) |stmt| {
-                        self.evalStatement(&stmt, &loop_env) catch |err| {
+                        self.evalStatement(&stmt, loop_env) catch |err| {
                             if (err == error.BreakEncountered) {
                                 return;
                             }
@@ -1273,11 +1287,13 @@ pub const Interpreter = struct {
 
                     var i = start_val;
                     while (i < actual_end) : (i += 1) {
-                        var loop_env = Environment.initWithParent(self.arenaAlloc(), env);
-                        try self.bindPattern(fl.pattern, Value{ .integer = i }, &loop_env, false);
+                        // Heap-allocate loop environment since closures may capture it
+                        const loop_env = try self.arenaAlloc().create(Environment);
+                        loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+                        try self.bindPattern(fl.pattern, Value{ .integer = i }, loop_env, false);
 
                         for (fl.body) |stmt| {
-                            self.evalStatement(&stmt, &loop_env) catch |err| {
+                            self.evalStatement(&stmt, loop_env) catch |err| {
                                 if (err == error.BreakEncountered) {
                                     return;
                                 }
@@ -1288,11 +1304,13 @@ pub const Interpreter = struct {
                 } else {
                     // Regular tuple iteration
                     for (t) |elem| {
-                        var loop_env = Environment.initWithParent(self.arenaAlloc(), env);
-                        try self.bindPattern(fl.pattern, elem, &loop_env, false);
+                        // Heap-allocate loop environment since closures may capture it
+                        const loop_env = try self.arenaAlloc().create(Environment);
+                        loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+                        try self.bindPattern(fl.pattern, elem, loop_env, false);
 
                         for (fl.body) |stmt| {
-                            self.evalStatement(&stmt, &loop_env) catch |err| {
+                            self.evalStatement(&stmt, loop_env) catch |err| {
                                 if (err == error.BreakEncountered) {
                                     return;
                                 }
@@ -1305,11 +1323,13 @@ pub const Interpreter = struct {
             .cons => {
                 var current = iterable;
                 while (current == .cons) {
-                    var loop_env = Environment.initWithParent(self.arenaAlloc(), env);
-                    try self.bindPattern(fl.pattern, current.cons.head.*, &loop_env, false);
+                    // Heap-allocate loop environment since closures may capture it
+                    const loop_env = try self.arenaAlloc().create(Environment);
+                    loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+                    try self.bindPattern(fl.pattern, current.cons.head.*, loop_env, false);
 
                     for (fl.body) |stmt| {
-                        self.evalStatement(&stmt, &loop_env) catch |err| {
+                        self.evalStatement(&stmt, loop_env) catch |err| {
                             if (err == error.BreakEncountered) {
                                 return;
                             }
@@ -1322,11 +1342,13 @@ pub const Interpreter = struct {
             },
             .string => |s| {
                 for (s) |c| {
-                    var loop_env = Environment.initWithParent(self.arenaAlloc(), env);
-                    try self.bindPattern(fl.pattern, Value{ .char = c }, &loop_env, false);
+                    // Heap-allocate loop environment since closures may capture it
+                    const loop_env = try self.arenaAlloc().create(Environment);
+                    loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+                    try self.bindPattern(fl.pattern, Value{ .char = c }, loop_env, false);
 
                     for (fl.body) |stmt| {
-                        self.evalStatement(&stmt, &loop_env) catch |err| {
+                        self.evalStatement(&stmt, loop_env) catch |err| {
                             if (err == error.BreakEncountered) {
                                 return;
                             }
@@ -1344,18 +1366,20 @@ pub const Interpreter = struct {
         const subject = try self.evalExpression(match.subject, env);
 
         for (match.arms) |arm| {
-            var arm_env = Environment.initWithParent(self.arenaAlloc(), env);
+            // Heap-allocate arm environment since closures may capture it
+            const arm_env = try self.arenaAlloc().create(Environment);
+            arm_env.* = Environment.initWithParent(self.arenaAlloc(), env);
 
-            if (try self.matchPattern(arm.pattern, subject, &arm_env)) {
+            if (try self.matchPattern(arm.pattern, subject, arm_env)) {
                 // Check guard if present
                 if (arm.guard) |guard| {
-                    const guard_val = try self.evalExpression(guard, &arm_env);
+                    const guard_val = try self.evalExpression(guard, arm_env);
                     if (!guard_val.isTruthy()) continue;
                 }
 
                 // Execute body
                 for (arm.body) |stmt| {
-                    try self.evalStatement(&stmt, &arm_env);
+                    try self.evalStatement(&stmt, arm_env);
                 }
                 return;
             }
