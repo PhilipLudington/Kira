@@ -34,6 +34,11 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "fold_right", root.makeBuiltin("fold_right", &listFoldRight));
     try fields.put(allocator, "foreach", root.makeBuiltin("foreach", &listForeach));
 
+    // Parallel higher-order functions (require pure functions)
+    try fields.put(allocator, "parallel_map", root.makeBuiltin("parallel_map", &listParallelMap));
+    try fields.put(allocator, "parallel_filter", root.makeBuiltin("parallel_filter", &listParallelFilter));
+    try fields.put(allocator, "parallel_fold", root.makeBuiltin("parallel_fold", &listParallelFold));
+
     // Searching and predicates
     try fields.put(allocator, "find", root.makeBuiltin("find", &listFind));
     try fields.put(allocator, "any", root.makeBuiltin("any", &listAny));
@@ -237,6 +242,314 @@ fn listForeach(ctx: BuiltinContext, args: []const Value) InterpreterError!Value 
     if (current != .nil) return error.TypeMismatch;
 
     return Value{ .void = {} };
+}
+
+// ============================================================================
+// Parallel Higher-Order Functions
+// ============================================================================
+
+/// Minimum list size to use parallelism (avoid threading overhead for small lists)
+const parallel_threshold: usize = 4;
+
+/// Parallel map: apply a PURE function to each element in parallel
+/// parallel_map(list, fn) -> list
+/// Returns error.InvalidOperation if function is an effect function.
+/// Note: Currently uses sequential execution for user-defined functions
+/// because the interpreter is not thread-safe.
+fn listParallelMap(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+
+    const func = switch (args[1]) {
+        .function => |f| f,
+        else => return error.TypeMismatch,
+    };
+
+    // Safety check: reject effect functions
+    if (func.is_effect) return error.InvalidOperation;
+
+    // Collect list elements into array
+    var elements = std.ArrayListUnmanaged(Value){};
+    defer elements.deinit(ctx.allocator);
+
+    var current = args[0];
+    while (current == .cons) {
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
+        current = current.cons.tail.*;
+    }
+    if (current != .nil) return error.TypeMismatch;
+
+    // For user-defined functions (AST body), use sequential execution
+    // because the interpreter is not thread-safe.
+    // For small lists, also use sequential processing.
+    const use_sequential = elements.items.len < parallel_threshold or func.body == .ast_body;
+
+    if (use_sequential) {
+        var results = std.ArrayListUnmanaged(Value){};
+        defer results.deinit(ctx.allocator);
+
+        for (elements.items) |elem| {
+            const result = try ctx.callFunction(func, &.{elem});
+            results.append(ctx.allocator, result) catch return error.OutOfMemory;
+        }
+        return buildList(ctx.allocator, results.items);
+    }
+
+    // Parallel processing using thread pool (only for builtin functions)
+    const results = ctx.allocator.alloc(Value, elements.items.len) catch return error.OutOfMemory;
+    defer ctx.allocator.free(results);
+
+    // Initialize results to avoid undefined behavior
+    @memset(results, Value{ .void = {} });
+
+    var pool: std.Thread.Pool = undefined;
+    pool.init(.{
+        .allocator = ctx.allocator,
+    }) catch return error.OutOfMemory;
+    defer pool.deinit();
+
+    // Track if any work item failed
+    var had_error = std.atomic.Value(bool).init(false);
+
+    // WaitGroup for synchronization
+    var wg: std.Thread.WaitGroup = .{};
+
+    for (elements.items, 0..) |elem, i| {
+        pool.spawnWg(&wg, struct {
+            fn work(
+                work_ctx: BuiltinContext,
+                work_func: Value.FunctionValue,
+                input: Value,
+                output: *Value,
+                err_flag: *std.atomic.Value(bool),
+            ) void {
+                if (err_flag.load(.acquire)) return; // Early exit if error occurred
+
+                const result = work_ctx.callFunction(work_func, &.{input}) catch {
+                    err_flag.store(true, .release);
+                    return;
+                };
+                output.* = result;
+            }
+        }.work, .{ ctx, func, elem, &results[i], &had_error });
+    }
+
+    // Wait for all work to complete
+    pool.waitAndWork(&wg);
+
+    if (had_error.load(.acquire)) {
+        return error.InvalidOperation;
+    }
+
+    return buildList(ctx.allocator, results);
+}
+
+/// Parallel filter: keep elements matching a PURE predicate in parallel
+/// parallel_filter(list, fn) -> list
+/// Returns error.InvalidOperation if function is an effect function.
+/// Note: Currently uses sequential execution for user-defined functions
+/// because the interpreter is not thread-safe.
+fn listParallelFilter(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+
+    const func = switch (args[1]) {
+        .function => |f| f,
+        else => return error.TypeMismatch,
+    };
+
+    // Safety check: reject effect functions
+    if (func.is_effect) return error.InvalidOperation;
+
+    // Collect list elements into array
+    var elements = std.ArrayListUnmanaged(Value){};
+    defer elements.deinit(ctx.allocator);
+
+    var current = args[0];
+    while (current == .cons) {
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
+        current = current.cons.tail.*;
+    }
+    if (current != .nil) return error.TypeMismatch;
+
+    // For user-defined functions (AST body), use sequential execution
+    // because the interpreter is not thread-safe.
+    // For small lists, also use sequential processing.
+    const use_sequential = elements.items.len < parallel_threshold or func.body == .ast_body;
+
+    if (use_sequential) {
+        var results = std.ArrayListUnmanaged(Value){};
+        defer results.deinit(ctx.allocator);
+
+        for (elements.items) |elem| {
+            const predicate_result = try ctx.callFunction(func, &.{elem});
+            if (predicate_result.isTruthy()) {
+                results.append(ctx.allocator, elem) catch return error.OutOfMemory;
+            }
+        }
+        return buildList(ctx.allocator, results.items);
+    }
+
+    // Parallel processing: compute predicates in parallel (only for builtin functions)
+    const keep_flags = ctx.allocator.alloc(bool, elements.items.len) catch return error.OutOfMemory;
+    defer ctx.allocator.free(keep_flags);
+    @memset(keep_flags, false);
+
+    var pool: std.Thread.Pool = undefined;
+    pool.init(.{
+        .allocator = ctx.allocator,
+    }) catch return error.OutOfMemory;
+    defer pool.deinit();
+
+    var had_error = std.atomic.Value(bool).init(false);
+    var wg: std.Thread.WaitGroup = .{};
+
+    for (elements.items, 0..) |elem, i| {
+        pool.spawnWg(&wg, struct {
+            fn work(
+                work_ctx: BuiltinContext,
+                work_func: Value.FunctionValue,
+                input: Value,
+                output: *bool,
+                err_flag: *std.atomic.Value(bool),
+            ) void {
+                if (err_flag.load(.acquire)) return;
+
+                const result = work_ctx.callFunction(work_func, &.{input}) catch {
+                    err_flag.store(true, .release);
+                    return;
+                };
+                output.* = result.isTruthy();
+            }
+        }.work, .{ ctx, func, elem, &keep_flags[i], &had_error });
+    }
+
+    pool.waitAndWork(&wg);
+
+    if (had_error.load(.acquire)) {
+        return error.InvalidOperation;
+    }
+
+    // Collect kept elements (preserving order)
+    var results = std.ArrayListUnmanaged(Value){};
+    defer results.deinit(ctx.allocator);
+
+    for (elements.items, 0..) |elem, i| {
+        if (keep_flags[i]) {
+            results.append(ctx.allocator, elem) catch return error.OutOfMemory;
+        }
+    }
+
+    return buildList(ctx.allocator, results.items);
+}
+
+/// Parallel fold: fold a list using a PURE function with parallel reduction
+/// parallel_fold(list, init, fn) -> value
+/// Note: The function must be associative for correct parallel reduction.
+/// Returns error.InvalidOperation if function is an effect function.
+/// Note: Currently uses sequential execution for user-defined functions
+/// because the interpreter is not thread-safe.
+fn listParallelFold(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 3) return error.ArityMismatch;
+
+    const func = switch (args[2]) {
+        .function => |f| f,
+        else => return error.TypeMismatch,
+    };
+
+    // Safety check: reject effect functions
+    if (func.is_effect) return error.InvalidOperation;
+
+    // Collect list elements into array
+    var elements = std.ArrayListUnmanaged(Value){};
+    defer elements.deinit(ctx.allocator);
+
+    var current = args[0];
+    while (current == .cons) {
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
+        current = current.cons.tail.*;
+    }
+    if (current != .nil) return error.TypeMismatch;
+
+    // Empty list returns init
+    if (elements.items.len == 0) {
+        return args[1];
+    }
+
+    // For user-defined functions (AST body), use sequential execution
+    // because the interpreter is not thread-safe.
+    // For small lists, also use sequential processing.
+    const use_sequential = elements.items.len < parallel_threshold or func.body == .ast_body;
+
+    if (use_sequential) {
+        var acc = args[1];
+        for (elements.items) |elem| {
+            acc = try ctx.callFunction(func, &.{ acc, elem });
+        }
+        return acc;
+    }
+
+    // Parallel reduction strategy (only for builtin functions):
+    // 1. Divide list into chunks (one per CPU)
+    // 2. Each thread reduces its chunk sequentially
+    // 3. Final reduction of partial results
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const num_chunks = @min(cpu_count, elements.items.len);
+    const chunk_size = (elements.items.len + num_chunks - 1) / num_chunks;
+
+    const partial_results = ctx.allocator.alloc(Value, num_chunks) catch return error.OutOfMemory;
+    defer ctx.allocator.free(partial_results);
+    @memset(partial_results, args[1]); // Initialize with identity
+
+    var pool: std.Thread.Pool = undefined;
+    pool.init(.{
+        .allocator = ctx.allocator,
+    }) catch return error.OutOfMemory;
+    defer pool.deinit();
+
+    var had_error = std.atomic.Value(bool).init(false);
+    var wg: std.Thread.WaitGroup = .{};
+
+    for (0..num_chunks) |chunk_idx| {
+        const start = chunk_idx * chunk_size;
+        const end = @min(start + chunk_size, elements.items.len);
+
+        if (start >= elements.items.len) break;
+
+        pool.spawnWg(&wg, struct {
+            fn work(
+                work_ctx: BuiltinContext,
+                work_func: Value.FunctionValue,
+                items: []const Value,
+                init_val: Value,
+                output: *Value,
+                err_flag: *std.atomic.Value(bool),
+            ) void {
+                if (err_flag.load(.acquire)) return;
+
+                var acc = init_val;
+                for (items) |item| {
+                    acc = work_ctx.callFunction(work_func, &.{ acc, item }) catch {
+                        err_flag.store(true, .release);
+                        return;
+                    };
+                }
+                output.* = acc;
+            }
+        }.work, .{ ctx, func, elements.items[start..end], args[1], &partial_results[chunk_idx], &had_error });
+    }
+
+    pool.waitAndWork(&wg);
+
+    if (had_error.load(.acquire)) {
+        return error.InvalidOperation;
+    }
+
+    // Final reduction of partial results
+    var result = args[1];
+    for (partial_results) |partial| {
+        result = try ctx.callFunction(func, &.{ result, partial });
+    }
+
+    return result;
 }
 
 // ============================================================================

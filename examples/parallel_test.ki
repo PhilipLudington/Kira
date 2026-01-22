@@ -1,0 +1,63 @@
+// Parallel Collection Functions Test
+// Demonstrates std.list.parallel_map, parallel_filter, parallel_fold
+
+// Pure function to square a number
+fn square(x: i32) -> i32 {
+    return x * x
+}
+
+// Pure function to check if even
+fn is_even(x: i32) -> bool {
+    return x % 2 == 0
+}
+
+// Pure function to add two numbers
+fn add(acc: i32, x: i32) -> i32 {
+    return acc + x
+}
+
+// Build a list of integers
+fn build_list(n: i32) -> List[i32] {
+    let empty: List[i32] = std.list.empty()
+    if n <= 0 {
+        return empty
+    }
+    let rest: List[i32] = build_list(n - 1)
+    return std.list.cons(n, rest)
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Parallel Collection Functions Test")
+    std.io.println("===================================")
+
+    // Build list [1, 2, 3, 4, 5, 6, 7, 8]
+    let nums: List[i32] = build_list(8)
+    std.io.println("Original list length: " + to_string(std.list.length(nums)))
+
+    // Test parallel_map: square each element
+    std.io.println("")
+    std.io.println("Testing parallel_map (square)...")
+    let squared: List[i32] = std.list.parallel_map(nums, square)
+    std.io.println("Squared list length: " + to_string(std.list.length(squared)))
+
+    // Test parallel_filter: keep only even numbers
+    std.io.println("")
+    std.io.println("Testing parallel_filter (is_even)...")
+    let evens: List[i32] = std.list.parallel_filter(nums, is_even)
+    std.io.println("Even numbers count: " + to_string(std.list.length(evens)))
+
+    // Test parallel_fold: sum all elements
+    std.io.println("")
+    std.io.println("Testing parallel_fold (sum)...")
+    let total: i32 = std.list.parallel_fold(nums, 0, add)
+    std.io.println("Sum of 1..8: " + to_string(total))
+
+    // Expected: 1+2+3+4+5+6+7+8 = 36
+    if total == 36 {
+        std.io.println("Sum is correct!")
+    }
+
+    std.io.println("")
+    std.io.println("Parallel tests complete!")
+}
