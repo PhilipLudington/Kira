@@ -38,6 +38,16 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "index_of", root.makeBuiltin("index_of", &stringIndexOf));
     try fields.put(allocator, "equals", root.makeBuiltin("equals", &stringEquals));
 
+    // Numeric-to-string conversion functions
+    try fields.put(allocator, "from_i32", root.makeBuiltin("from_i32", &stringFromInt));
+    try fields.put(allocator, "from_i64", root.makeBuiltin("from_i64", &stringFromInt));
+    try fields.put(allocator, "from_int", root.makeBuiltin("from_int", &stringFromInt));
+    try fields.put(allocator, "from_f32", root.makeBuiltin("from_f32", &stringFromFloat));
+    try fields.put(allocator, "from_f64", root.makeBuiltin("from_f64", &stringFromFloat));
+    try fields.put(allocator, "from_float", root.makeBuiltin("from_float", &stringFromFloat));
+    try fields.put(allocator, "from_bool", root.makeBuiltin("from_bool", &stringFromBool));
+    try fields.put(allocator, "to_string", root.makeBuiltin("to_string", &stringToString));
+
     return Value{
         .record = .{
             .type_name = "std.string",
@@ -348,6 +358,64 @@ fn stringEquals(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 
     return Value{ .boolean = std.mem.eql(u8, str1, str2) };
+}
+
+/// Convert integer to string: from_i32(n) -> str, from_i64(n) -> str, from_int(n) -> str
+fn stringFromInt(allocator: Allocator, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const num = switch (args[0]) {
+        .integer => |i| i,
+        else => return error.TypeMismatch,
+    };
+
+    // Format the integer as a string
+    var buf: [40]u8 = undefined; // Enough for i128
+    const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch return error.OutOfMemory;
+    const result = allocator.alloc(u8, slice.len) catch return error.OutOfMemory;
+    @memcpy(result, slice);
+
+    return Value{ .string = result };
+}
+
+/// Convert float to string: from_f32(n) -> str, from_f64(n) -> str, from_float(n) -> str
+fn stringFromFloat(allocator: Allocator, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const num = switch (args[0]) {
+        .float => |f| f,
+        .integer => |i| @as(f64, @floatFromInt(i)),
+        else => return error.TypeMismatch,
+    };
+
+    // Format the float as a string
+    var buf: [64]u8 = undefined;
+    const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch return error.OutOfMemory;
+    const result = allocator.alloc(u8, slice.len) catch return error.OutOfMemory;
+    @memcpy(result, slice);
+
+    return Value{ .string = result };
+}
+
+/// Convert boolean to string: from_bool(b) -> str
+fn stringFromBool(allocator: Allocator, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+    _ = allocator;
+
+    const b = switch (args[0]) {
+        .boolean => |v| v,
+        else => return error.TypeMismatch,
+    };
+
+    return Value{ .string = if (b) "true" else "false" };
+}
+
+/// Convert any value to string: to_string(val) -> str
+fn stringToString(allocator: Allocator, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const result = args[0].toString(allocator) catch return error.OutOfMemory;
+    return Value{ .string = result };
 }
 
 // ============================================================================
