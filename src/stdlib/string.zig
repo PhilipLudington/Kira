@@ -15,6 +15,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.string module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -57,7 +58,8 @@ pub fn createModule(allocator: Allocator) !Value {
 }
 
 /// Get string length: length(str) -> int
-fn stringLength(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -69,7 +71,7 @@ fn stringLength(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Split string by delimiter: split(str, delim) -> array of strings
-fn stringSplit(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringSplit(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -83,18 +85,19 @@ fn stringSplit(allocator: Allocator, args: []const Value) InterpreterError!Value
     };
 
     var parts = std.ArrayListUnmanaged(Value){};
-    errdefer parts.deinit(allocator);
+    errdefer parts.deinit(ctx.allocator);
 
     var iter = std.mem.splitSequence(u8, str, delim);
     while (iter.next()) |part| {
-        parts.append(allocator, Value{ .string = part }) catch return error.OutOfMemory;
+        parts.append(ctx.allocator, Value{ .string = part }) catch return error.OutOfMemory;
     }
 
-    return Value{ .array = parts.toOwnedSlice(allocator) catch return error.OutOfMemory };
+    return Value{ .array = parts.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory };
 }
 
 /// Trim whitespace: trim(str) -> str
-fn stringTrim(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringTrim(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -106,7 +109,7 @@ fn stringTrim(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Concatenate strings: concat(str1, str2) -> str
-fn stringConcat(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringConcat(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const str1 = switch (args[0]) {
@@ -119,7 +122,7 @@ fn stringConcat(allocator: Allocator, args: []const Value) InterpreterError!Valu
         else => return error.TypeMismatch,
     };
 
-    const result = allocator.alloc(u8, str1.len + str2.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, str1.len + str2.len) catch return error.OutOfMemory;
     @memcpy(result[0..str1.len], str1);
     @memcpy(result[str1.len..], str2);
 
@@ -127,7 +130,8 @@ fn stringConcat(allocator: Allocator, args: []const Value) InterpreterError!Valu
 }
 
 /// Check for substring: contains(str, substr) -> bool
-fn stringContains(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringContains(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const haystack = switch (args[0]) {
@@ -144,7 +148,8 @@ fn stringContains(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check prefix: starts_with(str, prefix) -> bool
-fn stringStartsWith(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringStartsWith(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -161,7 +166,8 @@ fn stringStartsWith(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check suffix: ends_with(str, suffix) -> bool
-fn stringEndsWith(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringEndsWith(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -178,7 +184,7 @@ fn stringEndsWith(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Convert to uppercase: to_upper(str) -> str
-fn stringToUpper(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringToUpper(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -186,7 +192,7 @@ fn stringToUpper(allocator: Allocator, args: []const Value) InterpreterError!Val
         else => return error.TypeMismatch,
     };
 
-    const result = allocator.alloc(u8, str.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, str.len) catch return error.OutOfMemory;
     for (str, 0..) |c, i| {
         result[i] = std.ascii.toUpper(c);
     }
@@ -195,7 +201,7 @@ fn stringToUpper(allocator: Allocator, args: []const Value) InterpreterError!Val
 }
 
 /// Convert to lowercase: to_lower(str) -> str
-fn stringToLower(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringToLower(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -203,7 +209,7 @@ fn stringToLower(allocator: Allocator, args: []const Value) InterpreterError!Val
         else => return error.TypeMismatch,
     };
 
-    const result = allocator.alloc(u8, str.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, str.len) catch return error.OutOfMemory;
     for (str, 0..) |c, i| {
         result[i] = std.ascii.toLower(c);
     }
@@ -212,7 +218,7 @@ fn stringToLower(allocator: Allocator, args: []const Value) InterpreterError!Val
 }
 
 /// Replace all occurrences: replace(str, old, new) -> str
-fn stringReplace(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringReplace(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 3) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -248,7 +254,7 @@ fn stringReplace(allocator: Allocator, args: []const Value) InterpreterError!Val
 
     // Allocate result
     const new_len = str.len - (count * old.len) + (count * new.len);
-    const result = allocator.alloc(u8, new_len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, new_len) catch return error.OutOfMemory;
 
     // Build result
     var src_idx: usize = 0;
@@ -269,7 +275,8 @@ fn stringReplace(allocator: Allocator, args: []const Value) InterpreterError!Val
 }
 
 /// Get substring: substring(str, start, end) -> str
-fn stringSubstring(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 3) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -297,7 +304,7 @@ fn stringSubstring(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Get character at index: char_at(str, index) -> Option[char]
-fn stringCharAt(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringCharAt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -315,13 +322,13 @@ fn stringCharAt(allocator: Allocator, args: []const Value) InterpreterError!Valu
 
     if (index >= str.len) return Value{ .none = {} };
 
-    const inner = allocator.create(Value) catch return error.OutOfMemory;
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
     inner.* = Value{ .char = str[index] };
     return Value{ .some = inner };
 }
 
 /// Find index of substring: index_of(str, substr) -> Option[int]
-fn stringIndexOf(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const haystack = switch (args[0]) {
@@ -335,7 +342,7 @@ fn stringIndexOf(allocator: Allocator, args: []const Value) InterpreterError!Val
     };
 
     if (std.mem.indexOf(u8, haystack, needle)) |idx| {
-        const inner = allocator.create(Value) catch return error.OutOfMemory;
+        const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
         inner.* = Value{ .integer = @intCast(idx) };
         return Value{ .some = inner };
     }
@@ -344,7 +351,8 @@ fn stringIndexOf(allocator: Allocator, args: []const Value) InterpreterError!Val
 }
 
 /// Check if two strings are equal: equals(str1, str2) -> bool
-fn stringEquals(_: Allocator, args: []const Value) InterpreterError!Value {
+fn stringEquals(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const str1 = switch (args[0]) {
@@ -361,7 +369,7 @@ fn stringEquals(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Convert integer to string: from_i32(n) -> str, from_i64(n) -> str, from_int(n) -> str
-fn stringFromInt(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringFromInt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const num = switch (args[0]) {
@@ -372,14 +380,14 @@ fn stringFromInt(allocator: Allocator, args: []const Value) InterpreterError!Val
     // Format the integer as a string
     var buf: [40]u8 = undefined; // Enough for i128
     const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch return error.OutOfMemory;
-    const result = allocator.alloc(u8, slice.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, slice.len) catch return error.OutOfMemory;
     @memcpy(result, slice);
 
     return Value{ .string = result };
 }
 
 /// Convert float to string: from_f32(n) -> str, from_f64(n) -> str, from_float(n) -> str
-fn stringFromFloat(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringFromFloat(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const num = switch (args[0]) {
@@ -391,16 +399,16 @@ fn stringFromFloat(allocator: Allocator, args: []const Value) InterpreterError!V
     // Format the float as a string
     var buf: [64]u8 = undefined;
     const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch return error.OutOfMemory;
-    const result = allocator.alloc(u8, slice.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, slice.len) catch return error.OutOfMemory;
     @memcpy(result, slice);
 
     return Value{ .string = result };
 }
 
 /// Convert boolean to string: from_bool(b) -> str
-fn stringFromBool(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringFromBool(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
-    _ = allocator;
 
     const b = switch (args[0]) {
         .boolean => |v| v,
@@ -411,10 +419,10 @@ fn stringFromBool(allocator: Allocator, args: []const Value) InterpreterError!Va
 }
 
 /// Convert any value to string: to_string(val) -> str
-fn stringToString(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn stringToString(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
-    const result = args[0].toString(allocator) catch return error.OutOfMemory;
+    const result = args[0].toString(ctx.allocator) catch return error.OutOfMemory;
     return Value{ .string = result };
 }
 
@@ -422,67 +430,82 @@ fn stringToString(allocator: Allocator, args: []const Value) InterpreterError!Va
 // Tests
 // ============================================================================
 
+fn testCtx(allocator: Allocator) BuiltinContext {
+    return .{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+}
+
 test "string length" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const result = try stringLength(allocator, &.{Value{ .string = "hello" }});
+    const result = try stringLength(ctx, &.{Value{ .string = "hello" }});
     try std.testing.expectEqual(@as(i128, 5), result.integer);
 
-    const empty = try stringLength(allocator, &.{Value{ .string = "" }});
+    const empty = try stringLength(ctx, &.{Value{ .string = "" }});
     try std.testing.expectEqual(@as(i128, 0), empty.integer);
 }
 
 test "string contains" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const yes = try stringContains(allocator, &.{ Value{ .string = "hello world" }, Value{ .string = "world" } });
+    const yes = try stringContains(ctx, &.{ Value{ .string = "hello world" }, Value{ .string = "world" } });
     try std.testing.expect(yes.boolean);
 
-    const no = try stringContains(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "world" } });
+    const no = try stringContains(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "world" } });
     try std.testing.expect(!no.boolean);
 }
 
 test "string starts_with and ends_with" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const starts = try stringStartsWith(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "hel" } });
+    const starts = try stringStartsWith(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "hel" } });
     try std.testing.expect(starts.boolean);
 
-    const ends = try stringEndsWith(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "lo" } });
+    const ends = try stringEndsWith(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "lo" } });
     try std.testing.expect(ends.boolean);
 }
 
 test "string trim" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const result = try stringTrim(allocator, &.{Value{ .string = "  hello  " }});
+    const result = try stringTrim(ctx, &.{Value{ .string = "  hello  " }});
     try std.testing.expectEqualStrings("hello", result.string);
 }
 
 test "string concat" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const result = try stringConcat(allocator, &.{ Value{ .string = "hello" }, Value{ .string = " world" } });
+    const result = try stringConcat(ctx, &.{ Value{ .string = "hello" }, Value{ .string = " world" } });
     defer allocator.free(result.string);
     try std.testing.expectEqualStrings("hello world", result.string);
 }
 
 test "string to_upper and to_lower" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const upper = try stringToUpper(allocator, &.{Value{ .string = "Hello" }});
+    const upper = try stringToUpper(ctx, &.{Value{ .string = "Hello" }});
     defer allocator.free(upper.string);
     try std.testing.expectEqualStrings("HELLO", upper.string);
 
-    const lower = try stringToLower(allocator, &.{Value{ .string = "Hello" }});
+    const lower = try stringToLower(ctx, &.{Value{ .string = "Hello" }});
     defer allocator.free(lower.string);
     try std.testing.expectEqualStrings("hello", lower.string);
 }
 
 test "string substring" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const result = try stringSubstring(allocator, &.{
+    const result = try stringSubstring(ctx, &.{
         Value{ .string = "hello world" },
         Value{ .integer = 0 },
         Value{ .integer = 5 },
@@ -492,13 +515,14 @@ test "string substring" {
 
 test "string equals" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const equal = try stringEquals(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "hello" } });
+    const equal = try stringEquals(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "hello" } });
     try std.testing.expect(equal.boolean);
 
-    const not_equal = try stringEquals(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "world" } });
+    const not_equal = try stringEquals(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "world" } });
     try std.testing.expect(!not_equal.boolean);
 
-    const empty_equal = try stringEquals(allocator, &.{ Value{ .string = "" }, Value{ .string = "" } });
+    const empty_equal = try stringEquals(ctx, &.{ Value{ .string = "" }, Value{ .string = "" } });
     try std.testing.expect(empty_equal.boolean);
 }

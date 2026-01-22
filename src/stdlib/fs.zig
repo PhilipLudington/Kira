@@ -13,6 +13,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.fs module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -44,7 +45,7 @@ pub fn createModule(allocator: Allocator) !Value {
 const max_file_size = 16 * 1024 * 1024;
 
 /// Read entire file: read_file(path) -> Result[string, string]
-fn fsReadFile(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn fsReadFile(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -53,21 +54,21 @@ fn fsReadFile(allocator: Allocator, args: []const Value) InterpreterError!Value 
     };
 
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
     defer file.close();
 
-    const contents = file.readToEndAlloc(allocator, max_file_size) catch |err| {
-        return makeError(allocator, @errorName(err));
+    const contents = file.readToEndAlloc(ctx.allocator, max_file_size) catch |err| {
+        return makeError(ctx.allocator, @errorName(err));
     };
 
-    const result = allocator.create(Value) catch return error.OutOfMemory;
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
     result.* = Value{ .string = contents };
     return Value{ .ok = result };
 }
 
 /// Write contents to file: write_file(path, contents) -> Result[void, string]
-fn fsWriteFile(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn fsWriteFile(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -81,21 +82,22 @@ fn fsWriteFile(allocator: Allocator, args: []const Value) InterpreterError!Value
     };
 
     const file = std.fs.cwd().createFile(path, .{}) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
     defer file.close();
 
     file.writeAll(contents) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
 
-    const result = allocator.create(Value) catch return error.OutOfMemory;
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
     result.* = Value{ .void = {} };
     return Value{ .ok = result };
 }
 
 /// Check if path exists: exists(path) -> bool
-fn fsExists(_: Allocator, args: []const Value) InterpreterError!Value {
+fn fsExists(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -108,7 +110,7 @@ fn fsExists(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Delete a file: remove(path) -> Result[void, string]
-fn fsRemove(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn fsRemove(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -117,16 +119,16 @@ fn fsRemove(allocator: Allocator, args: []const Value) InterpreterError!Value {
     };
 
     std.fs.cwd().deleteFile(path) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
 
-    const result = allocator.create(Value) catch return error.OutOfMemory;
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
     result.* = Value{ .void = {} };
     return Value{ .ok = result };
 }
 
 /// Append to file: append_file(path, contents) -> Result[void, string]
-fn fsAppendFile(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn fsAppendFile(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -143,36 +145,36 @@ fn fsAppendFile(allocator: Allocator, args: []const Value) InterpreterError!Valu
         if (err == error.FileNotFound) {
             // Create new file if doesn't exist
             const new_file = std.fs.cwd().createFile(path, .{}) catch |create_err| {
-                return makeError(allocator, @errorName(create_err));
+                return makeError(ctx.allocator, @errorName(create_err));
             };
             defer new_file.close();
             new_file.writeAll(contents) catch |write_err| {
-                return makeError(allocator, @errorName(write_err));
+                return makeError(ctx.allocator, @errorName(write_err));
             };
-            const result = allocator.create(Value) catch return error.OutOfMemory;
+            const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
             result.* = Value{ .void = {} };
             return Value{ .ok = result };
         }
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
     defer file.close();
 
     // Seek to end and write
     file.seekFromEnd(0) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
 
     file.writeAll(contents) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
 
-    const result = allocator.create(Value) catch return error.OutOfMemory;
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
     result.* = Value{ .void = {} };
     return Value{ .ok = result };
 }
 
 /// Read directory entries: read_dir(path) -> Result[array of string, string]
-fn fsReadDir(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn fsReadDir(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -181,28 +183,29 @@ fn fsReadDir(allocator: Allocator, args: []const Value) InterpreterError!Value {
     };
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
     defer dir.close();
 
     var entries = std.ArrayListUnmanaged(Value){};
-    errdefer entries.deinit(allocator);
+    errdefer entries.deinit(ctx.allocator);
 
     var iter = dir.iterate();
     while (iter.next() catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     }) |entry| {
-        const name = allocator.dupe(u8, entry.name) catch return error.OutOfMemory;
-        entries.append(allocator, Value{ .string = name }) catch return error.OutOfMemory;
+        const name = ctx.allocator.dupe(u8, entry.name) catch return error.OutOfMemory;
+        entries.append(ctx.allocator, Value{ .string = name }) catch return error.OutOfMemory;
     }
 
-    const result = allocator.create(Value) catch return error.OutOfMemory;
-    result.* = Value{ .array = entries.toOwnedSlice(allocator) catch return error.OutOfMemory };
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    result.* = Value{ .array = entries.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory };
     return Value{ .ok = result };
 }
 
 /// Check if path is a file: is_file(path) -> bool
-fn fsIsFile(_: Allocator, args: []const Value) InterpreterError!Value {
+fn fsIsFile(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -218,7 +221,8 @@ fn fsIsFile(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if path is a directory: is_dir(path) -> bool
-fn fsIsDir(_: Allocator, args: []const Value) InterpreterError!Value {
+fn fsIsDir(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -235,7 +239,7 @@ fn fsIsDir(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Create directory: create_dir(path) -> Result[void, string]
-fn fsCreateDir(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn fsCreateDir(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const path = switch (args[0]) {
@@ -244,10 +248,10 @@ fn fsCreateDir(allocator: Allocator, args: []const Value) InterpreterError!Value
     };
 
     std.fs.cwd().makeDir(path) catch |err| {
-        return makeError(allocator, @errorName(err));
+        return makeError(ctx.allocator, @errorName(err));
     };
 
-    const result = allocator.create(Value) catch return error.OutOfMemory;
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
     result.* = Value{ .void = {} };
     return Value{ .ok = result };
 }
@@ -262,6 +266,14 @@ fn makeError(allocator: Allocator, message: []const u8) InterpreterError!Value {
 // ============================================================================
 // Tests
 // ============================================================================
+
+fn testCtx(allocator: Allocator) BuiltinContext {
+    return .{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+}
 
 test "fs module creation" {
     const allocator = std.testing.allocator;
@@ -281,24 +293,26 @@ test "fs module creation" {
 
 test "fs exists" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
     // Test with a file that should exist (the test file itself)
-    const exists = try fsExists(allocator, &.{Value{ .string = "src/stdlib/fs.zig" }});
+    const exists = try fsExists(ctx, &.{Value{ .string = "src/stdlib/fs.zig" }});
     try std.testing.expect(exists.boolean);
 
     // Test with a file that shouldn't exist
-    const not_exists = try fsExists(allocator, &.{Value{ .string = "nonexistent_file_12345.txt" }});
+    const not_exists = try fsExists(ctx, &.{Value{ .string = "nonexistent_file_12345.txt" }});
     try std.testing.expect(!not_exists.boolean);
 }
 
 test "fs is_dir" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
     // Test with a directory that should exist
-    const is_dir_result = try fsIsDir(allocator, &.{Value{ .string = "src" }});
+    const is_dir_result = try fsIsDir(ctx, &.{Value{ .string = "src" }});
     try std.testing.expect(is_dir_result.boolean);
 
     // Test with a file (not a directory)
-    const is_file_dir = try fsIsDir(allocator, &.{Value{ .string = "src/stdlib/fs.zig" }});
+    const is_file_dir = try fsIsDir(ctx, &.{Value{ .string = "src/stdlib/fs.zig" }});
     try std.testing.expect(!is_file_dir.boolean);
 }

@@ -133,8 +133,33 @@ pub const Value = union(enum) {
             /// AST body (statements to execute)
             ast_body: []const Statement,
             /// Builtin function (implemented in Zig)
-            builtin: *const fn (allocator: Allocator, args: []const Value) InterpreterError!Value,
+            /// The context parameter allows builtins to call back into the interpreter
+            /// for higher-order functions that need to invoke user-defined closures.
+            builtin: *const fn (ctx: BuiltinContext, args: []const Value) InterpreterError!Value,
         };
+    };
+
+    /// Context passed to builtin functions, allowing them to call user-defined functions
+    pub const BuiltinContext = struct {
+        allocator: Allocator,
+        /// Opaque pointer to the interpreter - use callFunction to invoke functions
+        interpreter: ?*anyopaque,
+        /// Function pointer to call a function value with arguments
+        call_fn: ?*const fn (interp: *anyopaque, func: FunctionValue, args: []const Value) InterpreterError!Value,
+
+        /// Call a function value (works for both builtins and AST-based functions)
+        pub fn callFunction(self: BuiltinContext, func: FunctionValue, args: []const Value) InterpreterError!Value {
+            if (self.interpreter) |interp| {
+                if (self.call_fn) |call| {
+                    return call(interp, func, args);
+                }
+            }
+            // Fallback for builtins that don't need interpreter access
+            switch (func.body) {
+                .builtin => |builtin| return builtin(self, args),
+                .ast_body => return error.InvalidOperation,
+            }
+        }
     };
 
     /// Sum type variant value

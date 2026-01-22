@@ -14,6 +14,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.result module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -35,45 +36,47 @@ pub fn createModule(allocator: Allocator) !Value {
     };
 }
 
-/// Transform the Ok value: map(fn, result) -> Result[U, E]
-/// map(f, Ok(x)) = Ok(f(x))
-/// map(f, Err(e)) = Err(e)
-fn resultMap(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Transform the Ok value: map(result, fn) -> Result[U, E]
+/// map(Ok(x), f) = Ok(f(x))
+/// map(Err(e), f) = Err(e)
+fn resultMap(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = result, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    return switch (args[1]) {
+    return switch (args[0]) {
         .ok => |inner| {
-            const result = try applyFunction(allocator, func, &.{inner.*});
-            const boxed = allocator.create(Value) catch return error.OutOfMemory;
+            const result = try ctx.callFunction(func, &.{inner.*});
+            const boxed = ctx.allocator.create(Value) catch return error.OutOfMemory;
             boxed.* = result;
             return Value{ .ok = boxed };
         },
-        .err => args[1], // Pass through unchanged
+        .err => args[0], // Pass through unchanged
         else => error.TypeMismatch,
     };
 }
 
-/// Transform the Err value: map_err(fn, result) -> Result[T, F]
-/// map_err(f, Ok(x)) = Ok(x)
-/// map_err(f, Err(e)) = Err(f(e))
-fn resultMapErr(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Transform the Err value: map_err(result, fn) -> Result[T, F]
+/// map_err(Ok(x), f) = Ok(x)
+/// map_err(Err(e), f) = Err(f(e))
+fn resultMapErr(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = result, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    return switch (args[1]) {
-        .ok => args[1], // Pass through unchanged
+    return switch (args[0]) {
+        .ok => args[0], // Pass through unchanged
         .err => |inner| {
-            const result = try applyFunction(allocator, func, &.{inner.*});
-            const boxed = allocator.create(Value) catch return error.OutOfMemory;
+            const result = try ctx.callFunction(func, &.{inner.*});
+            const boxed = ctx.allocator.create(Value) catch return error.OutOfMemory;
             boxed.* = result;
             return Value{ .err = boxed };
         },
@@ -81,33 +84,35 @@ fn resultMapErr(allocator: Allocator, args: []const Value) InterpreterError!Valu
     };
 }
 
-/// Chain Result operations: and_then(fn, result) -> Result[U, E]
-/// and_then(f, Ok(x)) = f(x)  (f must return Result[U, E])
-/// and_then(f, Err(e)) = Err(e)
-fn resultAndThen(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Chain Result operations: and_then(result, fn) -> Result[U, E]
+/// and_then(Ok(x), f) = f(x)  (f must return Result[U, E])
+/// and_then(Err(e), f) = Err(e)
+fn resultAndThen(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = result, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    return switch (args[1]) {
+    return switch (args[0]) {
         .ok => |inner| {
-            const result = try applyFunction(allocator, func, &.{inner.*});
+            const result = try ctx.callFunction(func, &.{inner.*});
             // Result should be a Result
             return switch (result) {
                 .ok, .err => result,
                 else => error.TypeMismatch,
             };
         },
-        .err => args[1], // Pass through unchanged
+        .err => args[0], // Pass through unchanged
         else => error.TypeMismatch,
     };
 }
 
 /// Get Ok value or default: unwrap_or(result, default) -> T
-fn resultUnwrapOr(_: Allocator, args: []const Value) InterpreterError!Value {
+fn resultUnwrapOr(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -118,7 +123,8 @@ fn resultUnwrapOr(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if Ok: is_ok(result) -> bool
-fn resultIsOk(_: Allocator, args: []const Value) InterpreterError!Value {
+fn resultIsOk(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -129,7 +135,8 @@ fn resultIsOk(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if Err: is_err(result) -> bool
-fn resultIsErr(_: Allocator, args: []const Value) InterpreterError!Value {
+fn resultIsErr(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -139,21 +146,19 @@ fn resultIsErr(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-/// Apply a function to arguments (builtin functions only)
-fn applyFunction(allocator: Allocator, func: Value, args: []const Value) InterpreterError!Value {
-    const f = func.function;
-    switch (f.body) {
-        .builtin => |builtin| return builtin(allocator, args),
-        .ast_body => return error.InvalidOperation,
-    }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
 
 test "result is_ok and is_err" {
     const allocator = std.testing.allocator;
+
+    // Create a test context
+    const ctx = BuiltinContext{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
 
     // Create Ok(42)
     const ok_inner = try allocator.create(Value);
@@ -162,11 +167,11 @@ test "result is_ok and is_err" {
     const ok_val = Value{ .ok = ok_inner };
 
     // is_ok on Ok
-    const is_ok_result = try resultIsOk(allocator, &.{ok_val});
+    const is_ok_result = try resultIsOk(ctx, &.{ok_val});
     try std.testing.expect(is_ok_result.boolean);
 
     // is_err on Ok
-    const is_err_result = try resultIsErr(allocator, &.{ok_val});
+    const is_err_result = try resultIsErr(ctx, &.{ok_val});
     try std.testing.expect(!is_err_result.boolean);
 
     // Create Err("error")
@@ -176,16 +181,23 @@ test "result is_ok and is_err" {
     const err_val = Value{ .err = err_inner };
 
     // is_ok on Err
-    const is_ok_err = try resultIsOk(allocator, &.{err_val});
+    const is_ok_err = try resultIsOk(ctx, &.{err_val});
     try std.testing.expect(!is_ok_err.boolean);
 
     // is_err on Err
-    const is_err_err = try resultIsErr(allocator, &.{err_val});
+    const is_err_err = try resultIsErr(ctx, &.{err_val});
     try std.testing.expect(is_err_err.boolean);
 }
 
 test "result unwrap_or" {
     const allocator = std.testing.allocator;
+
+    // Create a test context
+    const ctx = BuiltinContext{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
 
     // Ok(42) unwrap_or 0 = 42
     const ok_inner = try allocator.create(Value);
@@ -193,7 +205,7 @@ test "result unwrap_or" {
     ok_inner.* = Value{ .integer = 42 };
     const ok_val = Value{ .ok = ok_inner };
 
-    const unwrap_ok = try resultUnwrapOr(allocator, &.{ ok_val, Value{ .integer = 0 } });
+    const unwrap_ok = try resultUnwrapOr(ctx, &.{ ok_val, Value{ .integer = 0 } });
     try std.testing.expectEqual(@as(i128, 42), unwrap_ok.integer);
 
     // Err("error") unwrap_or 0 = 0
@@ -202,6 +214,6 @@ test "result unwrap_or" {
     err_inner.* = Value{ .string = "error" };
     const err_val = Value{ .err = err_inner };
 
-    const unwrap_err = try resultUnwrapOr(allocator, &.{ err_val, Value{ .integer = 0 } });
+    const unwrap_err = try resultUnwrapOr(ctx, &.{ err_val, Value{ .integer = 0 } });
     try std.testing.expectEqual(@as(i128, 0), unwrap_err.integer);
 }

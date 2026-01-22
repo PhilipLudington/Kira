@@ -16,6 +16,7 @@ const value_mod = @import("../interpreter/value.zig");
 const Value = value_mod.Value;
 const Environment = value_mod.Environment;
 const InterpreterError = value_mod.InterpreterError;
+pub const BuiltinContext = Value.BuiltinContext;
 
 // Import stdlib submodules
 pub const list = @import("list.zig");
@@ -57,7 +58,7 @@ pub fn registerStdlib(allocator: Allocator, env: *Environment) !void {
 /// Helper to create a builtin function value
 pub fn makeBuiltin(
     name: []const u8,
-    func: *const fn (allocator: Allocator, args: []const Value) InterpreterError!Value,
+    func: *const fn (ctx: BuiltinContext, args: []const Value) InterpreterError!Value,
 ) Value {
     return Value{
         .function = .{
@@ -73,7 +74,7 @@ pub fn makeBuiltin(
 /// Helper to create an effect function value (for IO operations)
 pub fn makeEffectBuiltin(
     name: []const u8,
-    func: *const fn (allocator: Allocator, args: []const Value) InterpreterError!Value,
+    func: *const fn (ctx: BuiltinContext, args: []const Value) InterpreterError!Value,
 ) Value {
     return Value{
         .function = .{

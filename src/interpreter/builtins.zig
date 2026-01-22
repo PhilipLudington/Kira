@@ -10,6 +10,7 @@ const value_mod = @import("value.zig");
 const Value = value_mod.Value;
 const Environment = value_mod.Environment;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = Value.BuiltinContext;
 
 /// Register all built-in functions in the given environment.
 pub fn registerBuiltins(allocator: Allocator, env: *Environment) !void {
@@ -67,7 +68,7 @@ pub fn registerBuiltins(allocator: Allocator, env: *Environment) !void {
 /// Helper to create a builtin function value
 fn makeBuiltin(
     name: []const u8,
-    func: *const fn (allocator: Allocator, args: []const Value) InterpreterError!Value,
+    func: *const fn (ctx: BuiltinContext, args: []const Value) InterpreterError!Value,
 ) Value {
     return Value{
         .function = .{
@@ -84,10 +85,10 @@ fn makeBuiltin(
 // Print Functions
 // ============================================================================
 
-fn builtinPrint(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinPrint(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     const stdout = std.fs.File.stdout();
     for (args) |arg| {
-        const str = arg.toString(allocator) catch return error.OutOfMemory;
+        const str = arg.toString(ctx.allocator) catch return error.OutOfMemory;
         // Remove quotes from strings for printing
         const output = if (arg == .string) arg.string else str;
         stdout.writeAll(output) catch return error.InvalidOperation;
@@ -95,8 +96,8 @@ fn builtinPrint(allocator: Allocator, args: []const Value) InterpreterError!Valu
     return Value{ .void = {} };
 }
 
-fn builtinPrintln(allocator: Allocator, args: []const Value) InterpreterError!Value {
-    _ = try builtinPrint(allocator, args);
+fn builtinPrintln(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = try builtinPrint(ctx, args);
     const stdout = std.fs.File.stdout();
     stdout.writeAll("\n") catch return error.InvalidOperation;
     return Value{ .void = {} };
@@ -106,7 +107,8 @@ fn builtinPrintln(allocator: Allocator, args: []const Value) InterpreterError!Va
 // Type Functions
 // ============================================================================
 
-fn builtinTypeOf(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinTypeOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const type_name: []const u8 = switch (args[0]) {
@@ -136,18 +138,19 @@ fn builtinTypeOf(_: Allocator, args: []const Value) InterpreterError!Value {
 // Conversion Functions
 // ============================================================================
 
-fn builtinToString(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinToString(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
         .string => |s| s,
-        else => args[0].toString(allocator) catch return error.OutOfMemory,
+        else => args[0].toString(ctx.allocator) catch return error.OutOfMemory,
     };
 
     return Value{ .string = str };
 }
 
-fn builtinToInt(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinToInt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -163,7 +166,8 @@ fn builtinToInt(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinToFloat(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinToFloat(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -181,7 +185,8 @@ fn builtinToFloat(_: Allocator, args: []const Value) InterpreterError!Value {
 // Math Functions
 // ============================================================================
 
-fn builtinAbs(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinAbs(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -191,7 +196,8 @@ fn builtinAbs(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinMin(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinMin(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -207,7 +213,8 @@ fn builtinMin(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinMax(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinMax(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -227,7 +234,8 @@ fn builtinMax(_: Allocator, args: []const Value) InterpreterError!Value {
 // Collection Functions
 // ============================================================================
 
-fn builtinLen(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinLen(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -248,12 +256,12 @@ fn builtinLen(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinPush(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinPush(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     return switch (args[0]) {
         .array => |arr| {
-            const new_arr = allocator.alloc(Value, arr.len + 1) catch return error.OutOfMemory;
+            const new_arr = ctx.allocator.alloc(Value, arr.len + 1) catch return error.OutOfMemory;
             @memcpy(new_arr[0..arr.len], arr);
             new_arr[arr.len] = args[1];
             return Value{ .array = new_arr };
@@ -262,7 +270,8 @@ fn builtinPush(allocator: Allocator, args: []const Value) InterpreterError!Value
     };
 }
 
-fn builtinPop(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinPop(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -274,7 +283,8 @@ fn builtinPop(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinHead(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinHead(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -288,7 +298,8 @@ fn builtinHead(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinTail(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinTail(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -302,7 +313,8 @@ fn builtinTail(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinEmpty(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinEmpty(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -314,19 +326,19 @@ fn builtinEmpty(_: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-fn builtinReverse(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinReverse(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
         .array => |arr| {
-            const new_arr = allocator.alloc(Value, arr.len) catch return error.OutOfMemory;
+            const new_arr = ctx.allocator.alloc(Value, arr.len) catch return error.OutOfMemory;
             for (arr, 0..) |elem, i| {
                 new_arr[arr.len - 1 - i] = elem;
             }
             return Value{ .array = new_arr };
         },
         .string => |s| {
-            const new_str = allocator.alloc(u8, s.len) catch return error.OutOfMemory;
+            const new_str = ctx.allocator.alloc(u8, s.len) catch return error.OutOfMemory;
             for (s, 0..) |c, i| {
                 new_str[s.len - 1 - i] = c;
             }
@@ -340,7 +352,7 @@ fn builtinReverse(allocator: Allocator, args: []const Value) InterpreterError!Va
 // String Functions
 // ============================================================================
 
-fn builtinSplit(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinSplit(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -356,13 +368,13 @@ fn builtinSplit(allocator: Allocator, args: []const Value) InterpreterError!Valu
     var parts = std.ArrayListUnmanaged(Value){};
     var iter = std.mem.splitSequence(u8, str, delim);
     while (iter.next()) |part| {
-        parts.append(allocator, Value{ .string = part }) catch return error.OutOfMemory;
+        parts.append(ctx.allocator, Value{ .string = part }) catch return error.OutOfMemory;
     }
 
-    return Value{ .array = parts.toOwnedSlice(allocator) catch return error.OutOfMemory };
+    return Value{ .array = parts.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory };
 }
 
-fn builtinJoin(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinJoin(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const arr = switch (args[0]) {
@@ -378,19 +390,20 @@ fn builtinJoin(allocator: Allocator, args: []const Value) InterpreterError!Value
     var result = std.ArrayListUnmanaged(u8){};
     for (arr, 0..) |elem, i| {
         if (i > 0) {
-            result.appendSlice(allocator, sep) catch return error.OutOfMemory;
+            result.appendSlice(ctx.allocator, sep) catch return error.OutOfMemory;
         }
         const str = switch (elem) {
             .string => |s| s,
-            else => elem.toString(allocator) catch return error.OutOfMemory,
+            else => elem.toString(ctx.allocator) catch return error.OutOfMemory,
         };
-        result.appendSlice(allocator, str) catch return error.OutOfMemory;
+        result.appendSlice(ctx.allocator, str) catch return error.OutOfMemory;
     }
 
-    return Value{ .string = result.toOwnedSlice(allocator) catch return error.OutOfMemory };
+    return Value{ .string = result.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory };
 }
 
-fn builtinTrim(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinTrim(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -401,7 +414,8 @@ fn builtinTrim(_: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .string = std.mem.trim(u8, str, " \t\n\r") };
 }
 
-fn builtinContains(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinContains(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const haystack = switch (args[0]) {
@@ -417,7 +431,8 @@ fn builtinContains(_: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .boolean = std.mem.indexOf(u8, haystack, needle) != null };
 }
 
-fn builtinStartsWith(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinStartsWith(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -433,7 +448,8 @@ fn builtinStartsWith(_: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .boolean = std.mem.startsWith(u8, str, prefix) };
 }
 
-fn builtinEndsWith(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinEndsWith(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -453,35 +469,35 @@ fn builtinEndsWith(_: Allocator, args: []const Value) InterpreterError!Value {
 // Option/Result Constructors
 // ============================================================================
 
-fn builtinSome(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinSome(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
-    const inner = allocator.create(Value) catch return error.OutOfMemory;
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
     inner.* = args[0];
     return Value{ .some = inner };
 }
 
-fn builtinOk(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinOk(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
-    const inner = allocator.create(Value) catch return error.OutOfMemory;
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
     inner.* = args[0];
     return Value{ .ok = inner };
 }
 
-fn builtinErr(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinErr(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
-    const inner = allocator.create(Value) catch return error.OutOfMemory;
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
     inner.* = args[0];
     return Value{ .err = inner };
 }
 
-fn builtinCons(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinCons(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const head = allocator.create(Value) catch return error.OutOfMemory;
-    const tail = allocator.create(Value) catch return error.OutOfMemory;
+    const head = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    const tail = ctx.allocator.create(Value) catch return error.OutOfMemory;
     head.* = args[0];
     tail.* = args[1];
     return Value{ .cons = .{ .head = head, .tail = tail } };
@@ -491,7 +507,8 @@ fn builtinCons(allocator: Allocator, args: []const Value) InterpreterError!Value
 // Assertion Functions
 // ============================================================================
 
-fn builtinAssert(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinAssert(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len < 1 or args.len > 2) return error.ArityMismatch;
 
     if (!args[0].isTruthy()) {
@@ -510,7 +527,8 @@ fn builtinAssert(_: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .void = {} };
 }
 
-fn builtinAssertEq(_: Allocator, args: []const Value) InterpreterError!Value {
+fn builtinAssertEq(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     if (!args[0].eql(args[1])) {
@@ -521,55 +539,66 @@ fn builtinAssertEq(_: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .void = {} };
 }
 
+fn testCtx(allocator: Allocator) BuiltinContext {
+    return .{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+}
+
 test "builtin len" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
     // String length
-    const str_result = try builtinLen(allocator, &.{Value{ .string = "hello" }});
+    const str_result = try builtinLen(ctx, &.{Value{ .string = "hello" }});
     try std.testing.expectEqual(@as(i128, 5), str_result.integer);
 
     // Array length
     const arr = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 }, .{ .integer = 3 } };
-    const arr_result = try builtinLen(allocator, &.{Value{ .array = &arr }});
+    const arr_result = try builtinLen(ctx, &.{Value{ .array = &arr }});
     try std.testing.expectEqual(@as(i128, 3), arr_result.integer);
 
     // Empty array
-    const empty_result = try builtinLen(allocator, &.{Value{ .array = &.{} }});
+    const empty_result = try builtinLen(ctx, &.{Value{ .array = &.{} }});
     try std.testing.expectEqual(@as(i128, 0), empty_result.integer);
 }
 
 test "builtin math" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
     // abs
-    const abs_result = try builtinAbs(allocator, &.{Value{ .integer = -5 }});
+    const abs_result = try builtinAbs(ctx, &.{Value{ .integer = -5 }});
     try std.testing.expectEqual(@as(i128, 5), abs_result.integer);
 
     // min
-    const min_result = try builtinMin(allocator, &.{ Value{ .integer = 3 }, Value{ .integer = 7 } });
+    const min_result = try builtinMin(ctx, &.{ Value{ .integer = 3 }, Value{ .integer = 7 } });
     try std.testing.expectEqual(@as(i128, 3), min_result.integer);
 
     // max
-    const max_result = try builtinMax(allocator, &.{ Value{ .integer = 3 }, Value{ .integer = 7 } });
+    const max_result = try builtinMax(ctx, &.{ Value{ .integer = 3 }, Value{ .integer = 7 } });
     try std.testing.expectEqual(@as(i128, 7), max_result.integer);
 }
 
 test "builtin string functions" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
     // contains
-    const contains_result = try builtinContains(allocator, &.{ Value{ .string = "hello world" }, Value{ .string = "world" } });
+    const contains_result = try builtinContains(ctx, &.{ Value{ .string = "hello world" }, Value{ .string = "world" } });
     try std.testing.expect(contains_result.boolean);
 
     // starts_with
-    const starts_result = try builtinStartsWith(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "hel" } });
+    const starts_result = try builtinStartsWith(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "hel" } });
     try std.testing.expect(starts_result.boolean);
 
     // ends_with
-    const ends_result = try builtinEndsWith(allocator, &.{ Value{ .string = "hello" }, Value{ .string = "lo" } });
+    const ends_result = try builtinEndsWith(ctx, &.{ Value{ .string = "hello" }, Value{ .string = "lo" } });
     try std.testing.expect(ends_result.boolean);
 
     // trim
-    const trim_result = try builtinTrim(allocator, &.{Value{ .string = "  hello  " }});
+    const trim_result = try builtinTrim(ctx, &.{Value{ .string = "  hello  " }});
     try std.testing.expectEqualStrings("hello", trim_result.string);
 }

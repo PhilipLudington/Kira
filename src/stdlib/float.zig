@@ -20,6 +20,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.float module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -48,7 +49,7 @@ pub fn createModule(allocator: Allocator) !Value {
 }
 
 /// Convert float to string: to_string(float) -> string
-fn floatToString(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn floatToString(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -62,14 +63,14 @@ fn floatToString(allocator: Allocator, args: []const Value) InterpreterError!Val
     const formatted = std.fmt.bufPrint(&buf, "{d}", .{float_val}) catch return error.OutOfMemory;
 
     // Allocate and copy
-    const result = allocator.alloc(u8, formatted.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, formatted.len) catch return error.OutOfMemory;
     @memcpy(result, formatted);
 
     return Value{ .string = result };
 }
 
 /// Parse string to float: parse(string) -> Option[float]
-fn floatParse(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn floatParse(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -81,13 +82,14 @@ fn floatParse(allocator: Allocator, args: []const Value) InterpreterError!Value 
         return Value{ .none = {} };
     };
 
-    const inner = allocator.create(Value) catch return error.OutOfMemory;
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
     inner.* = Value{ .float = parsed };
     return Value{ .some = inner };
 }
 
 /// Absolute value: abs(float) -> float
-fn floatAbs(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatAbs(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -100,7 +102,8 @@ fn floatAbs(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Floor: floor(float) -> float
-fn floatFloor(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatFloor(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -113,7 +116,8 @@ fn floatFloor(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Ceiling: ceil(float) -> float
-fn floatCeil(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatCeil(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -126,7 +130,8 @@ fn floatCeil(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Round to nearest: round(float) -> float
-fn floatRound(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatRound(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -139,7 +144,8 @@ fn floatRound(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Square root: sqrt(float) -> float
-fn floatSqrt(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatSqrt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -152,7 +158,8 @@ fn floatSqrt(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Minimum of two floats: min(a, b) -> float
-fn floatMin(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatMin(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const a = switch (args[0]) {
@@ -171,7 +178,8 @@ fn floatMin(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Maximum of two floats: max(a, b) -> float
-fn floatMax(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatMax(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const a = switch (args[0]) {
@@ -190,7 +198,8 @@ fn floatMax(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if value is NaN: is_nan(float) -> bool
-fn floatIsNan(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatIsNan(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -203,7 +212,8 @@ fn floatIsNan(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if value is infinite: is_infinite(float) -> bool
-fn floatIsInfinite(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatIsInfinite(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const float_val = switch (args[0]) {
@@ -216,7 +226,8 @@ fn floatIsInfinite(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Convert integer to float: from_int(int) -> float
-fn floatFromInt(_: Allocator, args: []const Value) InterpreterError!Value {
+fn floatFromInt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const int_val = switch (args[0]) {
@@ -232,88 +243,102 @@ fn floatFromInt(_: Allocator, args: []const Value) InterpreterError!Value {
 // Tests
 // ============================================================================
 
+fn testCtx(allocator: Allocator) BuiltinContext {
+    return .{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+}
+
 test "float to_string" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const result = try floatToString(allocator, &.{Value{ .float = 42.5 }});
+    const result = try floatToString(ctx, &.{Value{ .float = 42.5 }});
     defer allocator.free(result.string);
     try std.testing.expectEqualStrings("42.5", result.string);
 
-    const negative = try floatToString(allocator, &.{Value{ .float = -123.456 }});
+    const negative = try floatToString(ctx, &.{Value{ .float = -123.456 }});
     defer allocator.free(negative.string);
     // Float formatting may vary, just check it starts with -123
     try std.testing.expect(std.mem.startsWith(u8, negative.string, "-123"));
 
-    const zero = try floatToString(allocator, &.{Value{ .float = 0.0 }});
+    const zero = try floatToString(ctx, &.{Value{ .float = 0.0 }});
     defer allocator.free(zero.string);
     try std.testing.expectEqualStrings("0", zero.string);
 }
 
 test "float parse" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const valid = try floatParse(allocator, &.{Value{ .string = "42.5" }});
+    const valid = try floatParse(ctx, &.{Value{ .string = "42.5" }});
     try std.testing.expect(valid == .some);
     try std.testing.expectEqual(@as(f64, 42.5), valid.some.*.float);
     allocator.destroy(valid.some);
 
-    const negative = try floatParse(allocator, &.{Value{ .string = "-123.456" }});
+    const negative = try floatParse(ctx, &.{Value{ .string = "-123.456" }});
     try std.testing.expect(negative == .some);
     try std.testing.expectEqual(@as(f64, -123.456), negative.some.*.float);
     allocator.destroy(negative.some);
 
-    const invalid = try floatParse(allocator, &.{Value{ .string = "abc" }});
+    const invalid = try floatParse(ctx, &.{Value{ .string = "abc" }});
     try std.testing.expect(invalid == .none);
 }
 
 test "float abs" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const positive = try floatAbs(allocator, &.{Value{ .float = 42.5 }});
+    const positive = try floatAbs(ctx, &.{Value{ .float = 42.5 }});
     try std.testing.expectEqual(@as(f64, 42.5), positive.float);
 
-    const negative = try floatAbs(allocator, &.{Value{ .float = -42.5 }});
+    const negative = try floatAbs(ctx, &.{Value{ .float = -42.5 }});
     try std.testing.expectEqual(@as(f64, 42.5), negative.float);
 
-    const zero = try floatAbs(allocator, &.{Value{ .float = 0.0 }});
+    const zero = try floatAbs(ctx, &.{Value{ .float = 0.0 }});
     try std.testing.expectEqual(@as(f64, 0.0), zero.float);
 }
 
 test "float floor ceil round" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const floor_result = try floatFloor(allocator, &.{Value{ .float = 42.7 }});
+    const floor_result = try floatFloor(ctx, &.{Value{ .float = 42.7 }});
     try std.testing.expectEqual(@as(f64, 42.0), floor_result.float);
 
-    const ceil_result = try floatCeil(allocator, &.{Value{ .float = 42.3 }});
+    const ceil_result = try floatCeil(ctx, &.{Value{ .float = 42.3 }});
     try std.testing.expectEqual(@as(f64, 43.0), ceil_result.float);
 
-    const round_result = try floatRound(allocator, &.{Value{ .float = 42.5 }});
+    const round_result = try floatRound(ctx, &.{Value{ .float = 42.5 }});
     try std.testing.expectEqual(@as(f64, 43.0), round_result.float);
 }
 
 test "float min max" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const min_result = try floatMin(allocator, &.{ Value{ .float = 5.5 }, Value{ .float = 3.3 } });
+    const min_result = try floatMin(ctx, &.{ Value{ .float = 5.5 }, Value{ .float = 3.3 } });
     try std.testing.expectEqual(@as(f64, 3.3), min_result.float);
 
-    const max_result = try floatMax(allocator, &.{ Value{ .float = 5.5 }, Value{ .float = 3.3 } });
+    const max_result = try floatMax(ctx, &.{ Value{ .float = 5.5 }, Value{ .float = 3.3 } });
     try std.testing.expectEqual(@as(f64, 5.5), max_result.float);
 }
 
 test "float is_nan is_infinite" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const nan_check = try floatIsNan(allocator, &.{Value{ .float = std.math.nan(f64) }});
+    const nan_check = try floatIsNan(ctx, &.{Value{ .float = std.math.nan(f64) }});
     try std.testing.expect(nan_check.boolean);
 
-    const not_nan = try floatIsNan(allocator, &.{Value{ .float = 42.0 }});
+    const not_nan = try floatIsNan(ctx, &.{Value{ .float = 42.0 }});
     try std.testing.expect(!not_nan.boolean);
 
-    const inf_check = try floatIsInfinite(allocator, &.{Value{ .float = std.math.inf(f64) }});
+    const inf_check = try floatIsInfinite(ctx, &.{Value{ .float = std.math.inf(f64) }});
     try std.testing.expect(inf_check.boolean);
 
-    const not_inf = try floatIsInfinite(allocator, &.{Value{ .float = 42.0 }});
+    const not_inf = try floatIsInfinite(ctx, &.{Value{ .float = 42.0 }});
     try std.testing.expect(!not_inf.boolean);
 }

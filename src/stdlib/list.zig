@@ -2,7 +2,7 @@
 //!
 //! Provides functional operations on linked lists (cons cells):
 //!   - empty, singleton, cons: Construction
-//!   - map, filter, fold, fold_right: Higher-order functions
+//!   - map, filter, fold, fold_right, foreach: Higher-order functions
 //!   - find, any, all: Searching and predicates
 //!   - length, reverse: Basic operations
 //!   - concat, flatten: Combining lists
@@ -15,6 +15,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.list module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -31,6 +32,7 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "filter", root.makeBuiltin("filter", &listFilter));
     try fields.put(allocator, "fold", root.makeBuiltin("fold", &listFold));
     try fields.put(allocator, "fold_right", root.makeBuiltin("fold_right", &listFoldRight));
+    try fields.put(allocator, "foreach", root.makeBuiltin("foreach", &listForeach));
 
     // Searching and predicates
     try fields.put(allocator, "find", root.makeBuiltin("find", &listFind));
@@ -63,17 +65,18 @@ pub fn createModule(allocator: Allocator) !Value {
 // ============================================================================
 
 /// Returns an empty list (Nil)
-fn listEmpty(_: Allocator, args: []const Value) InterpreterError!Value {
+fn listEmpty(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 0) return error.ArityMismatch;
     return Value{ .nil = {} };
 }
 
 /// Creates a single-element list
-fn listSingleton(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listSingleton(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
-    const head = allocator.create(Value) catch return error.OutOfMemory;
-    const tail = allocator.create(Value) catch return error.OutOfMemory;
+    const head = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    const tail = ctx.allocator.create(Value) catch return error.OutOfMemory;
     head.* = args[0];
     tail.* = Value{ .nil = {} };
 
@@ -81,7 +84,7 @@ fn listSingleton(allocator: Allocator, args: []const Value) InterpreterError!Val
 }
 
 /// Prepend an element to a list: cons(x, xs) -> [x, ...xs]
-fn listCons(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listCons(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     // Validate second arg is a list
@@ -90,8 +93,8 @@ fn listCons(allocator: Allocator, args: []const Value) InterpreterError!Value {
         else => return error.TypeMismatch,
     }
 
-    const head = allocator.create(Value) catch return error.OutOfMemory;
-    const tail = allocator.create(Value) catch return error.OutOfMemory;
+    const head = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    const tail = ctx.allocator.create(Value) catch return error.OutOfMemory;
     head.* = args[0];
     tail.* = args[1];
 
@@ -102,74 +105,77 @@ fn listCons(allocator: Allocator, args: []const Value) InterpreterError!Value {
 // Higher-Order Functions
 // ============================================================================
 
-/// Apply a function to each element: map(fn, list) -> list
-fn listMap(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Apply a function to each element: map(list, fn) -> list
+fn listMap(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
     // Convert list to array, apply function, convert back
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
-    var current = args[1];
+    var current = args[0];
     while (current == .cons) {
-        const result = try applyFunction(allocator, func, &.{current.cons.head.*});
-        elements.append(allocator, result) catch return error.OutOfMemory;
+        const result = try ctx.callFunction(func, &.{current.cons.head.*});
+        elements.append(ctx.allocator, result) catch return error.OutOfMemory;
         current = current.cons.tail.*;
     }
 
     if (current != .nil) return error.TypeMismatch;
 
     // Build result list in reverse order
-    return buildList(allocator, elements.items);
+    return buildList(ctx.allocator, elements.items);
 }
 
-/// Keep elements matching predicate: filter(fn, list) -> list
-fn listFilter(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Keep elements matching predicate: filter(list, fn) -> list
+fn listFilter(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
-    var current = args[1];
+    var current = args[0];
     while (current == .cons) {
         const elem = current.cons.head.*;
-        const result = try applyFunction(allocator, func, &.{elem});
+        const result = try ctx.callFunction(func, &.{elem});
         if (result.isTruthy()) {
-            elements.append(allocator, elem) catch return error.OutOfMemory;
+            elements.append(ctx.allocator, elem) catch return error.OutOfMemory;
         }
         current = current.cons.tail.*;
     }
 
     if (current != .nil) return error.TypeMismatch;
 
-    return buildList(allocator, elements.items);
+    return buildList(ctx.allocator, elements.items);
 }
 
-/// Left fold: fold(fn, init, list) -> value
-/// fold(f, z, [a,b,c]) = f(f(f(z, a), b), c)
-fn listFold(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Left fold: fold(list, init, fn) -> value
+/// fold([a,b,c], z, f) = f(f(f(z, a), b), c)
+fn listFold(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 3) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = init, args[2] = function
+    const func = switch (args[2]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
     var acc = args[1];
-    var current = args[2];
+    var current = args[0];
 
     while (current == .cons) {
-        acc = try applyFunction(allocator, func, &.{ acc, current.cons.head.* });
+        acc = try ctx.callFunction(func, &.{ acc, current.cons.head.* });
         current = current.cons.tail.*;
     }
 
@@ -178,58 +184,81 @@ fn listFold(allocator: Allocator, args: []const Value) InterpreterError!Value {
     return acc;
 }
 
-/// Right fold: fold_right(fn, list, init) -> value
-/// fold_right(f, [a,b,c], z) = f(a, f(b, f(c, z)))
-fn listFoldRight(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Right fold: fold_right(list, init, fn) -> value
+/// fold_right([a,b,c], z, f) = f(a, f(b, f(c, z)))
+fn listFoldRight(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 3) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = init, args[2] = function
+    const func = switch (args[2]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
     // Collect elements first (need to traverse right-to-left)
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
-    var current = args[1];
+    var current = args[0];
     while (current == .cons) {
-        elements.append(allocator, current.cons.head.*) catch return error.OutOfMemory;
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
         current = current.cons.tail.*;
     }
 
     if (current != .nil) return error.TypeMismatch;
 
     // Fold from right
-    var acc = args[2];
+    var acc = args[1];
     var i = elements.items.len;
     while (i > 0) {
         i -= 1;
-        acc = try applyFunction(allocator, func, &.{ elements.items[i], acc });
+        acc = try ctx.callFunction(func, &.{ elements.items[i], acc });
     }
 
     return acc;
+}
+
+/// Apply a function to each element for side effects: foreach(list, fn) -> void
+fn listForeach(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+
+    // args[0] = list, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
+        else => return error.TypeMismatch,
+    };
+
+    var current = args[0];
+    while (current == .cons) {
+        _ = try ctx.callFunction(func, &.{current.cons.head.*});
+        current = current.cons.tail.*;
+    }
+
+    if (current != .nil) return error.TypeMismatch;
+
+    return Value{ .void = {} };
 }
 
 // ============================================================================
 // Searching and Predicates
 // ============================================================================
 
-/// Find first element matching predicate: find(fn, list) -> Option[T]
-fn listFind(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Find first element matching predicate: find(list, fn) -> Option[T]
+fn listFind(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    var current = args[1];
+    var current = args[0];
     while (current == .cons) {
         const elem = current.cons.head.*;
-        const result = try applyFunction(allocator, func, &.{elem});
+        const result = try ctx.callFunction(func, &.{elem});
         if (result.isTruthy()) {
-            const inner = allocator.create(Value) catch return error.OutOfMemory;
+            const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
             inner.* = elem;
             return Value{ .some = inner };
         }
@@ -241,18 +270,19 @@ fn listFind(allocator: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .none = {} };
 }
 
-/// Check if any element matches predicate: any(fn, list) -> bool
-fn listAny(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Check if any element matches predicate: any(list, fn) -> bool
+fn listAny(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    var current = args[1];
+    var current = args[0];
     while (current == .cons) {
-        const result = try applyFunction(allocator, func, &.{current.cons.head.*});
+        const result = try ctx.callFunction(func, &.{current.cons.head.*});
         if (result.isTruthy()) {
             return Value{ .boolean = true };
         }
@@ -264,18 +294,19 @@ fn listAny(allocator: Allocator, args: []const Value) InterpreterError!Value {
     return Value{ .boolean = false };
 }
 
-/// Check if all elements match predicate: all(fn, list) -> bool
-fn listAll(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Check if all elements match predicate: all(list, fn) -> bool
+fn listAll(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = list, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    var current = args[1];
+    var current = args[0];
     while (current == .cons) {
-        const result = try applyFunction(allocator, func, &.{current.cons.head.*});
+        const result = try ctx.callFunction(func, &.{current.cons.head.*});
         if (!result.isTruthy()) {
             return Value{ .boolean = false };
         }
@@ -292,7 +323,8 @@ fn listAll(allocator: Allocator, args: []const Value) InterpreterError!Value {
 // ============================================================================
 
 /// Get list length: length(list) -> int
-fn listLength(_: Allocator, args: []const Value) InterpreterError!Value {
+fn listLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     var count: i128 = 0;
@@ -309,15 +341,15 @@ fn listLength(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Reverse a list: reverse(list) -> list
-fn listReverse(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listReverse(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     var result: Value = Value{ .nil = {} };
     var current = args[0];
 
     while (current == .cons) {
-        const head = allocator.create(Value) catch return error.OutOfMemory;
-        const tail = allocator.create(Value) catch return error.OutOfMemory;
+        const head = ctx.allocator.create(Value) catch return error.OutOfMemory;
+        const tail = ctx.allocator.create(Value) catch return error.OutOfMemory;
         head.* = current.cons.head.*;
         tail.* = result;
         result = Value{ .cons = .{ .head = head, .tail = tail } };
@@ -334,16 +366,16 @@ fn listReverse(allocator: Allocator, args: []const Value) InterpreterError!Value
 // ============================================================================
 
 /// Concatenate two lists: concat(list1, list2) -> list
-fn listConcat(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listConcat(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     // Collect first list elements
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
     var current = args[0];
     while (current == .cons) {
-        elements.append(allocator, current.cons.head.*) catch return error.OutOfMemory;
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
         current = current.cons.tail.*;
     }
     if (current != .nil) return error.TypeMismatch;
@@ -351,26 +383,26 @@ fn listConcat(allocator: Allocator, args: []const Value) InterpreterError!Value 
     // Collect second list elements
     current = args[1];
     while (current == .cons) {
-        elements.append(allocator, current.cons.head.*) catch return error.OutOfMemory;
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
         current = current.cons.tail.*;
     }
     if (current != .nil) return error.TypeMismatch;
 
-    return buildList(allocator, elements.items);
+    return buildList(ctx.allocator, elements.items);
 }
 
 /// Flatten a list of lists: flatten(list_of_lists) -> list
-fn listFlatten(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listFlatten(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
     var outer = args[0];
     while (outer == .cons) {
         var inner = outer.cons.head.*;
         while (inner == .cons) {
-            elements.append(allocator, inner.cons.head.*) catch return error.OutOfMemory;
+            elements.append(ctx.allocator, inner.cons.head.*) catch return error.OutOfMemory;
             inner = inner.cons.tail.*;
         }
         if (inner != .nil) return error.TypeMismatch;
@@ -378,7 +410,7 @@ fn listFlatten(allocator: Allocator, args: []const Value) InterpreterError!Value
     }
     if (outer != .nil) return error.TypeMismatch;
 
-    return buildList(allocator, elements.items);
+    return buildList(ctx.allocator, elements.items);
 }
 
 // ============================================================================
@@ -386,7 +418,7 @@ fn listFlatten(allocator: Allocator, args: []const Value) InterpreterError!Value
 // ============================================================================
 
 /// Take first n elements: take(n, list) -> list
-fn listTake(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listTake(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const n = switch (args[0]) {
@@ -395,22 +427,23 @@ fn listTake(allocator: Allocator, args: []const Value) InterpreterError!Value {
     };
 
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
     var current = args[1];
     var count: usize = 0;
 
     while (current == .cons and count < n) {
-        elements.append(allocator, current.cons.head.*) catch return error.OutOfMemory;
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
         current = current.cons.tail.*;
         count += 1;
     }
 
-    return buildList(allocator, elements.items);
+    return buildList(ctx.allocator, elements.items);
 }
 
 /// Drop first n elements: drop(n, list) -> list
-fn listDrop(_: Allocator, args: []const Value) InterpreterError!Value {
+fn listDrop(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const n = switch (args[0]) {
@@ -430,27 +463,27 @@ fn listDrop(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Zip two lists into a list of tuples: zip(list1, list2) -> list of (a, b)
-fn listZip(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn listZip(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     var elements = std.ArrayListUnmanaged(Value){};
-    defer elements.deinit(allocator);
+    defer elements.deinit(ctx.allocator);
 
     var list1 = args[0];
     var list2 = args[1];
 
     while (list1 == .cons and list2 == .cons) {
         // Create tuple of (head1, head2)
-        const tuple = allocator.alloc(Value, 2) catch return error.OutOfMemory;
+        const tuple = ctx.allocator.alloc(Value, 2) catch return error.OutOfMemory;
         tuple[0] = list1.cons.head.*;
         tuple[1] = list2.cons.head.*;
-        elements.append(allocator, Value{ .tuple = tuple }) catch return error.OutOfMemory;
+        elements.append(ctx.allocator, Value{ .tuple = tuple }) catch return error.OutOfMemory;
 
         list1 = list1.cons.tail.*;
         list2 = list2.cons.tail.*;
     }
 
-    return buildList(allocator, elements.items);
+    return buildList(ctx.allocator, elements.items);
 }
 
 // ============================================================================
@@ -475,22 +508,6 @@ fn buildList(allocator: Allocator, items: []const Value) InterpreterError!Value 
     return result;
 }
 
-/// Apply a function to arguments (simplified - doesn't handle closures with AST bodies)
-/// For higher-order functions, we need to call through the interpreter.
-/// This is a placeholder that works for builtin functions only.
-fn applyFunction(allocator: Allocator, func: Value, args: []const Value) InterpreterError!Value {
-    const f = func.function;
-    switch (f.body) {
-        .builtin => |builtin| return builtin(allocator, args),
-        .ast_body => {
-            // For user-defined functions, we would need access to the interpreter
-            // This is a limitation of the current design - higher-order functions
-            // with user-defined function arguments would need interpreter integration
-            return error.InvalidOperation;
-        },
-    }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -510,16 +527,25 @@ fn freeList(allocator: std.mem.Allocator, val: Value) void {
     }
 }
 
+fn testCtx(allocator: Allocator) BuiltinContext {
+    return .{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+}
+
 test "list construction" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
     // Empty list
-    const empty = try listEmpty(allocator, &.{});
+    const empty = try listEmpty(ctx, &.{});
     try std.testing.expect(empty == .nil);
 
     // Singleton - test then free
     {
-        const single = try listSingleton(allocator, &.{Value{ .integer = 42 }});
+        const single = try listSingleton(ctx, &.{Value{ .integer = 42 }});
         defer freeList(allocator, single);
         try std.testing.expect(single == .cons);
         try std.testing.expectEqual(@as(i128, 42), single.cons.head.integer);
@@ -529,8 +555,8 @@ test "list construction" {
     // Cons - create fresh list, listCons creates copies of inner pointers
     // so we only need to free the outermost cons cells
     {
-        const base = try listSingleton(allocator, &.{Value{ .integer = 2 }});
-        const list = try listCons(allocator, &.{ Value{ .integer = 1 }, base });
+        const base = try listSingleton(ctx, &.{Value{ .integer = 2 }});
+        const list = try listCons(ctx, &.{ Value{ .integer = 1 }, base });
         defer {
             // Free the outer cons cell (list) head/tail
             allocator.destroy(list.cons.head);
@@ -549,9 +575,10 @@ test "list length" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
 
     // Empty list
-    const empty_len = try listLength(allocator, &.{Value{ .nil = {} }});
+    const empty_len = try listLength(ctx, &.{Value{ .nil = {} }});
     try std.testing.expectEqual(@as(i128, 0), empty_len.integer);
 
     // Build [1, 2, 3]
@@ -560,7 +587,7 @@ test "list length" {
         Value{ .integer = 2 },
         Value{ .integer = 3 },
     });
-    const len = try listLength(allocator, &.{list});
+    const len = try listLength(ctx, &.{list});
     try std.testing.expectEqual(@as(i128, 3), len.integer);
 }
 
@@ -568,6 +595,7 @@ test "list reverse" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
 
     // Build [1, 2, 3]
     const list = try buildList(allocator, &.{
@@ -576,7 +604,7 @@ test "list reverse" {
         Value{ .integer = 3 },
     });
 
-    const reversed = try listReverse(allocator, &.{list});
+    const reversed = try listReverse(ctx, &.{list});
 
     // Should be [3, 2, 1]
     try std.testing.expect(reversed == .cons);
@@ -589,6 +617,7 @@ test "list take and drop" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
 
     // Build [1, 2, 3, 4, 5]
     const list = try buildList(allocator, &.{
@@ -600,13 +629,13 @@ test "list take and drop" {
     });
 
     // Take 2 -> [1, 2]
-    const taken = try listTake(allocator, &.{ Value{ .integer = 2 }, list });
-    const taken_len = try listLength(allocator, &.{taken});
+    const taken = try listTake(ctx, &.{ Value{ .integer = 2 }, list });
+    const taken_len = try listLength(ctx, &.{taken});
     try std.testing.expectEqual(@as(i128, 2), taken_len.integer);
 
     // Drop 2 -> [3, 4, 5]
-    const dropped = try listDrop(allocator, &.{ Value{ .integer = 2 }, list });
-    const dropped_len = try listLength(allocator, &.{dropped});
+    const dropped = try listDrop(ctx, &.{ Value{ .integer = 2 }, list });
+    const dropped_len = try listLength(ctx, &.{dropped});
     try std.testing.expectEqual(@as(i128, 3), dropped_len.integer);
     try std.testing.expectEqual(@as(i128, 3), dropped.cons.head.integer);
 }
@@ -615,6 +644,7 @@ test "list concat" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
 
     const list1 = try buildList(allocator, &.{
         Value{ .integer = 1 },
@@ -625,7 +655,7 @@ test "list concat" {
         Value{ .integer = 4 },
     });
 
-    const combined = try listConcat(allocator, &.{ list1, list2 });
-    const len = try listLength(allocator, &.{combined});
+    const combined = try listConcat(ctx, &.{ list1, list2 });
+    const len = try listLength(ctx, &.{combined});
     try std.testing.expectEqual(@as(i128, 4), len.integer);
 }

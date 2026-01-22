@@ -13,6 +13,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.option module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -33,21 +34,22 @@ pub fn createModule(allocator: Allocator) !Value {
     };
 }
 
-/// Transform the inner value: map(fn, option) -> Option[U]
-/// map(f, Some(x)) = Some(f(x))
-/// map(f, None) = None
-fn optionMap(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Transform the inner value: map(option, fn) -> Option[U]
+/// map(Some(x), f) = Some(f(x))
+/// map(None, f) = None
+fn optionMap(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = option, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    return switch (args[1]) {
+    return switch (args[0]) {
         .some => |inner| {
-            const result = try applyFunction(allocator, func, &.{inner.*});
-            const boxed = allocator.create(Value) catch return error.OutOfMemory;
+            const result = try ctx.callFunction(func, &.{inner.*});
+            const boxed = ctx.allocator.create(Value) catch return error.OutOfMemory;
             boxed.* = result;
             return Value{ .some = boxed };
         },
@@ -56,20 +58,21 @@ fn optionMap(allocator: Allocator, args: []const Value) InterpreterError!Value {
     };
 }
 
-/// Chain optional operations: and_then(fn, option) -> Option[U]
-/// and_then(f, Some(x)) = f(x)  (f must return Option[U])
-/// and_then(f, None) = None
-fn optionAndThen(allocator: Allocator, args: []const Value) InterpreterError!Value {
+/// Chain optional operations: and_then(option, fn) -> Option[U]
+/// and_then(Some(x), f) = f(x)  (f must return Option[U])
+/// and_then(None, f) = None
+fn optionAndThen(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
-    const func = switch (args[0]) {
-        .function => args[0],
+    // args[0] = option, args[1] = function
+    const func = switch (args[1]) {
+        .function => |f| f,
         else => return error.TypeMismatch,
     };
 
-    return switch (args[1]) {
+    return switch (args[0]) {
         .some => |inner| {
-            const result = try applyFunction(allocator, func, &.{inner.*});
+            const result = try ctx.callFunction(func, &.{inner.*});
             // Result should be an Option
             return switch (result) {
                 .some, .none => result,
@@ -82,7 +85,8 @@ fn optionAndThen(allocator: Allocator, args: []const Value) InterpreterError!Val
 }
 
 /// Get value or default: unwrap_or(option, default) -> T
-fn optionUnwrapOr(_: Allocator, args: []const Value) InterpreterError!Value {
+fn optionUnwrapOr(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -93,7 +97,8 @@ fn optionUnwrapOr(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if Some: is_some(option) -> bool
-fn optionIsSome(_: Allocator, args: []const Value) InterpreterError!Value {
+fn optionIsSome(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -104,7 +109,8 @@ fn optionIsSome(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Check if None: is_none(option) -> bool
-fn optionIsNone(_: Allocator, args: []const Value) InterpreterError!Value {
+fn optionIsNone(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     return switch (args[0]) {
@@ -112,15 +118,6 @@ fn optionIsNone(_: Allocator, args: []const Value) InterpreterError!Value {
         .none => Value{ .boolean = true },
         else => error.TypeMismatch,
     };
-}
-
-/// Apply a function to arguments (builtin functions only)
-fn applyFunction(allocator: Allocator, func: Value, args: []const Value) InterpreterError!Value {
-    const f = func.function;
-    switch (f.body) {
-        .builtin => |builtin| return builtin(allocator, args),
-        .ast_body => return error.InvalidOperation,
-    }
 }
 
 // ============================================================================
@@ -136,25 +133,39 @@ test "option is_some and is_none" {
     inner.* = Value{ .integer = 42 };
     const some_val = Value{ .some = inner };
 
+    // Create a test context
+    const ctx = BuiltinContext{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+
     // is_some
-    const is_some_result = try optionIsSome(allocator, &.{some_val});
+    const is_some_result = try optionIsSome(ctx, &.{some_val});
     try std.testing.expect(is_some_result.boolean);
 
     // is_none on Some
-    const is_none_result = try optionIsNone(allocator, &.{some_val});
+    const is_none_result = try optionIsNone(ctx, &.{some_val});
     try std.testing.expect(!is_none_result.boolean);
 
     // None
     const none_val = Value{ .none = {} };
-    const is_some_none = try optionIsSome(allocator, &.{none_val});
+    const is_some_none = try optionIsSome(ctx, &.{none_val});
     try std.testing.expect(!is_some_none.boolean);
 
-    const is_none_none = try optionIsNone(allocator, &.{none_val});
+    const is_none_none = try optionIsNone(ctx, &.{none_val});
     try std.testing.expect(is_none_none.boolean);
 }
 
 test "option unwrap_or" {
     const allocator = std.testing.allocator;
+
+    // Create a test context
+    const ctx = BuiltinContext{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
 
     // Some(42) unwrap_or 0 = 42
     const inner = try allocator.create(Value);
@@ -162,11 +173,11 @@ test "option unwrap_or" {
     inner.* = Value{ .integer = 42 };
     const some_val = Value{ .some = inner };
 
-    const unwrap_some = try optionUnwrapOr(allocator, &.{ some_val, Value{ .integer = 0 } });
+    const unwrap_some = try optionUnwrapOr(ctx, &.{ some_val, Value{ .integer = 0 } });
     try std.testing.expectEqual(@as(i128, 42), unwrap_some.integer);
 
     // None unwrap_or 0 = 0
     const none_val = Value{ .none = {} };
-    const unwrap_none = try optionUnwrapOr(allocator, &.{ none_val, Value{ .integer = 0 } });
+    const unwrap_none = try optionUnwrapOr(ctx, &.{ none_val, Value{ .integer = 0 } });
     try std.testing.expectEqual(@as(i128, 0), unwrap_none.integer);
 }

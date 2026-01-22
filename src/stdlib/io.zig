@@ -12,6 +12,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.io module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -36,13 +37,13 @@ pub fn createModule(allocator: Allocator) !Value {
 }
 
 /// Print to stdout without newline: print(args...) -> void
-fn ioPrint(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn ioPrint(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     const stdout = std.fs.File.stdout();
 
     for (args) |arg| {
         const str = switch (arg) {
             .string => |s| s,
-            else => arg.toString(allocator) catch return error.OutOfMemory,
+            else => arg.toString(ctx.allocator) catch return error.OutOfMemory,
         };
         stdout.writeAll(str) catch return error.InvalidOperation;
     }
@@ -51,36 +52,34 @@ fn ioPrint(allocator: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Print to stdout with newline: println(args...) -> void
-fn ioPrintln(allocator: Allocator, args: []const Value) InterpreterError!Value {
-    _ = try ioPrint(allocator, args);
+fn ioPrintln(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = try ioPrint(ctx, args);
     const stdout = std.fs.File.stdout();
     stdout.writeAll("\n") catch return error.InvalidOperation;
     return Value{ .void = {} };
 }
 
 /// Read a line from stdin: read_line() -> Result[string, string]
-fn ioReadLine(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn ioReadLine(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 0) return error.ArityMismatch;
 
     const stdin = std.fs.File.stdin();
 
-    // Use readToEndAlloc with a reasonable max size for a single line
-    // Since we're reading from stdin, we need a different approach
     // Read byte by byte until we hit a newline
     var line_buffer = std.ArrayListUnmanaged(u8){};
-    defer line_buffer.deinit(allocator);
+    defer line_buffer.deinit(ctx.allocator);
 
     var read_buf: [1]u8 = undefined;
     while (true) {
         const bytes_read = stdin.read(&read_buf) catch {
             if (line_buffer.items.len > 0) {
                 // Return what we have
-                const result = allocator.create(Value) catch return error.OutOfMemory;
-                const owned = line_buffer.toOwnedSlice(allocator) catch return error.OutOfMemory;
+                const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
+                const owned = line_buffer.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory;
                 result.* = Value{ .string = owned };
                 return Value{ .ok = result };
             }
-            const err_val = allocator.create(Value) catch return error.OutOfMemory;
+            const err_val = ctx.allocator.create(Value) catch return error.OutOfMemory;
             err_val.* = Value{ .string = "read error" };
             return Value{ .err = err_val };
         };
@@ -88,12 +87,12 @@ fn ioReadLine(allocator: Allocator, args: []const Value) InterpreterError!Value 
         if (bytes_read == 0) {
             // EOF
             if (line_buffer.items.len > 0) {
-                const result = allocator.create(Value) catch return error.OutOfMemory;
-                const owned = line_buffer.toOwnedSlice(allocator) catch return error.OutOfMemory;
+                const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
+                const owned = line_buffer.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory;
                 result.* = Value{ .string = owned };
                 return Value{ .ok = result };
             }
-            const err_val = allocator.create(Value) catch return error.OutOfMemory;
+            const err_val = ctx.allocator.create(Value) catch return error.OutOfMemory;
             err_val.* = Value{ .string = "end of input" };
             return Value{ .err = err_val };
         }
@@ -103,24 +102,24 @@ fn ioReadLine(allocator: Allocator, args: []const Value) InterpreterError!Value 
             break;
         }
 
-        line_buffer.append(allocator, read_buf[0]) catch return error.OutOfMemory;
+        line_buffer.append(ctx.allocator, read_buf[0]) catch return error.OutOfMemory;
     }
 
     // Success - return the line
-    const result = allocator.create(Value) catch return error.OutOfMemory;
-    const owned = line_buffer.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    const owned = line_buffer.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory;
     result.* = Value{ .string = owned };
     return Value{ .ok = result };
 }
 
 /// Print to stderr without newline: eprint(args...) -> void
-fn ioEprint(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn ioEprint(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     const stderr = std.fs.File.stderr();
 
     for (args) |arg| {
         const str = switch (arg) {
             .string => |s| s,
-            else => arg.toString(allocator) catch return error.OutOfMemory,
+            else => arg.toString(ctx.allocator) catch return error.OutOfMemory,
         };
         stderr.writeAll(str) catch return error.InvalidOperation;
     }
@@ -129,8 +128,8 @@ fn ioEprint(allocator: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Print to stderr with newline: eprintln(args...) -> void
-fn ioEprintln(allocator: Allocator, args: []const Value) InterpreterError!Value {
-    _ = try ioEprint(allocator, args);
+fn ioEprintln(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = try ioEprint(ctx, args);
     const stderr = std.fs.File.stderr();
     stderr.writeAll("\n") catch return error.InvalidOperation;
     return Value{ .void = {} };

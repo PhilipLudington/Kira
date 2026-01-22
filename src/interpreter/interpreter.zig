@@ -851,9 +851,25 @@ pub const Interpreter = struct {
                 return Value{ .void = {} };
             },
             .builtin => |builtin_fn| {
-                return builtin_fn(self.arenaAlloc(), args);
+                const ctx = self.makeBuiltinContext();
+                return builtin_fn(ctx, args);
             },
         }
+    }
+
+    /// Create a BuiltinContext for calling builtin functions
+    fn makeBuiltinContext(self: *Interpreter) Value.BuiltinContext {
+        return .{
+            .allocator = self.arenaAlloc(),
+            .interpreter = self,
+            .call_fn = &builtinCallFunction,
+        };
+    }
+
+    /// Wrapper function that allows builtins to call back into the interpreter
+    fn builtinCallFunction(interp_ptr: *anyopaque, func: Value.FunctionValue, args: []const Value) InterpreterError!Value {
+        const self: *Interpreter = @ptrCast(@alignCast(interp_ptr));
+        return self.callFunction(func, args, &self.global_env);
     }
 
     /// Evaluate a method call

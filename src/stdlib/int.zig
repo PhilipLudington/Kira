@@ -15,6 +15,7 @@ const root = @import("root.zig");
 
 const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
+const BuiltinContext = root.BuiltinContext;
 
 /// Create the std.int module as a record value
 pub fn createModule(allocator: Allocator) !Value {
@@ -37,7 +38,7 @@ pub fn createModule(allocator: Allocator) !Value {
 }
 
 /// Convert integer to string: to_string(int) -> string
-fn intToString(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn intToString(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const int_val = switch (args[0]) {
@@ -50,14 +51,14 @@ fn intToString(allocator: Allocator, args: []const Value) InterpreterError!Value
     const formatted = std.fmt.bufPrint(&buf, "{d}", .{int_val}) catch return error.OutOfMemory;
 
     // Allocate and copy
-    const result = allocator.alloc(u8, formatted.len) catch return error.OutOfMemory;
+    const result = ctx.allocator.alloc(u8, formatted.len) catch return error.OutOfMemory;
     @memcpy(result, formatted);
 
     return Value{ .string = result };
 }
 
 /// Parse string to integer: parse(string) -> Option[int]
-fn intParse(allocator: Allocator, args: []const Value) InterpreterError!Value {
+fn intParse(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -69,13 +70,14 @@ fn intParse(allocator: Allocator, args: []const Value) InterpreterError!Value {
         return Value{ .none = {} };
     };
 
-    const inner = allocator.create(Value) catch return error.OutOfMemory;
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
     inner.* = Value{ .integer = parsed };
     return Value{ .some = inner };
 }
 
 /// Absolute value: abs(int) -> int
-fn intAbs(_: Allocator, args: []const Value) InterpreterError!Value {
+fn intAbs(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const int_val = switch (args[0]) {
@@ -87,7 +89,8 @@ fn intAbs(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Minimum of two integers: min(a, b) -> int
-fn intMin(_: Allocator, args: []const Value) InterpreterError!Value {
+fn intMin(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const a = switch (args[0]) {
@@ -104,7 +107,8 @@ fn intMin(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Maximum of two integers: max(a, b) -> int
-fn intMax(_: Allocator, args: []const Value) InterpreterError!Value {
+fn intMax(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 2) return error.ArityMismatch;
 
     const a = switch (args[0]) {
@@ -121,7 +125,8 @@ fn intMax(_: Allocator, args: []const Value) InterpreterError!Value {
 }
 
 /// Get sign: sign(int) -> int (-1, 0, or 1)
-fn intSign(_: Allocator, args: []const Value) InterpreterError!Value {
+fn intSign(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const int_val = switch (args[0]) {
@@ -137,71 +142,84 @@ fn intSign(_: Allocator, args: []const Value) InterpreterError!Value {
 // Tests
 // ============================================================================
 
+fn testCtx(allocator: Allocator) BuiltinContext {
+    return .{
+        .allocator = allocator,
+        .interpreter = null,
+        .call_fn = null,
+    };
+}
+
 test "int to_string" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const result = try intToString(allocator, &.{Value{ .integer = 42 }});
+    const result = try intToString(ctx, &.{Value{ .integer = 42 }});
     defer allocator.free(result.string);
     try std.testing.expectEqualStrings("42", result.string);
 
-    const negative = try intToString(allocator, &.{Value{ .integer = -123 }});
+    const negative = try intToString(ctx, &.{Value{ .integer = -123 }});
     defer allocator.free(negative.string);
     try std.testing.expectEqualStrings("-123", negative.string);
 
-    const zero = try intToString(allocator, &.{Value{ .integer = 0 }});
+    const zero = try intToString(ctx, &.{Value{ .integer = 0 }});
     defer allocator.free(zero.string);
     try std.testing.expectEqualStrings("0", zero.string);
 }
 
 test "int parse" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const valid = try intParse(allocator, &.{Value{ .string = "42" }});
+    const valid = try intParse(ctx, &.{Value{ .string = "42" }});
     try std.testing.expect(valid == .some);
     try std.testing.expectEqual(@as(i128, 42), valid.some.*.integer);
     allocator.destroy(valid.some);
 
-    const negative = try intParse(allocator, &.{Value{ .string = "-123" }});
+    const negative = try intParse(ctx, &.{Value{ .string = "-123" }});
     try std.testing.expect(negative == .some);
     try std.testing.expectEqual(@as(i128, -123), negative.some.*.integer);
     allocator.destroy(negative.some);
 
-    const invalid = try intParse(allocator, &.{Value{ .string = "abc" }});
+    const invalid = try intParse(ctx, &.{Value{ .string = "abc" }});
     try std.testing.expect(invalid == .none);
 }
 
 test "int abs" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const positive = try intAbs(allocator, &.{Value{ .integer = 42 }});
+    const positive = try intAbs(ctx, &.{Value{ .integer = 42 }});
     try std.testing.expectEqual(@as(i128, 42), positive.integer);
 
-    const negative = try intAbs(allocator, &.{Value{ .integer = -42 }});
+    const negative = try intAbs(ctx, &.{Value{ .integer = -42 }});
     try std.testing.expectEqual(@as(i128, 42), negative.integer);
 
-    const zero = try intAbs(allocator, &.{Value{ .integer = 0 }});
+    const zero = try intAbs(ctx, &.{Value{ .integer = 0 }});
     try std.testing.expectEqual(@as(i128, 0), zero.integer);
 }
 
 test "int min max" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const min_result = try intMin(allocator, &.{ Value{ .integer = 5 }, Value{ .integer = 3 } });
+    const min_result = try intMin(ctx, &.{ Value{ .integer = 5 }, Value{ .integer = 3 } });
     try std.testing.expectEqual(@as(i128, 3), min_result.integer);
 
-    const max_result = try intMax(allocator, &.{ Value{ .integer = 5 }, Value{ .integer = 3 } });
+    const max_result = try intMax(ctx, &.{ Value{ .integer = 5 }, Value{ .integer = 3 } });
     try std.testing.expectEqual(@as(i128, 5), max_result.integer);
 }
 
 test "int sign" {
     const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
 
-    const positive = try intSign(allocator, &.{Value{ .integer = 42 }});
+    const positive = try intSign(ctx, &.{Value{ .integer = 42 }});
     try std.testing.expectEqual(@as(i128, 1), positive.integer);
 
-    const negative = try intSign(allocator, &.{Value{ .integer = -42 }});
+    const negative = try intSign(ctx, &.{Value{ .integer = -42 }});
     try std.testing.expectEqual(@as(i128, -1), negative.integer);
 
-    const zero = try intSign(allocator, &.{Value{ .integer = 0 }});
+    const zero = try intSign(ctx, &.{Value{ .integer = 0 }});
     try std.testing.expectEqual(@as(i128, 0), zero.integer);
 }
