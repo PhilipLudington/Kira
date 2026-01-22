@@ -10,6 +10,7 @@ pub const symbols = @import("symbols/root.zig");
 pub const typechecker = @import("typechecker/root.zig");
 pub const interpreter_mod = @import("interpreter/root.zig");
 pub const modules = @import("modules/root.zig");
+pub const config = @import("config/root.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -44,6 +45,9 @@ pub const ResolveError = symbols.ResolveError;
 // Module system exports
 pub const ModuleLoader = modules.ModuleLoader;
 pub const LoadError = modules.LoadError;
+
+// Configuration exports
+pub const ProjectConfig = config.ProjectConfig;
 
 // Type checker exports
 pub const ResolvedType = typechecker.ResolvedType;
@@ -267,6 +271,7 @@ test {
     _ = typechecker;
     _ = interpreter_mod;
     _ = modules;
+    _ = config;
 }
 
 test "tokenize simple expression" {

@@ -15,6 +15,7 @@ const lexer_mod = @import("../lexer/root.zig");
 const table_mod = @import("../symbols/table.zig");
 const symbol_mod = @import("../symbols/symbol.zig");
 const scope_mod = @import("../symbols/scope.zig");
+const config_mod = @import("../config/root.zig");
 
 pub const Program = ast.Program;
 pub const SymbolTable = table_mod.SymbolTable;
@@ -59,6 +60,8 @@ pub const ModuleLoader = struct {
     loaded_modules: std.StringHashMapUnmanaged(LoadedModule),
     /// Errors encountered during loading
     errors: std.ArrayListUnmanaged(LoadErrorInfo),
+    /// Optional project configuration for module path resolution
+    config: ?*const config_mod.ProjectConfig,
 
     /// Information about a load error
     pub const LoadErrorInfo = struct {
@@ -66,6 +69,8 @@ pub const ModuleLoader = struct {
         message: []const u8,
         file_path: ?[]const u8,
         span: ?Span,
+        /// Paths that were searched when looking for this module (for error messages).
+        searched_paths: ?[]const []const u8,
     };
 
     /// Create a new module loader
@@ -77,6 +82,20 @@ pub const ModuleLoader = struct {
             .loading_modules = .{},
             .loaded_modules = .{},
             .errors = .{},
+            .config = null,
+        };
+    }
+
+    /// Create a new module loader with project configuration
+    pub fn initWithConfig(allocator: Allocator, table: *SymbolTable, cfg: ?*const config_mod.ProjectConfig) ModuleLoader {
+        return .{
+            .allocator = allocator,
+            .table = table,
+            .search_paths = .{},
+            .loading_modules = .{},
+            .loaded_modules = .{},
+            .errors = .{},
+            .config = cfg,
         };
     }
 
@@ -117,6 +136,12 @@ pub const ModuleLoader = struct {
             if (err_info.file_path) |fp| {
                 self.allocator.free(fp);
             }
+            if (err_info.searched_paths) |paths| {
+                for (paths) |p| {
+                    self.allocator.free(p);
+                }
+                self.allocator.free(paths);
+            }
         }
         self.errors.deinit(self.allocator);
     }
@@ -137,27 +162,99 @@ pub const ModuleLoader = struct {
 
         // Check if we're already loading this module (cycle detection)
         if (self.loading_modules.contains(module_path)) {
-            try self.addLoadError(module_path, "Circular dependency detected", null, null);
+            try self.addLoadError(module_path, "Circular dependency detected", null, null, null);
             return error.CircularDependency;
         }
 
-        // Convert module path to file path
-        const relative_path = try self.modulePathToFilePath(module_path);
-        defer self.allocator.free(relative_path);
-
-        // Search for the file in search paths
-        const file_path = self.findModuleFile(relative_path) orelse {
-            try self.addLoadError(module_path, "Module file not found", null, null);
-            return error.ModuleNotFound;
+        // Extract the root module name (first segment before any '.')
+        const root_module_name = blk: {
+            if (std.mem.indexOfScalar(u8, module_path, '.')) |dot_pos| {
+                break :blk module_path[0..dot_pos];
+            }
+            break :blk module_path;
         };
-        defer self.allocator.free(file_path);
+
+        // Track searched paths for error reporting
+        var searched = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (searched.items) |p| {
+                self.allocator.free(p);
+            }
+            searched.deinit(self.allocator);
+        }
+
+        var file_path: ?[]u8 = null;
+
+        // First, check project config for module path mapping
+        if (self.config) |cfg| {
+            if (cfg.getFullModulePath(self.allocator, root_module_name)) |config_path| {
+                // Add to searched paths list
+                const searched_copy = self.allocator.dupe(u8, config_path) catch null;
+                if (searched_copy) |sc| {
+                    searched.append(self.allocator, sc) catch {};
+                }
+
+                // Try to open the configured path (could be file or directory)
+                if (std.fs.cwd().openFile(config_path, .{})) |f| {
+                    f.close();
+                    file_path = config_path;
+                } else |_| {
+                    // Try as directory with mod.ki
+                    const mod_path = std.fs.path.join(self.allocator, &.{ config_path, "mod.ki" }) catch null;
+                    self.allocator.free(config_path);
+
+                    if (mod_path) |mp| {
+                        const mod_searched_copy = self.allocator.dupe(u8, mp) catch null;
+                        if (mod_searched_copy) |msc| {
+                            searched.append(self.allocator, msc) catch {};
+                        }
+
+                        if (std.fs.cwd().openFile(mp, .{})) |f| {
+                            f.close();
+                            file_path = mp;
+                        } else |_| {
+                            self.allocator.free(mp);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fall back to search path resolution if config didn't find it
+        if (file_path == null) {
+            // Convert module path to file path
+            const relative_path = try self.modulePathToFilePath(module_path);
+            defer self.allocator.free(relative_path);
+
+            // Search for the file in search paths, collecting searched paths
+            file_path = self.findModuleFileWithTracking(relative_path, &searched);
+        }
+
+        // If still not found, report error with searched paths
+        if (file_path == null) {
+            // Convert searched paths to owned slice for error info
+            var searched_owned: ?[]const []const u8 = null;
+            if (searched.items.len > 0) {
+                const paths_copy = self.allocator.alloc([]const u8, searched.items.len) catch null;
+                if (paths_copy) |pc| {
+                    for (searched.items, 0..) |p, i| {
+                        pc[i] = self.allocator.dupe(u8, p) catch "";
+                    }
+                    searched_owned = pc;
+                }
+            }
+            try self.addLoadError(module_path, "Module file not found", null, null, searched_owned);
+            return error.ModuleNotFound;
+        }
+
+        defer self.allocator.free(file_path.?);
 
         // Mark as loading (for cycle detection)
         const module_path_copy = try self.allocator.dupe(u8, module_path);
         try self.loading_modules.put(self.allocator, module_path_copy, {});
 
         // Load and resolve the file
-        const result = self.loadAndResolveFile(file_path, module_path) catch |err| {
+        const result = self.loadAndResolveFile(file_path.?, module_path) catch |err| {
             // Remove from loading set on error
             if (self.loading_modules.fetchRemove(module_path_copy)) |_| {
                 self.allocator.free(module_path_copy);
@@ -172,7 +269,7 @@ pub const ModuleLoader = struct {
 
         // Cache the loaded module
         const cached_path = try self.allocator.dupe(u8, module_path);
-        const cached_file = try self.allocator.dupe(u8, file_path);
+        const cached_file = try self.allocator.dupe(u8, file_path.?);
         try self.loaded_modules.put(self.allocator, cached_path, .{
             .scope_id = result.scope_id,
             .file_path = cached_file,
@@ -224,6 +321,68 @@ pub const ModuleLoader = struct {
         }
     }
 
+    /// Find a module file by searching in all search paths, tracking searched paths.
+    /// The searched_paths list is populated with copies of all paths tried.
+    fn findModuleFileWithTracking(
+        self: *ModuleLoader,
+        relative_path: []const u8,
+        searched_paths: *std.ArrayListUnmanaged([]const u8),
+    ) ?[]u8 {
+        // Try each search path
+        for (self.search_paths.items) |search_path| {
+            const full_path = std.fs.path.join(self.allocator, &.{ search_path, relative_path }) catch continue;
+
+            // Track this path
+            const path_copy = self.allocator.dupe(u8, full_path) catch null;
+            if (path_copy) |pc| {
+                searched_paths.append(self.allocator, pc) catch {};
+            }
+
+            // Check if file exists
+            if (std.fs.cwd().openFile(full_path, .{})) |file| {
+                file.close();
+                // File exists, return the path (already allocated)
+                return full_path;
+            } else |_| {
+                self.allocator.free(full_path);
+
+                // Also try mod.ki in a directory with the same name (minus .ki extension)
+                if (std.mem.endsWith(u8, relative_path, ".ki")) {
+                    const dir_name = relative_path[0 .. relative_path.len - 3];
+                    const mod_path = std.fs.path.join(self.allocator, &.{ search_path, dir_name, "mod.ki" }) catch continue;
+
+                    // Track this path too
+                    const mod_path_copy = self.allocator.dupe(u8, mod_path) catch null;
+                    if (mod_path_copy) |mpc| {
+                        searched_paths.append(self.allocator, mpc) catch {};
+                    }
+
+                    if (std.fs.cwd().openFile(mod_path, .{})) |file| {
+                        file.close();
+                        return mod_path;
+                    } else |_| {
+                        self.allocator.free(mod_path);
+                    }
+                }
+            }
+        }
+
+        // Also try the relative path directly (for current directory)
+        {
+            const rel_copy = self.allocator.dupe(u8, relative_path) catch null;
+            if (rel_copy) |rc| {
+                searched_paths.append(self.allocator, rc) catch {};
+            }
+
+            if (std.fs.cwd().openFile(relative_path, .{})) |file| {
+                file.close();
+                return self.allocator.dupe(u8, relative_path) catch null;
+            } else |_| {}
+        }
+
+        return null;
+    }
+
     /// Result of loading a file
     const LoadResult = struct {
         scope_id: ScopeId,
@@ -235,13 +394,13 @@ pub const ModuleLoader = struct {
     fn loadAndResolveFile(self: *ModuleLoader, file_path: []const u8, expected_module: []const u8) LoadError!LoadResult {
         // Read the file
         const file = std.fs.cwd().openFile(file_path, .{}) catch {
-            try self.addLoadError(expected_module, "Cannot open file", file_path, null);
+            try self.addLoadError(expected_module, "Cannot open file", file_path, null, null);
             return error.FileReadError;
         };
         defer file.close();
 
         const source = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch {
-            try self.addLoadError(expected_module, "Cannot read file", file_path, null);
+            try self.addLoadError(expected_module, "Cannot read file", file_path, null, null);
             return error.FileReadError;
         };
         errdefer self.allocator.free(source);
@@ -253,7 +412,7 @@ pub const ModuleLoader = struct {
         // Tokenize
         var lex = Lexer.init(source);
         var tokens = lex.scanAllTokens(self.allocator) catch {
-            try self.addLoadError(expected_module, "Lexer error", file_path, null);
+            try self.addLoadError(expected_module, "Lexer error", file_path, null, null);
             return error.ParseError;
         };
         defer tokens.deinit(self.allocator);
@@ -263,7 +422,7 @@ pub const ModuleLoader = struct {
         defer parser.deinit();
 
         var program = parser.parseProgram() catch {
-            try self.addLoadError(expected_module, "Parse error", file_path, null);
+            try self.addLoadError(expected_module, "Parse error", file_path, null, null);
             return error.ParseError;
         };
         program.arena = arena;
@@ -325,7 +484,7 @@ pub const ModuleLoader = struct {
         }
 
         // No module declaration found - this is an error for cross-file imports
-        try self.addLoadError(expected_module, "No module declaration found in file", file_path, null);
+        try self.addLoadError(expected_module, "No module declaration found in file", file_path, null, null);
         return error.ResolveError;
     }
 
@@ -478,12 +637,14 @@ pub const ModuleLoader = struct {
         message: []const u8,
         file_path: ?[]const u8,
         span: ?Span,
+        searched_paths: ?[]const []const u8,
     ) !void {
         try self.errors.append(self.allocator, .{
             .module_path = try self.allocator.dupe(u8, module_path),
             .message = try self.allocator.dupe(u8, message),
             .file_path = if (file_path) |fp| try self.allocator.dupe(u8, fp) else null,
             .span = span,
+            .searched_paths = searched_paths,
         });
     }
 

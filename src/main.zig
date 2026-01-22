@@ -273,8 +273,16 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
-    // Create module loader for cross-file imports
-    var loader = Kira.ModuleLoader.init(allocator, &table);
+    // Load project configuration (kira.toml)
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+
+    // Create module loader for cross-file imports with config
+    var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
 
     // Add search paths: parent directory and directory containing the main file
@@ -289,15 +297,20 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
         loader.addSearchPath(dir) catch {};
     }
 
+    // If we have a project config, also add project root as a search path
+    if (project_config.project_root) |root| {
+        loader.addSearchPath(root) catch {};
+    }
+
     // Resolve symbols (using loader for cross-file imports)
     Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
-        // Check for loader errors first
+        // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Module load error: {s} - {s}\n", .{ load_err.module_path, load_err.message }) catch "Module load error\n";
-            stderr.writeAll(msg) catch {};
+            try formatModuleError(stderr, load_err, source, path);
         }
-        try formatResolveError(stderr, path, source, err);
+        if (!loader.hasErrors()) {
+            try formatResolveError(stderr, path, source, err);
+        }
         return error.ResolveError;
     };
 
@@ -493,8 +506,16 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
-    // Create module loader for cross-file imports
-    var loader = Kira.ModuleLoader.init(allocator, &table);
+    // Load project configuration (kira.toml)
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+
+    // Create module loader for cross-file imports with config
+    var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
 
     // Add search paths: parent directory and directory containing the main file
@@ -509,15 +530,20 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
         loader.addSearchPath(dir) catch {};
     }
 
+    // If we have a project config, also add project root as a search path
+    if (project_config.project_root) |root| {
+        loader.addSearchPath(root) catch {};
+    }
+
     // Resolve symbols (using loader for cross-file imports)
     Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
-        // Check for loader errors first
+        // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Module load error: {s} - {s}\n", .{ load_err.module_path, load_err.message }) catch "Module load error\n";
-            stderr.writeAll(msg) catch {};
+            try formatModuleError(stderr, load_err, source, path);
         }
-        try formatResolveError(stderr, path, source, err);
+        if (!loader.hasErrors()) {
+            try formatResolveError(stderr, path, source, err);
+        }
         return error.ResolveError;
     };
 
@@ -1048,6 +1074,76 @@ fn formatResolveError(writer: anytype, path: []const u8, source: []const u8, err
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "error[resolve]: {s}: {}\n", .{ path, err }) catch "Resolve error\n";
     try writer.writeAll(msg);
+}
+
+/// Format a module load error with searched paths and hints
+fn formatModuleError(writer: anytype, err_info: Kira.ModuleLoader.LoadErrorInfo, source: []const u8, file_path: []const u8) !void {
+    var buf: [1024]u8 = undefined;
+
+    // Header line
+    const header = std.fmt.bufPrint(&buf, "error[module]: Module '{s}' not found\n", .{err_info.module_path}) catch "error[module]: Module not found\n";
+    try writer.writeAll(header);
+
+    // Location (if span is available)
+    if (err_info.span) |span| {
+        const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
+            file_path,
+            span.start.line,
+            span.start.column,
+        }) catch "";
+        try writer.writeAll(loc);
+
+        // Source line (if available)
+        if (getSourceLine(source, span.start.line)) |line| {
+            const gutter = std.fmt.bufPrint(&buf, "   {d} | ", .{span.start.line}) catch "     | ";
+            try writer.writeAll(gutter);
+            try writer.writeAll(line);
+            try writer.writeAll("\n");
+
+            // Pointer line
+            try writer.writeAll("     | ");
+            var i: usize = 1;
+            while (i < span.start.column) : (i += 1) {
+                try writer.writeAll(" ");
+            }
+            // Underline the module name
+            var j: usize = 0;
+            while (j < err_info.module_path.len) : (j += 1) {
+                try writer.writeAll("^");
+            }
+            try writer.writeAll("\n");
+        }
+    } else {
+        // Just show the file path
+        const loc = std.fmt.bufPrint(&buf, "  --> {s}\n", .{file_path}) catch "";
+        try writer.writeAll(loc);
+    }
+
+    // Show searched paths
+    if (err_info.searched_paths) |paths| {
+        if (paths.len > 0) {
+            try writer.writeAll("\nSearched in:\n");
+            for (paths) |p| {
+                const path_line = std.fmt.bufPrint(&buf, "  - {s}\n", .{p}) catch "";
+                try writer.writeAll(path_line);
+            }
+        }
+    }
+
+    // Hint about kira.toml
+    try writer.writeAll("\nhint: Add module path to kira.toml:\n");
+    try writer.writeAll("  [modules]\n");
+
+    // Extract the root module name for the hint
+    const root_name = blk: {
+        if (std.mem.indexOfScalar(u8, err_info.module_path, '.')) |dot_pos| {
+            break :blk err_info.module_path[0..dot_pos];
+        }
+        break :blk err_info.module_path;
+    };
+
+    const hint = std.fmt.bufPrint(&buf, "  {s} = \"path/to/module.ki\"\n\n", .{root_name}) catch "  module = \"path/to/module.ki\"\n\n";
+    try writer.writeAll(hint);
 }
 
 /// Format a diagnostic with source context
