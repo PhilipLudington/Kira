@@ -214,16 +214,19 @@ pub const Parser = struct {
             var item_list = std.ArrayListUnmanaged(Declaration.ImportItem){};
             errdefer item_list.deinit(self.allocator);
 
+            self.skipNewlines(); // Allow multi-line imports
             if (!self.check(.right_brace)) {
                 // Parse first item
                 try item_list.append(self.allocator, try self.parseImportItem());
 
                 while (self.match(.comma)) {
+                    self.skipNewlines(); // Allow newline after comma
                     if (self.check(.right_brace)) break;
                     try item_list.append(self.allocator, try self.parseImportItem());
                 }
             }
 
+            self.skipNewlines(); // Allow newline before closing brace
             try self.consume(.right_brace, "expected '}' after import items");
             items = try item_list.toOwnedSlice(self.allocator);
         }
