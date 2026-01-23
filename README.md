@@ -195,9 +195,21 @@ zig build run -- examples/factorial.ki
 
 ## Ecosystem
 
-- [kira-pcl](https://github.com/PhilipLudington/kira-pcl) - Kira PCL
+### Libraries
+
+- [kira-http](https://github.com/PhilipLudington/kira-http) - HTTP client and server library for Kira
 - [kira-json](https://github.com/PhilipLudington/kira-json) - JSON parsing and serialization library for Kira
-- [Kira-Toolkit](https://github.com/PhilipLudington/Kira-Toolkit) - Toolkit for Kira
+- [kira-lpe](https://github.com/PhilipLudington/kira-lpe) - Logic Programming Engine implemented in Kira
+- [kira-pcl](https://github.com/PhilipLudington/kira-pcl) - Parser Combinator Library for building parsers in Kira
+
+### Tools
+
+- [kira-test](https://github.com/PhilipLudington/kira-test) - Testing framework for Kira
+- [Kira-Toolkit](https://github.com/PhilipLudington/Kira-Toolkit) - Development standards and patterns for safe, consistent, and maintainable Kira code
+
+### Resources
+
+- [Kira-Reference](https://github.com/PhilipLudington/Kira-Reference) - Hardened development standards and patterns for the Kira programming language
 
 ## License
 
