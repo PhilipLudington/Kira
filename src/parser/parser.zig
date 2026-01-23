@@ -160,6 +160,9 @@ pub const Parser = struct {
             break :blk .{ .const_decl = try self.parseConstDecl(is_public) };
         } else if (self.check(.let)) blk: {
             break :blk .{ .let_decl = try self.parseLetDecl(is_public) };
+        } else if (self.check(.identifier) and std.mem.eql(u8, self.peek().lexeme, "use")) {
+            // Provide helpful error for users coming from Rust/other languages
+            return self.reportError("'use' is not supported in Kira; use 'import' instead", null);
         } else {
             return self.reportError("expected declaration", null);
         };
@@ -1665,14 +1668,18 @@ pub const Parser = struct {
             var elements = std.ArrayListUnmanaged(*Expression){};
             errdefer elements.deinit(self.allocator);
 
+            self.skipNewlines(); // Allow newline after opening bracket
             if (!self.check(.right_bracket)) {
                 try elements.append(self.allocator, try self.allocExpr(try self.parseExpression()));
 
                 while (self.match(.comma)) {
+                    self.skipNewlines(); // Allow multi-line array literals
                     if (self.check(.right_bracket)) break;
                     try elements.append(self.allocator, try self.allocExpr(try self.parseExpression()));
                 }
             }
+
+            self.skipNewlines(); // Allow closing bracket on its own line
 
             try self.consume(.right_bracket, "expected ']' after array elements");
             return Expression.init(.{ .array_literal = .{
