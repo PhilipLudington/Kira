@@ -1,0 +1,25 @@
+module test_example
+
+// Helper function to test
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn is_even(n: i32) -> bool {
+    n % 2 == 0
+}
+
+test "addition works" {
+    let result: i32 = add(2, 3)
+    std.io.println("Testing 2 + 3 = 5")
+}
+
+test "subtraction works" {
+    let result: i32 = 10 - 4
+    std.io.println("Testing 10 - 4 = 6")
+}
+
+test "is_even detects even numbers" {
+    let check: bool = is_even(4)
+    std.io.println("Testing is_even(4)")
+}

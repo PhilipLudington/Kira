@@ -9,6 +9,7 @@ const Mode = enum {
     repl,
     run,
     check,
+    test_cmd,
     help,
     version_info,
 };
@@ -69,6 +70,19 @@ pub fn main() !void {
             reportError(err);
             std.process.exit(1);
         },
+        .test_cmd => {
+            if (args.file_path) |path| {
+                testFile(allocator, path) catch |err| {
+                    reportError(err);
+                    std.process.exit(1);
+                };
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Error: 'test' command requires a file path\n") catch {};
+                stderr.writeAll("Usage: kira test <file.ki>\n") catch {};
+                std.process.exit(1);
+            }
+        },
     }
 }
 
@@ -107,6 +121,11 @@ fn parseArgs() !Args {
             if (args_iter.next()) |path| {
                 result.file_path = path;
             }
+        } else if (std.mem.eql(u8, arg, "test")) {
+            result.mode = .test_cmd;
+            if (args_iter.next()) |path| {
+                result.file_path = path;
+            }
         } else if (std.mem.eql(u8, arg, "--tokens")) {
             result.show_tokens = true;
         } else if (std.mem.eql(u8, arg, "--ast")) {
@@ -137,6 +156,7 @@ fn printHelp() void {
         \\Commands:
         \\  run <file.ki>     Run a Kira program
         \\  check <file.ki>   Type-check a program without running
+        \\  test <file.ki>    Run tests in a file
         \\  (no command)      Start the interactive REPL
         \\
         \\Options:
@@ -587,6 +607,185 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     } else {
         const msg = std.fmt.bufPrint(&buf, "Check passed: {s}\n", .{path}) catch "Check passed\n";
         try stdout.writeAll(msg);
+    }
+}
+
+/// Run tests in a Kira source file
+fn testFile(allocator: Allocator, path: []const u8) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    // Read the file
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: Cannot open file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try stderr.writeAll(msg);
+        return error.FileNotFound;
+    };
+    defer file.close();
+
+    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error reading file: {}\n", .{err}) catch "Error reading file\n";
+        try stderr.writeAll(msg);
+        return error.ReadError;
+    };
+    defer allocator.free(source);
+
+    // Parse
+    var parse_result = Kira.parseWithErrors(allocator, source);
+    if (parse_result.hasErrors()) {
+        defer parse_result.deinit();
+        for (parse_result.errors) |err| {
+            var buf: [1024]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s}\n", .{
+                path, err.line, err.column, err.message,
+            }) catch "Parse error\n";
+            stderr.writeAll(msg) catch {};
+        }
+        return error.ParseError;
+    }
+
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        return error.ParseError;
+    };
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| {
+        arena.deinit();
+    }
+    defer program.deinit();
+
+    // Create symbol table and resolve
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+
+    var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
+    defer loader.deinit();
+    loader.addSearchPath(".") catch {};
+    if (std.fs.path.dirname(path)) |dir| {
+        if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
+            loader.addSearchPath(dir) catch {};
+        }
+    }
+    if (project_config.project_root) |root| {
+        loader.addSearchPath(root) catch {};
+    }
+
+    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+        for (loader.getErrors()) |load_err| {
+            try formatModuleError(stderr, load_err, source, path);
+        }
+        if (!loader.hasErrors()) {
+            try formatResolveError(stderr, path, source, err);
+        }
+        return error.ResolveError;
+    };
+
+    // Type check
+    var checker = Kira.TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+    checker.check(&program) catch {
+        for (checker.getDiagnostics()) |diag| {
+            try formatDiagnostic(stderr, path, source, diag);
+        }
+        return error.TypeCheckError;
+    };
+
+    // Create interpreter
+    var interp = Kira.Interpreter.init(allocator, &table);
+    defer interp.deinit();
+
+    const arena_alloc = interp.arenaAlloc();
+    try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
+    try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+
+    // Register declarations from loaded modules
+    var modules_iter = loader.loadedModulesIterator();
+    while (modules_iter.next()) |entry| {
+        if (entry.value_ptr.program) |mod_program| {
+            var path_segments = std.ArrayListUnmanaged([]const u8){};
+            defer path_segments.deinit(allocator);
+            var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
+            while (path_iter.next()) |segment| {
+                path_segments.append(allocator, segment) catch continue;
+            }
+            if (path_segments.items.len > 0) {
+                interp.registerModuleNamespace(path_segments.items, mod_program.declarations, &interp.global_env) catch {};
+            }
+            for (mod_program.declarations) |*mod_decl| {
+                if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
+                    interp.registerDeclaration(mod_decl, &interp.global_env) catch {};
+                }
+            }
+        }
+    }
+
+    // Register non-test declarations
+    for (program.declarations) |*decl| {
+        if (decl.kind != .test_decl) {
+            interp.registerDeclaration(decl, &interp.global_env) catch {};
+        }
+    }
+
+    // Collect and run tests
+    var test_count: u32 = 0;
+    var pass_count: u32 = 0;
+    var fail_count: u32 = 0;
+
+    try stdout.writeAll("\nRunning tests...\n\n");
+
+    for (program.declarations) |*decl| {
+        if (decl.kind == .test_decl) {
+            const test_decl = decl.kind.test_decl;
+            test_count += 1;
+
+            var name_buf: [256]u8 = undefined;
+            const test_name = std.fmt.bufPrint(&name_buf, "test \"{s}\"", .{test_decl.name}) catch test_decl.name;
+
+            // Run the test body
+            var test_passed = true;
+            for (test_decl.body) |*stmt| {
+                _ = interp.evalStatement(stmt, &interp.global_env) catch |err| {
+                    test_passed = false;
+                    var err_buf: [512]u8 = undefined;
+                    const err_msg = std.fmt.bufPrint(&err_buf, "  FAIL: {s} - {}\n", .{ test_name, err }) catch "  FAIL\n";
+                    try stderr.writeAll(err_msg);
+                    break;
+                };
+            }
+
+            if (test_passed) {
+                pass_count += 1;
+                var pass_buf: [256]u8 = undefined;
+                const pass_msg = std.fmt.bufPrint(&pass_buf, "  PASS: {s}\n", .{test_name}) catch "  PASS\n";
+                try stdout.writeAll(pass_msg);
+            } else {
+                fail_count += 1;
+            }
+        }
+    }
+
+    // Summary
+    try stdout.writeAll("\n");
+    var summary_buf: [256]u8 = undefined;
+    if (fail_count == 0) {
+        const summary = std.fmt.bufPrint(&summary_buf, "All {d} tests passed.\n", .{test_count}) catch "All tests passed.\n";
+        try stdout.writeAll(summary);
+    } else {
+        const summary = std.fmt.bufPrint(&summary_buf, "{d} passed, {d} failed out of {d} tests.\n", .{ pass_count, fail_count, test_count }) catch "Some tests failed.\n";
+        try stderr.writeAll(summary);
+        return error.TestsFailed;
+    }
+
+    if (test_count == 0) {
+        try stdout.writeAll("No tests found.\n");
     }
 }
 

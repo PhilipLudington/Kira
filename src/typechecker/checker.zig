@@ -1603,6 +1603,16 @@ pub const TypeChecker = struct {
                     ));
                 }
             },
+            .test_decl => |t| {
+                // Type check the test body - tests are implicitly effect functions
+                const saved_in_effect = self.in_effect_function;
+                self.in_effect_function = true;
+                defer self.in_effect_function = saved_in_effect;
+
+                for (t.body) |*stmt| {
+                    _ = try self.checkStatement(stmt);
+                }
+            },
         }
     }
 

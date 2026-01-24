@@ -62,6 +62,7 @@ pub const TokenType = enum {
 
     // Special keywords
     where,
+    test_keyword,
 
     // Arithmetic operators
     plus, // +
@@ -152,6 +153,7 @@ pub const TokenType = enum {
             .in_keyword,
             .as_keyword,
             .where,
+            .test_keyword,
             => true,
             else => false,
         };
@@ -217,6 +219,7 @@ pub const TokenType = enum {
             .in_keyword => "in",
             .as_keyword => "as",
             .where => "where",
+            .test_keyword => "test",
             .plus => "+",
             .minus => "-",
             .star => "*",
@@ -312,17 +315,20 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "in", .in_keyword },
     .{ "as", .as_keyword },
     .{ "where", .where },
+    .{ "test", .test_keyword },
 });
 
 test "keyword lookup" {
     try std.testing.expectEqual(TokenType.fn_keyword, keywords.get("fn").?);
     try std.testing.expectEqual(TokenType.let, keywords.get("let").?);
     try std.testing.expectEqual(TokenType.self_type, keywords.get("Self").?);
+    try std.testing.expectEqual(TokenType.test_keyword, keywords.get("test").?);
     try std.testing.expect(keywords.get("notakeyword") == null);
 }
 
 test "token type properties" {
     try std.testing.expect(TokenType.fn_keyword.isKeyword());
+    try std.testing.expect(TokenType.test_keyword.isKeyword());
     try std.testing.expect(TokenType.plus.isOperator());
     try std.testing.expect(!TokenType.identifier.isKeyword());
     try std.testing.expect(!TokenType.identifier.isOperator());

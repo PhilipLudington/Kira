@@ -193,6 +193,10 @@ pub const Resolver = struct {
             },
             .const_decl => |c| try self.resolveConstDecl(&c, decl.span, decl.doc_comment),
             .let_decl => |l| try self.resolveLetDecl(&l, decl.span, decl.doc_comment),
+            .test_decl => {
+                // Tests don't introduce new symbols, they're just executed later
+                // The test body will be resolved when the test is run
+            },
         }
     }
 

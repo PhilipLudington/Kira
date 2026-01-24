@@ -593,6 +593,9 @@ pub const PrettyPrinter = struct {
                 try self.write(": ");
                 try self.printType(ld.binding_type.*);
             },
+            .test_decl => |td| {
+                try self.writeFmt("test \"{s}\" {{ {d} statements }}", .{ td.name, td.body.len });
+            },
         }
     }
 

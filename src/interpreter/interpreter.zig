@@ -352,6 +352,10 @@ pub const Interpreter = struct {
             .trait_decl, .impl_block, .module_decl, .import_decl => {
                 // These are handled elsewhere or don't need runtime representation
             },
+            .test_decl => {
+                // Tests are skipped during normal execution
+                // They are collected and run separately in test mode
+            },
         }
     }
 

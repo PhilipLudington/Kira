@@ -36,6 +36,9 @@ pub const Declaration = struct {
 
         // Top-level let binding (for functions as values)
         let_decl: LetDecl,
+
+        // Test declaration
+        test_decl: TestDecl,
     };
 
     /// Function declaration
@@ -192,6 +195,13 @@ pub const Declaration = struct {
         is_public: bool,
     };
 
+    /// Test declaration
+    /// `test "description" { body }`
+    pub const TestDecl = struct {
+        name: []const u8,
+        body: []Statement,
+    };
+
     /// Create a new declaration with the given kind and span
     pub fn init(kind: DeclarationKind, span: Span) Declaration {
         return .{ .kind = kind, .span = span, .doc_comment = null };
@@ -210,7 +220,7 @@ pub const Declaration = struct {
             .trait_decl => |t| t.is_public,
             .const_decl => |c| c.is_public,
             .let_decl => |l| l.is_public,
-            .impl_block, .module_decl, .import_decl => false,
+            .impl_block, .module_decl, .import_decl, .test_decl => false,
         };
     }
 
@@ -222,6 +232,7 @@ pub const Declaration = struct {
             .trait_decl => |t| t.name,
             .const_decl => |c| c.name,
             .let_decl => |l| l.name,
+            .test_decl => |t| t.name,
             .impl_block, .module_decl, .import_decl => null,
         };
     }
@@ -258,4 +269,25 @@ test "declaration with doc comment" {
 
     try std.testing.expect(decl.doc_comment != null);
     try std.testing.expectEqualStrings("This is a doc comment", decl.doc_comment.?);
+}
+
+test "test declaration properties" {
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const test_decl = Declaration.init(.{
+        .test_decl = .{
+            .name = "my test",
+            .body = &[_]Statement{},
+        },
+    }, span);
+
+    // Tests are never public
+    try std.testing.expect(!test_decl.isPublic());
+
+    // Tests have a name
+    try std.testing.expect(test_decl.name() != null);
+    try std.testing.expectEqualStrings("my test", test_decl.name().?);
 }

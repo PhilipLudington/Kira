@@ -599,3 +599,96 @@ test "interpreter: float arithmetic" {
     try testing.expect(result.? == .float);
     try testing.expect(@abs(result.?.float - 6.28) < 0.0001);
 }
+
+// ============================================================================
+// Test Declaration Tests
+// ============================================================================
+
+test "parser: test declaration is parsed" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\test "simple test" {
+        \\    let x: i32 = 42
+        \\}
+    ;
+
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    // Should have one declaration (the test)
+    try testing.expectEqual(@as(usize, 1), program.declarations.len);
+
+    // Should be a test_decl
+    const decl = program.declarations[0];
+    try testing.expect(decl.kind == .test_decl);
+
+    // Check test name
+    const test_decl = decl.kind.test_decl;
+    try testing.expectEqualStrings("simple test", test_decl.name);
+
+    // Check body has one statement
+    try testing.expectEqual(@as(usize, 1), test_decl.body.len);
+}
+
+test "parser: test declaration with multiple statements" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\test "multi statement test" {
+        \\    let a: i32 = 1
+        \\    let b: i32 = 2
+        \\    let c: i32 = a + b
+        \\}
+    ;
+
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    try testing.expectEqual(@as(usize, 1), program.declarations.len);
+    const test_decl = program.declarations[0].kind.test_decl;
+    try testing.expectEqualStrings("multi statement test", test_decl.name);
+    try testing.expectEqual(@as(usize, 3), test_decl.body.len);
+}
+
+test "parser: test declaration cannot be public" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\pub test "should fail" {
+        \\    let x: i32 = 1
+        \\}
+    ;
+
+    // This should fail to parse
+    const result = Kira.parse(allocator, source);
+    try testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parser: file with function and test" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    a + b
+        \\}
+        \\
+        \\test "addition" {
+        \\    let result: i32 = add(2, 3)
+        \\}
+    ;
+
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    // Should have two declarations
+    try testing.expectEqual(@as(usize, 2), program.declarations.len);
+
+    // First should be function
+    try testing.expect(program.declarations[0].kind == .function_decl);
+    try testing.expectEqualStrings("add", program.declarations[0].kind.function_decl.name);
+
+    // Second should be test
+    try testing.expect(program.declarations[1].kind == .test_decl);
+    try testing.expectEqualStrings("addition", program.declarations[1].kind.test_decl.name);
+}
