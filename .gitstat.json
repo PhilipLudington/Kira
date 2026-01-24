@@ -1,0 +1,16 @@
+{
+  "tests": [
+    {
+      "name": "Zig Unit Tests",
+      "resultsFile": ".test-results.json",
+      "command": "./run-tests.sh"
+    }
+  ],
+  "builds": [
+    {
+      "name": "Debug Build",
+      "resultsFile": ".build-results.json",
+      "command": "./build.sh"
+    }
+  ]
+}

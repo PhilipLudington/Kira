@@ -4,3 +4,7 @@ zig-out/
 
 # macOS
 .DS_Store
+
+# GitStat results
+.test-results.json
+.build-results.json
