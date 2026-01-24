@@ -1,25 +1,33 @@
-module test_example
+// Example test file using std.assert
+// Run with: kira test examples/test_example.ki
 
-// Helper function to test
 fn add(a: i32, b: i32) -> i32 {
-    a + b
+    return a + b
 }
 
 fn is_even(n: i32) -> bool {
-    n % 2 == 0
+    return n % 2 == 0
 }
 
 test "addition works" {
-    let result: i32 = add(2, 3)
-    std.io.println("Testing 2 + 3 = 5")
+    std.assert.assert_eq(5, add(2, 3))
+    std.assert.assert_eq(0, add(-1, 1))
+    std.assert.assert_eq(-3, add(-1, -2))
 }
 
 test "subtraction works" {
     let result: i32 = 10 - 4
-    std.io.println("Testing 10 - 4 = 6")
+    std.assert.assert_eq(6, result)
 }
 
 test "is_even detects even numbers" {
-    let check: bool = is_even(4)
-    std.io.println("Testing is_even(4)")
+    std.assert.assert_true(is_even(4))
+    std.assert.assert_true(is_even(0))
+    std.assert.assert_true(is_even(-2))
+}
+
+test "is_even detects odd numbers" {
+    std.assert.assert_false(is_even(3))
+    std.assert.assert_false(is_even(1))
+    std.assert.assert_false(is_even(-1))
 }

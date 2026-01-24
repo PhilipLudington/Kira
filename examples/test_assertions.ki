@@ -1,0 +1,310 @@
+// Test file demonstrating all std.assert functions
+// Note: Functions use explicit return due to implicit return behavior
+
+// Helper functions for testing
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn divide(a: i32, b: i32) -> Result[i32, string] {
+    if b == 0 {
+        return Err("division by zero")
+    } else {
+        return Ok(a / b)
+    }
+}
+
+fn find_item(target: i32) -> Option[i32] {
+    if target > 0 and target < 10 {
+        return Some(target)
+    } else {
+        return None
+    }
+}
+
+// =============================================================================
+// Boolean Assertions
+// =============================================================================
+
+test "assert basic" {
+    std.assert.assert(true)
+    std.assert.assert(1 == 1)
+    std.assert.assert(add(2, 2) == 4)
+}
+
+test "assert_true" {
+    std.assert.assert_true(true)
+    std.assert.assert_true(5 > 3)
+    std.assert.assert_true("hello" == "hello")
+}
+
+test "assert_false" {
+    std.assert.assert_false(false)
+    std.assert.assert_false(5 < 3)
+    std.assert.assert_false("hello" == "world")
+}
+
+// =============================================================================
+// Equality Assertions
+// =============================================================================
+
+test "assert_eq integers" {
+    std.assert.assert_eq(42, 42)
+    std.assert.assert_eq(add(2, 3), 5)
+    std.assert.assert_eq(-10, -10)
+}
+
+test "assert_eq strings" {
+    std.assert.assert_eq("hello", "hello")
+    std.assert.assert_eq("", "")
+}
+
+test "assert_eq booleans" {
+    std.assert.assert_eq(true, true)
+    std.assert.assert_eq(false, false)
+}
+
+test "assert_eq floats" {
+    std.assert.assert_eq(3.14, 3.14)
+    std.assert.assert_eq(0.0, 0.0)
+}
+
+test "assert_not_eq" {
+    std.assert.assert_not_eq(42, 43)
+    std.assert.assert_not_eq("hello", "world")
+    std.assert.assert_not_eq(true, false)
+}
+
+// =============================================================================
+// Comparison Assertions
+// =============================================================================
+
+test "assert_greater" {
+    std.assert.assert_greater(5, 10)      // 10 > 5
+    std.assert.assert_greater(0, 1)       // 1 > 0
+    std.assert.assert_greater(-10, -5)    // -5 > -10
+    std.assert.assert_greater(1.5, 2.5)   // 2.5 > 1.5
+}
+
+test "assert_less" {
+    std.assert.assert_less(10, 5)         // 5 < 10
+    std.assert.assert_less(1, 0)          // 0 < 1
+    std.assert.assert_less(-5, -10)       // -10 < -5
+    std.assert.assert_less(2.5, 1.5)      // 1.5 < 2.5
+}
+
+test "assert_greater_or_eq" {
+    std.assert.assert_greater_or_eq(5, 10)  // 10 >= 5
+    std.assert.assert_greater_or_eq(5, 5)   // 5 >= 5
+    std.assert.assert_greater_or_eq(1.0, 1.0) // 1.0 >= 1.0
+}
+
+test "assert_less_or_eq" {
+    std.assert.assert_less_or_eq(10, 5)   // 5 <= 10
+    std.assert.assert_less_or_eq(5, 5)    // 5 <= 5
+    std.assert.assert_less_or_eq(2.0, 2.0) // 2.0 <= 2.0
+}
+
+// =============================================================================
+// Range Assertions
+// =============================================================================
+
+test "assert_in_range" {
+    std.assert.assert_in_range(1, 10, 5)    // 5 in [1, 10]
+    std.assert.assert_in_range(1, 10, 1)    // 1 in [1, 10] (lower bound)
+    std.assert.assert_in_range(1, 10, 10)   // 10 in [1, 10] (upper bound)
+    std.assert.assert_in_range(0.0, 1.0, 0.5) // 0.5 in [0.0, 1.0]
+}
+
+// =============================================================================
+// Float Approximate Equality
+// =============================================================================
+
+test "assert_approx_eq" {
+    std.assert.assert_approx_eq(1.0, 1.0001, 0.001)
+    std.assert.assert_approx_eq(3.14159, 3.14160, 0.0001)
+    std.assert.assert_approx_eq(0.0, 0.0, 0.0001)
+}
+
+// =============================================================================
+// Option Assertions
+// =============================================================================
+
+test "assert_some" {
+    let opt: Option[i32] = Some(42)
+    std.assert.assert_some(opt)
+    std.assert.assert_some(find_item(5))
+}
+
+test "assert_none" {
+    let opt: Option[i32] = None
+    std.assert.assert_none(opt)
+    std.assert.assert_none(find_item(100))
+}
+
+test "assert_some_eq" {
+    let opt: Option[i32] = Some(42)
+    std.assert.assert_some_eq(42, opt)
+
+    let str_opt: Option[string] = Some("hello")
+    std.assert.assert_some_eq("hello", str_opt)
+}
+
+// =============================================================================
+// Result Assertions
+// =============================================================================
+
+test "assert_ok" {
+    let res: Result[i32, string] = Ok(42)
+    std.assert.assert_ok(res)
+    std.assert.assert_ok(divide(10, 2))
+}
+
+test "assert_err" {
+    let res: Result[i32, string] = Err("error occurred")
+    std.assert.assert_err(res)
+    std.assert.assert_err(divide(10, 0))
+}
+
+test "assert_ok_eq" {
+    let res: Result[i32, string] = Ok(5)
+    std.assert.assert_ok_eq(5, res)
+    std.assert.assert_ok_eq(5, divide(10, 2))
+}
+
+test "assert_err_contains" {
+    let res: Result[i32, string] = Err("division by zero error")
+    std.assert.assert_err_contains(res, "zero")
+    std.assert.assert_err_contains(divide(10, 0), "division")
+}
+
+// =============================================================================
+// String Content Assertions
+// =============================================================================
+
+test "assert_contains" {
+    std.assert.assert_contains("hello world", "world")
+    std.assert.assert_contains("hello world", "hello")
+    std.assert.assert_contains("hello world", "o w")
+    std.assert.assert_contains("", "")
+}
+
+test "assert_not_contains" {
+    std.assert.assert_not_contains("hello", "world")
+    std.assert.assert_not_contains("hello", "xyz")
+}
+
+test "assert_starts_with" {
+    std.assert.assert_starts_with("hello world", "hello")
+    std.assert.assert_starts_with("hello", "")
+    std.assert.assert_starts_with("", "")
+}
+
+test "assert_not_starts_with" {
+    std.assert.assert_not_starts_with("hello world", "world")
+    std.assert.assert_not_starts_with("hello", "xyz")
+}
+
+test "assert_ends_with" {
+    std.assert.assert_ends_with("hello world", "world")
+    std.assert.assert_ends_with("hello", "")
+    std.assert.assert_ends_with("", "")
+}
+
+test "assert_not_ends_with" {
+    std.assert.assert_not_ends_with("hello world", "hello")
+    std.assert.assert_not_ends_with("hello", "xyz")
+}
+
+// =============================================================================
+// String Value Assertions
+// =============================================================================
+
+test "assert_empty_string" {
+    std.assert.assert_empty_string("")
+}
+
+test "assert_not_empty_string" {
+    std.assert.assert_not_empty_string("hello")
+    std.assert.assert_not_empty_string(" ")
+}
+
+test "assert_str_length" {
+    std.assert.assert_str_length(5, "hello")
+    std.assert.assert_str_length(0, "")
+    std.assert.assert_str_length(11, "hello world")
+}
+
+// =============================================================================
+// Array Assertions
+// =============================================================================
+
+test "assert_empty array" {
+    let arr: [i32] = []
+    std.assert.assert_empty(arr)
+}
+
+test "assert_not_empty array" {
+    let arr: [i32] = [1, 2, 3]
+    std.assert.assert_not_empty(arr)
+}
+
+test "assert_length array" {
+    let arr: [i32] = [1, 2, 3]
+    std.assert.assert_length(3, arr)
+    std.assert.assert_length(0, [])
+}
+
+test "assert_array_contains" {
+    let arr: [i32] = [1, 2, 3, 4, 5]
+    std.assert.assert_array_contains(arr, 3)
+    std.assert.assert_array_contains(arr, 1)
+    std.assert.assert_array_contains(arr, 5)
+}
+
+test "assert_array_not_contains" {
+    let arr: [i32] = [1, 2, 3]
+    std.assert.assert_array_not_contains(arr, 99)
+    std.assert.assert_array_not_contains(arr, 0)
+}
+
+test "assert_array_eq" {
+    let arr1: [i32] = [1, 2, 3]
+    let arr2: [i32] = [1, 2, 3]
+    std.assert.assert_array_eq(arr1, arr2)
+    std.assert.assert_array_eq([], [])
+}
+
+// =============================================================================
+// List Assertions (Cons/Nil)
+// =============================================================================
+
+test "assert_list_empty" {
+    let list: List[i32] = Nil
+    std.assert.assert_list_empty(list)
+}
+
+test "assert_list_not_empty" {
+    let list: List[i32] = Cons(1, Cons(2, Nil))
+    std.assert.assert_list_not_empty(list)
+}
+
+test "assert_list_length" {
+    let list: List[i32] = Cons(1, Cons(2, Cons(3, Nil)))
+    std.assert.assert_list_length(3, list)
+    std.assert.assert_list_length(0, Nil)
+}
+
+test "assert_list_contains" {
+    let list: List[i32] = Cons(1, Cons(2, Cons(3, Nil)))
+    std.assert.assert_list_contains(list, 2)
+    std.assert.assert_list_contains(list, 1)
+    std.assert.assert_list_contains(list, 3)
+}
+
+test "assert_list_eq" {
+    let list1: List[i32] = Cons(1, Cons(2, Nil))
+    let list2: List[i32] = Cons(1, Cons(2, Nil))
+    std.assert.assert_list_eq(list1, list2)
+    std.assert.assert_list_eq(Nil, Nil)
+}
