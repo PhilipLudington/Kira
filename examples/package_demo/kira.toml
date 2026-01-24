@@ -1,0 +1,7 @@
+# Package demo project
+# This project imports the 'mytool' package.
+# The parent project only needs to know where the package lives,
+# not how the package is internally organized.
+
+[modules]
+mytool = "mytool"

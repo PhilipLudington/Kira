@@ -1,0 +1,10 @@
+# mytool package configuration
+# This package can be imported by other projects.
+# Internal modules use the package name for imports.
+
+[package]
+name = "mytool"
+
+[modules]
+helpers = "helpers.ki"
+core = "core.ki"

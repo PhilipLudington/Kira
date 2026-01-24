@@ -1,0 +1,34 @@
+// core.ki - Main functionality of mytool
+// This module imports from its sibling 'helpers' module using the package name.
+
+module mytool.core
+
+// Import from sibling module using package name
+// The package's kira.toml maps "helpers" -> "helpers.ki"
+import mytool.helpers.{ double, square }
+
+// Public type for results
+pub type Result = {
+    value: i64,
+    doubled: i64,
+    squared: i64
+}
+
+// Public function that uses the helper functions
+pub fn compute(x: i64) -> Result {
+    return Result {
+        value: x,
+        doubled: double(x),
+        squared: square(x)
+    }
+}
+
+// Another public function
+pub fn process_all(values: [i64]) -> i64 {
+    let sum: i64 = 0
+    for v in values {
+        let r: Result = compute(v)
+        sum = sum + r.doubled + r.squared
+    }
+    return sum
+}

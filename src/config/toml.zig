@@ -1,6 +1,7 @@
 //! Minimal TOML parser for kira.toml configuration.
 //!
 //! Supports only the subset needed for Kira project configuration:
+//! - `[package]` section with `name = "..."` for package identity
 //! - `[modules]` section header
 //! - `key = "value"` string assignments
 //! - `#` comments and blank lines
@@ -21,10 +22,16 @@ pub const ParseError = error{
 
 /// Result of parsing a TOML file.
 pub const ParseResult = struct {
+    /// Package name from [package] section (null if not specified).
+    package_name: ?[]const u8,
+    /// Module mappings from [modules] section.
     modules: TomlTable,
 
     /// Free all allocated memory.
     pub fn deinit(self: *ParseResult, allocator: Allocator) void {
+        if (self.package_name) |name| {
+            allocator.free(name);
+        }
         var iter = self.modules.iterator();
         while (iter.next()) |entry| {
             allocator.free(entry.key_ptr.*);
@@ -38,6 +45,7 @@ pub const ParseResult = struct {
 /// Returns a ParseResult that must be freed with deinit().
 pub fn parse(allocator: Allocator, source: []const u8) ParseError!ParseResult {
     var result = ParseResult{
+        .package_name = null,
         .modules = .{},
     };
     errdefer result.deinit(allocator);
@@ -63,20 +71,28 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!ParseResult {
         }
 
         // Key-value pair: key = "value"
-        // Only process if we're in the [modules] section
         if (current_section) |section| {
-            if (!std.mem.eql(u8, section, "modules")) {
-                continue;
-            }
-
             const kv = try parseKeyValue(trimmed);
             if (kv) |pair| {
-                const key = allocator.dupe(u8, pair.key) catch return error.OutOfMemory;
-                errdefer allocator.free(key);
+                if (std.mem.eql(u8, section, "package")) {
+                    // Handle [package] section
+                    if (std.mem.eql(u8, pair.key, "name")) {
+                        if (result.package_name) |old| {
+                            allocator.free(old);
+                        }
+                        result.package_name = allocator.dupe(u8, pair.value) catch return error.OutOfMemory;
+                    }
+                    // Ignore other package keys for now
+                } else if (std.mem.eql(u8, section, "modules")) {
+                    // Handle [modules] section
+                    const key = allocator.dupe(u8, pair.key) catch return error.OutOfMemory;
+                    errdefer allocator.free(key);
 
-                const value = allocator.dupe(u8, pair.value) catch return error.OutOfMemory;
+                    const value = allocator.dupe(u8, pair.value) catch return error.OutOfMemory;
 
-                result.modules.put(allocator, key, value) catch return error.OutOfMemory;
+                    result.modules.put(allocator, key, value) catch return error.OutOfMemory;
+                }
+                // Ignore other sections
             }
         }
     }
@@ -142,7 +158,26 @@ test "parse empty source" {
     var result = try parse(allocator, "");
     defer result.deinit(allocator);
 
+    try std.testing.expect(result.package_name == null);
     try std.testing.expectEqual(@as(usize, 0), result.modules.count());
+}
+
+test "parse package section" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\[package]
+        \\name = "mytool"
+        \\
+        \\[modules]
+        \\helpers = "src/helpers.ki"
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("mytool", result.package_name.?);
+    try std.testing.expectEqual(@as(usize, 1), result.modules.count());
+    try std.testing.expectEqualStrings("src/helpers.ki", result.modules.get("helpers").?);
 }
 
 test "parse modules section" {
@@ -158,6 +193,7 @@ test "parse modules section" {
     var result = try parse(allocator, source);
     defer result.deinit(allocator);
 
+    try std.testing.expect(result.package_name == null);
     try std.testing.expectEqual(@as(usize, 2), result.modules.count());
     try std.testing.expectEqualStrings("lib/kira-test.ki", result.modules.get("kira_test").?);
     try std.testing.expectEqualStrings("examples/geometry", result.modules.get("geometry").?);

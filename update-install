@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+echo "Building Kira..."
+zig build
+
+echo "Installing to /usr/local/bin..."
+sudo cp zig-out/bin/kira /usr/local/bin/kira
+
+echo "Done! Installed version:"
+kira --version

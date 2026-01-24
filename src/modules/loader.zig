@@ -187,33 +187,73 @@ pub const ModuleLoader = struct {
 
         // First, check project config for module path mapping
         if (self.config) |cfg| {
-            if (cfg.getFullModulePath(self.allocator, root_module_name)) |config_path| {
-                // Add to searched paths list
-                const searched_copy = self.allocator.dupe(u8, config_path) catch null;
-                if (searched_copy) |sc| {
-                    searched.append(self.allocator, sc) catch {};
-                }
+            // Try to load the root module as a package first (check for nested kira.toml)
+            if (cfg.getFullModulePath(self.allocator, root_module_name)) |root_path| {
+                // Check if it's a directory with its own kira.toml (a package)
+                const is_package = blk: {
+                    var dir = std.fs.cwd().openDir(root_path, .{}) catch {
+                        self.allocator.free(root_path);
+                        break :blk false;
+                    };
+                    defer dir.close();
+                    // Try to load package config
+                    const pkg_name = @constCast(cfg).loadPackage(self.allocator, root_path) catch {
+                        self.allocator.free(root_path);
+                        break :blk false;
+                    };
+                    break :blk pkg_name != null;
+                };
 
-                // Try to open the configured path (could be file or directory)
-                if (std.fs.cwd().openFile(config_path, .{})) |f| {
-                    f.close();
-                    file_path = config_path;
-                } else |_| {
-                    // Try as directory with mod.ki
-                    const mod_path = std.fs.path.join(self.allocator, &.{ config_path, "mod.ki" }) catch null;
-                    self.allocator.free(config_path);
-
-                    if (mod_path) |mp| {
-                        const mod_searched_copy = self.allocator.dupe(u8, mp) catch null;
-                        if (mod_searched_copy) |msc| {
-                            searched.append(self.allocator, msc) catch {};
+                if (is_package) {
+                    self.allocator.free(root_path);
+                    // Now use getFullModulePath again - it will use the loaded package config
+                    if (cfg.getFullModulePath(self.allocator, module_path)) |pkg_module_path| {
+                        const pkg_searched_copy = self.allocator.dupe(u8, pkg_module_path) catch null;
+                        if (pkg_searched_copy) |psc| {
+                            searched.append(self.allocator, psc) catch {};
                         }
 
-                        if (std.fs.cwd().openFile(mp, .{})) |f| {
+                        if (std.fs.cwd().openFile(pkg_module_path, .{})) |f| {
                             f.close();
-                            file_path = mp;
+                            file_path = pkg_module_path;
                         } else |_| {
-                            self.allocator.free(mp);
+                            self.allocator.free(pkg_module_path);
+                        }
+                    }
+                }
+                // If not a package, root_path was already freed in the blk
+            }
+
+            // If not found via package, try direct module mapping
+            if (file_path == null) {
+                if (cfg.getFullModulePath(self.allocator, root_module_name)) |config_path| {
+                    // Add to searched paths list
+                    const searched_copy = self.allocator.dupe(u8, config_path) catch null;
+                    if (searched_copy) |sc| {
+                        searched.append(self.allocator, sc) catch {};
+                    }
+
+                    // Try to open the configured path (could be file or directory)
+                    if (std.fs.cwd().openFile(config_path, .{})) |f| {
+                        f.close();
+                        file_path = config_path;
+                    } else |_| {
+                        // Try as directory with mod.ki
+                        const mod_path = std.fs.path.join(self.allocator, &.{ config_path, "mod.ki" }) catch null;
+                        self.allocator.free(config_path);
+
+                        if (mod_path) |mp| {
+                            const mod_searched_copy = self.allocator.dupe(u8, mp) catch null;
+                            if (mod_searched_copy) |msc| {
+                                searched.append(self.allocator, msc) catch {};
+                            }
+
+                            if (std.fs.cwd().openFile(mp, .{})) |f| {
+                                f.close();
+                                file_path = mp;
+                            } else |_| {
+                                self.allocator.free(mp);
+                            }
                         }
                     }
                 }
@@ -467,6 +507,22 @@ pub const ModuleLoader = struct {
                     },
                     else => {},
                 }
+            }
+
+            // Process imports from this module (recursively load dependencies)
+            for (program.imports) |import_decl| {
+                // Build the full module path from import segments
+                var path_builder = std.ArrayListUnmanaged(u8){};
+                defer path_builder.deinit(self.allocator);
+                for (import_decl.path, 0..) |segment, i| {
+                    if (i > 0) path_builder.append(self.allocator, '.') catch continue;
+                    path_builder.appendSlice(self.allocator, segment) catch continue;
+                }
+                const import_path = path_builder.toOwnedSlice(self.allocator) catch continue;
+                defer self.allocator.free(import_path);
+
+                // Recursively load the imported module
+                _ = self.loadModule(import_path) catch continue;
             }
 
             // Return to global scope

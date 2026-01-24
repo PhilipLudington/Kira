@@ -285,16 +285,21 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
 
-    // Add search paths: parent directory and directory containing the main file
-    // The parent directory is added first because module paths like "geometry.shapes"
-    // expect to find "geometry/shapes.ki" from a package root
+    // Add search paths: current directory, parent directory, and directory containing the main file
+    // Always add current directory for relative module paths
+    loader.addSearchPath(".") catch {};
+
     if (std.fs.path.dirname(path)) |dir| {
-        // Add parent directory as the package root
+        // Add parent directory as the package root (for nested module paths)
         if (std.fs.path.dirname(dir)) |parent| {
-            loader.addSearchPath(parent) catch {};
+            if (parent.len > 0 and !std.mem.eql(u8, parent, ".")) {
+                loader.addSearchPath(parent) catch {};
+            }
         }
         // Also add the directory containing the file as a fallback
-        loader.addSearchPath(dir) catch {};
+        if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
+            loader.addSearchPath(dir) catch {};
+        }
     }
 
     // If we have a project config, also add project root as a search path
@@ -377,6 +382,7 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
             }
         }
     }
+
 
     // Interpret the main program
     const result = interp.interpret(&program) catch |err| {
@@ -518,16 +524,21 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
 
-    // Add search paths: parent directory and directory containing the main file
-    // The parent directory is added first because module paths like "geometry.shapes"
-    // expect to find "geometry/shapes.ki" from a package root
+    // Add search paths: current directory, parent directory, and directory containing the main file
+    // Always add current directory for relative module paths
+    loader.addSearchPath(".") catch {};
+
     if (std.fs.path.dirname(path)) |dir| {
-        // Add parent directory as the package root
+        // Add parent directory as the package root (for nested module paths)
         if (std.fs.path.dirname(dir)) |parent| {
-            loader.addSearchPath(parent) catch {};
+            if (parent.len > 0 and !std.mem.eql(u8, parent, ".")) {
+                loader.addSearchPath(parent) catch {};
+            }
         }
         // Also add the directory containing the file as a fallback
-        loader.addSearchPath(dir) catch {};
+        if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
+            loader.addSearchPath(dir) catch {};
+        }
     }
 
     // If we have a project config, also add project root as a search path

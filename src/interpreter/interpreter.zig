@@ -88,26 +88,25 @@ pub const Interpreter = struct {
         return null;
     }
 
-    /// Process an import declaration and create aliases if needed
+    /// Process an import declaration and create bindings for imported items
     fn processImport(self: *Interpreter, import_decl: *const Declaration.ImportDecl, env: *Environment) InterpreterError!void {
-        // If the import has specific items, handle them
+        _ = self;
+
+        // If the import has specific items, create bindings for each
         if (import_decl.items) |items| {
             for (items) |item| {
-                // If there's an alias, create a binding from alias to original
-                if (item.alias) |alias| {
-                    // Look up the original name in the environment
-                    if (env.get(item.name)) |original| {
-                        // Create alias binding
-                        try env.define(alias, original.value, original.is_mutable);
-                    }
+                // Look up the original name in the environment (from the loaded module)
+                if (env.get(item.name)) |original| {
+                    // Use alias if provided, otherwise use the original name
+                    const binding_name = item.alias orelse item.name;
+                    // Create the binding (define handles duplicates)
+                    env.define(binding_name, original.value, original.is_mutable) catch {};
                 }
+                // If not found, the symbol wasn't registered - this is a runtime error
+                // but we skip silently here as it should have been caught by the type checker
             }
-        } else {
-            // Whole-module import: need to make the module accessible via its path
-            // e.g., `import src.json` should make `src.json.X` accessible
-            // This is handled by registerModuleNamespace in main.zig
         }
-        _ = self;
+        // Whole-module imports are handled by registerModuleNamespace in main.zig
     }
 
     /// Register a module namespace value at the given path.

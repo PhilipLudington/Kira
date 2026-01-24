@@ -1,0 +1,21 @@
+// main.ki - Demonstrates importing from a package
+// The 'mytool' package has its own kira.toml that defines
+// its internal module structure.
+
+module demo.main
+
+// Import from the mytool package
+// The package's internal imports (mytool.helpers) are resolved
+// using the package's own kira.toml
+import mytool.core.{ Result, compute }
+
+fn main() -> i64 {
+    // Use the imported function
+    let r: Result = compute(5)
+
+    // r.value = 5
+    // r.doubled = 10  (from helpers.double)
+    // r.squared = 25  (from helpers.square)
+
+    return r.doubled + r.squared  // 35
+}

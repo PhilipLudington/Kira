@@ -1,0 +1,19 @@
+// helpers.ki - Internal utility functions for mytool
+// This module is part of the mytool package.
+
+module mytool.helpers
+
+// Public helper function - can be used by other modules in this package
+pub fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+// Public helper function
+pub fn square(x: i64) -> i64 {
+    return x * x
+}
+
+// Private helper - only used within this module
+fn validate(x: i64) -> bool {
+    return x >= 0
+}
