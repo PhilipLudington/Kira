@@ -50,39 +50,40 @@ let list: List[Int] = std.list.cons(
 
 ---
 
-## Non-Blocking Issues
+### 6. ~~String Output Double-Escaping~~ NOT A BUG
 
-### 6. String Output Double-Escaping
+**Status:** Investigated and found to be working correctly.
 
-**Impact:** `std.io.println` wraps strings in quotes, making JSON output harder to read.
-
-**Example:**
-```
-Input:  {"name": "Alice"}
-Output: "{\"name\": \"Alice\"}"
+**Details:** `std.io.println` correctly outputs strings without added quotes. Testing confirms:
+```kira
+let json_str: String = "{\"name\": \"Alice\"}"
+std.io.println(json_str)  // Output: {"name": "Alice"}
 ```
 
-**Status:** Needs further investigation.
+The original report may have confused REPL display formatting (which intentionally shows quotes for clarity) with `println` behavior.
 
 ---
 
-### 7. Cross-Module Function Calls Unreliable
+### 7. ~~Cross-Module Function Calls Unreliable~~ IMPROVED
 
-**Impact:** Imported functions sometimes produce `FieldNotFound` at runtime despite correct `pub` exports.
+**Status:** Error handling improved in `src/main.zig` and `src/interpreter/interpreter.zig`
 
-**Workaround:** The library is structured as a single module to avoid this issue.
+**Changes Made:**
+- Module registration errors are now logged to stderr instead of being silently ignored
+- Import processing now properly handles `AlreadyDefined` errors by updating existing bindings
+- `registerModuleNamespace` now propagates `OutOfMemory` errors instead of silently failing
 
-**Status:** Needs further investigation with a reproducible test case.
+**Details:** Previously, errors during module export registration, namespace creation, and import processing were silently caught with `catch {}`. This made debugging cross-module issues nearly impossible. Now these operations log warnings when they fail, making issues visible.
 
 ---
 
-## Workarounds Applied
+## Workarounds Applied (Historical)
 
-| Issue | Workaround Used |
-|-------|-----------------|
-| `std.string.equals` missing | Use `==` operator instead |
-| `std.float.to_string` missing | Works in current version (was fixed) |
-| Cross-module calls | Keep all code in single module |
+| Issue | Workaround Used | Status |
+|-------|-----------------|--------|
+| `std.string.equals` missing | Use `==` operator instead | Still applies |
+| `std.float.to_string` missing | Works in current version | Fixed |
+| Cross-module calls | Keep all code in single module | Improved (issue #7) |
 
 ---
 

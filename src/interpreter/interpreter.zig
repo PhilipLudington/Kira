@@ -194,7 +194,14 @@ pub const Interpreter = struct {
                     if (exports.get(item.name)) |value| {
                         // Use alias if provided, otherwise use the original name
                         const binding_name = item.alias orelse item.name;
-                        env.define(binding_name, value, false) catch {};
+                        // Try to define the binding; if it already exists, try to assign instead
+                        env.define(binding_name, value, false) catch |err| {
+                            if (err == error.AlreadyDefined) {
+                                env.assign(binding_name, value) catch return error.OutOfMemory;
+                            } else {
+                                return error.OutOfMemory;
+                            }
+                        };
                     }
                     // If not found in exports, the type checker should have caught this
                 }
@@ -204,7 +211,13 @@ pub const Interpreter = struct {
                 // But we can also import all items directly into the namespace
                 var iter = exports.iterator();
                 while (iter.next()) |entry| {
-                    env.define(entry.key_ptr.*, entry.value_ptr.*, false) catch {};
+                    env.define(entry.key_ptr.*, entry.value_ptr.*, false) catch |err| {
+                        if (err == error.AlreadyDefined) {
+                            env.assign(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+                        } else {
+                            return error.OutOfMemory;
+                        }
+                    };
                 }
             }
         }
@@ -214,7 +227,13 @@ pub const Interpreter = struct {
             for (items) |item| {
                 if (env.get(item.name)) |original| {
                     const binding_name = item.alias orelse item.name;
-                    env.define(binding_name, original.value, original.is_mutable) catch {};
+                    env.define(binding_name, original.value, original.is_mutable) catch |err| {
+                        if (err == error.AlreadyDefined) {
+                            env.assign(binding_name, original.value) catch return error.OutOfMemory;
+                        } else {
+                            return error.OutOfMemory;
+                        }
+                    };
                 }
             }
         }
@@ -305,13 +324,19 @@ pub const Interpreter = struct {
                     var merged = existing.value.record.fields;
                     var field_iter = module_fields.iterator();
                     while (field_iter.next()) |entry| {
-                        merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                        merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
                     }
-                    env.assign(path[0], Value{ .record = .{ .type_name = null, .fields = merged } }) catch {};
+                    env.assign(path[0], Value{ .record = .{ .type_name = null, .fields = merged } }) catch return error.OutOfMemory;
                     return;
                 }
             }
-            env.define(path[0], leaf_module, false) catch {};
+            env.define(path[0], leaf_module, false) catch |err| {
+                if (err == error.AlreadyDefined) {
+                    env.assign(path[0], leaf_module) catch return error.OutOfMemory;
+                } else {
+                    return error.OutOfMemory;
+                }
+            };
             return;
         }
 
@@ -369,7 +394,7 @@ pub const Interpreter = struct {
                 var merged = existing.record.fields;
                 var field_iter = module_fields.iterator();
                 while (field_iter.next()) |entry| {
-                    merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                    merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
                 }
                 current_record.put(self.arenaAlloc(), leaf_name, Value{
                     .record = .{ .type_name = null, .fields = merged },
@@ -427,9 +452,13 @@ pub const Interpreter = struct {
         }
 
         // Define the root
-        env.define(root_name, module_value, false) catch {
-            // If already defined, try to update
-            env.assign(root_name, module_value) catch {};
+        env.define(root_name, module_value, false) catch |err| {
+            if (err == error.AlreadyDefined) {
+                // If already defined, update it
+                env.assign(root_name, module_value) catch return error.OutOfMemory;
+            } else {
+                return error.OutOfMemory;
+            }
         };
     }
 

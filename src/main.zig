@@ -374,20 +374,31 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     var modules_iter = loader.loadedModulesIterator();
     while (modules_iter.next()) |entry| {
         if (entry.value_ptr.program) |mod_program| {
+            const module_key = entry.key_ptr.*;
+
             // Register module exports for import resolution
             // This allows `import module.{ item }` to find the item
             interp.registerModuleExports(
-                entry.key_ptr.*,
+                module_key,
                 mod_program.declarations,
-            ) catch {};
+            ) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register exports for module '{s}': {}\n", .{ module_key, err }) catch "Warning: Module export registration failed\n";
+                stderr.writeAll(msg) catch {};
+            };
 
             // Parse module path from the key (e.g., "src.json" -> ["src", "json"])
             var path_segments = std.ArrayListUnmanaged([]const u8){};
             defer path_segments.deinit(allocator);
 
-            var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
+            var path_iter = std.mem.splitScalar(u8, module_key, '.');
             while (path_iter.next()) |segment| {
-                path_segments.append(allocator, segment) catch continue;
+                path_segments.append(allocator, segment) catch {
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Warning: Out of memory parsing module path '{s}'\n", .{module_key}) catch "Warning: Module path parsing failed\n";
+                    stderr.writeAll(msg) catch {};
+                    break;
+                };
             }
 
             // Register the module namespace with its proper path
@@ -396,7 +407,11 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
                     path_segments.items,
                     mod_program.declarations,
                     &interp.global_env,
-                ) catch {};
+                ) catch |err| {
+                    var buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register namespace for module '{s}': {}\n", .{ module_key, err }) catch "Warning: Module namespace registration failed\n";
+                    stderr.writeAll(msg) catch {};
+                };
             }
 
             // Also register declarations directly for backward compatibility
@@ -404,7 +419,17 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
             for (mod_program.declarations) |*mod_decl| {
                 // Skip module declarations, only register functions/types/etc
                 if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
-                    interp.registerDeclaration(mod_decl, &interp.global_env) catch {};
+                    interp.registerDeclaration(mod_decl, &interp.global_env) catch |err| {
+                        var buf: [512]u8 = undefined;
+                        const decl_name = switch (mod_decl.kind) {
+                            .function_decl => |f| f.name,
+                            .const_decl => |c| c.name,
+                            .type_decl => |t| t.name,
+                            else => "<unknown>",
+                        };
+                        const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register declaration '{s}' from module '{s}': {}\n", .{ decl_name, module_key, err }) catch "Warning: Declaration registration failed\n";
+                        stderr.writeAll(msg) catch {};
+                    };
                 }
             }
         }
