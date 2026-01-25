@@ -81,19 +81,62 @@ The original report may have confused REPL display formatting (which intentional
 
 | Issue | Workaround Used | Status |
 |-------|-----------------|--------|
-| `std.string.equals` missing | Use `==` operator instead | Still applies |
+| `std.string.equals` missing | Use `==` operator instead | Fixed - `std.string.equals` now exists |
 | `std.float.to_string` missing | Works in current version | Fixed |
 | Cross-module calls | Keep all code in single module | Improved (issue #7) |
 
 ---
 
-## Feature Requests
+## Feature Requests - IMPLEMENTED
 
-These are not bugs but would improve the library:
+All previously requested features have been implemented:
 
-1. **Hash map type** — Would improve object field lookup from O(n) to O(1)
-2. **String builder** — Would improve serialization performance
-3. **Character iteration** — `std.string.chars(s) -> List[char]` would simplify parsing
+### 1. ~~Hash map type~~ IMPLEMENTED
+
+**Status:** Implemented in `src/stdlib/map.zig`
+
+**Usage:**
+```kira
+let m: HashMap = std.map.new()
+let m2: HashMap = std.map.put(m, "name", "Alice")
+let result: Option[String] = std.map.get(m2, "name")  // Some("Alice")
+let has_key: Bool = std.map.contains(m2, "name")      // true
+let keys: List[String] = std.map.keys(m2)
+let values: List[Value] = std.map.values(m2)
+let entries: List[(String, Value)] = std.map.entries(m2)
+let size: Int = std.map.size(m2)                      // 1
+let m3: HashMap = std.map.remove(m2, "name")
+```
+
+---
+
+### 2. ~~String builder~~ IMPLEMENTED
+
+**Status:** Implemented in `src/stdlib/builder.zig`
+
+**Usage:**
+```kira
+let b: StringBuilder = std.builder.new()
+let b2: StringBuilder = std.builder.append(b, "Hello")
+let b3: StringBuilder = std.builder.append(b2, ", World!")
+let b4: StringBuilder = std.builder.append_char(b3, '!')
+let b5: StringBuilder = std.builder.append_int(b4, 42)
+let result: String = std.builder.build(b5)  // "Hello, World!!42"
+let len: Int = std.builder.length(b5)       // 16
+let cleared: StringBuilder = std.builder.clear(b5)
+```
+
+---
+
+### 3. ~~Character iteration~~ IMPLEMENTED
+
+**Status:** Implemented in `src/stdlib/string.zig`
+
+**Usage:**
+```kira
+let chars: List[Char] = std.string.chars("hello")  // List['h', 'e', 'l', 'l', 'o']
+let utf8_chars: List[Char] = std.string.chars("café")  // Handles UTF-8 properly
+```
 
 ---
 

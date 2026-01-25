@@ -38,6 +38,7 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "char_at", root.makeBuiltin("char_at", &stringCharAt));
     try fields.put(allocator, "index_of", root.makeBuiltin("index_of", &stringIndexOf));
     try fields.put(allocator, "equals", root.makeBuiltin("equals", &stringEquals));
+    try fields.put(allocator, "chars", root.makeBuiltin("chars", &stringChars));
 
     // Numeric-to-string conversion functions
     try fields.put(allocator, "from_i32", root.makeBuiltin("from_i32", &stringFromInt));
@@ -371,6 +372,45 @@ fn stringEquals(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
     return Value{ .boolean = std.mem.eql(u8, str1, str2) };
 }
 
+/// Convert string to list of characters: chars(str) -> List[Char]
+/// Returns a linked list (cons cells) of Unicode codepoints from the string.
+/// For ASCII strings, each byte becomes one character.
+/// For UTF-8 strings, each Unicode codepoint becomes one character.
+fn stringChars(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const str = switch (args[0]) {
+        .string => |s| s,
+        else => return error.TypeMismatch,
+    };
+
+    // Collect all characters into an array first
+    var chars_list = std.ArrayListUnmanaged(Value){};
+    defer chars_list.deinit(ctx.allocator);
+
+    // Use UTF-8 view to properly decode Unicode codepoints
+    var utf8_view = std.unicode.Utf8View.initUnchecked(str);
+    var iter = utf8_view.iterator();
+    while (iter.nextCodepoint()) |codepoint| {
+        chars_list.append(ctx.allocator, Value{ .char = codepoint }) catch return error.OutOfMemory;
+    }
+
+    // Build the list (cons cells) from the array
+    // Build in reverse to get correct order
+    var result: Value = Value{ .nil = {} };
+    var i = chars_list.items.len;
+    while (i > 0) {
+        i -= 1;
+        const head = ctx.allocator.create(Value) catch return error.OutOfMemory;
+        const tail = ctx.allocator.create(Value) catch return error.OutOfMemory;
+        head.* = chars_list.items[i];
+        tail.* = result;
+        result = Value{ .cons = .{ .head = head, .tail = tail } };
+    }
+
+    return result;
+}
+
 /// Convert integer to string: from_i32(n) -> str, from_i64(n) -> str, from_int(n) -> str
 fn stringFromInt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
@@ -590,4 +630,30 @@ test "string parse_int" {
     try std.testing.expect(zero == .some);
     defer allocator.destroy(zero.some);
     try std.testing.expectEqual(@as(i128, 0), zero.some.*.integer);
+}
+
+test "string chars" {
+    // Use arena for tests with list allocations
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
+
+    // ASCII string "abc" -> List['a', 'b', 'c']
+    const result = try stringChars(ctx, &.{Value{ .string = "abc" }});
+    try std.testing.expect(result == .cons);
+    try std.testing.expectEqual(@as(u21, 'a'), result.cons.head.char);
+    try std.testing.expectEqual(@as(u21, 'b'), result.cons.tail.cons.head.char);
+    try std.testing.expectEqual(@as(u21, 'c'), result.cons.tail.cons.tail.cons.head.char);
+    try std.testing.expect(result.cons.tail.cons.tail.cons.tail.* == .nil);
+
+    // Empty string -> empty list (nil)
+    const empty = try stringChars(ctx, &.{Value{ .string = "" }});
+    try std.testing.expect(empty == .nil);
+
+    // UTF-8 string with multi-byte characters
+    const utf8_result = try stringChars(ctx, &.{Value{ .string = "\xc3\xa9" }}); // "é" in UTF-8
+    try std.testing.expect(utf8_result == .cons);
+    try std.testing.expectEqual(@as(u21, 0xe9), utf8_result.cons.head.char); // U+00E9 = é
+    try std.testing.expect(utf8_result.cons.tail.* == .nil);
 }
