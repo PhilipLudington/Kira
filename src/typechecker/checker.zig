@@ -1341,6 +1341,27 @@ pub const TypeChecker = struct {
                 }
             },
 
+            .while_loop => |while_loop| {
+                const cond_type = try self.checkExpression(while_loop.condition);
+                if (!cond_type.isBool()) {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "while condition must be a boolean expression",
+                        while_loop.condition.span,
+                    ));
+                }
+
+                for (while_loop.body) |*s| {
+                    try self.checkStatement(s);
+                }
+            },
+
+            .loop_statement => |loop_stmt| {
+                for (loop_stmt.body) |*s| {
+                    try self.checkStatement(s);
+                }
+            },
+
             .match_statement => |match_stmt| {
                 const subject_type = try self.checkExpression(match_stmt.subject);
 

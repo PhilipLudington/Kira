@@ -1317,6 +1317,8 @@ pub const Interpreter = struct {
             .assignment => |a| try self.evalAssignment(a, env),
             .if_statement => |ifs| try self.evalIfStatement(ifs, env),
             .for_loop => |fl| try self.evalForLoop(fl, env),
+            .while_loop => |wl| try self.evalWhileLoop(wl, env),
+            .loop_statement => |ls| try self.evalLoopStatement(ls, env),
             .match_statement => |m| try self.evalMatchStatement(m, env),
             .return_statement => |r| try self.evalReturnStatement(r, env),
             .break_statement => |b| try self.evalBreakStatement(b, env),
@@ -1496,6 +1498,45 @@ pub const Interpreter = struct {
                 }
             },
             else => return error.TypeMismatch,
+        }
+    }
+
+    /// Evaluate a while loop
+    fn evalWhileLoop(self: *Interpreter, wl: Statement.WhileLoop, env: *Environment) InterpreterError!void {
+        while (true) {
+            const condition = try self.evalExpression(wl.condition, env);
+            if (!condition.isTruthy()) break;
+
+            // Heap-allocate loop environment since closures may capture it
+            const loop_env = try self.arenaAlloc().create(Environment);
+            loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+
+            for (wl.body) |stmt| {
+                self.evalStatement(&stmt, loop_env) catch |err| {
+                    if (err == error.BreakEncountered) {
+                        return;
+                    }
+                    return err;
+                };
+            }
+        }
+    }
+
+    /// Evaluate an infinite loop (exits via break or return)
+    fn evalLoopStatement(self: *Interpreter, ls: Statement.LoopStatement, env: *Environment) InterpreterError!void {
+        while (true) {
+            // Heap-allocate loop environment since closures may capture it
+            const loop_env = try self.arenaAlloc().create(Environment);
+            loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+
+            for (ls.body) |stmt| {
+                self.evalStatement(&stmt, loop_env) catch |err| {
+                    if (err == error.BreakEncountered) {
+                        return;
+                    }
+                    return err;
+                };
+            }
         }
     }
 

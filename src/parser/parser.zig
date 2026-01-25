@@ -972,6 +972,16 @@ pub const Parser = struct {
             return self.parseForLoop();
         }
 
+        // While loop
+        if (self.check(.while_keyword)) {
+            return self.parseWhileLoop();
+        }
+
+        // Loop (infinite)
+        if (self.check(.loop_keyword)) {
+            return self.parseLoopStatement();
+        }
+
         // Match statement
         if (self.check(.match)) {
             return self.parseMatchStatement();
@@ -1105,6 +1115,30 @@ pub const Parser = struct {
         return Statement.init(.{ .for_loop = .{
             .pattern = pattern,
             .iterable = iterable,
+            .body = body,
+        } }, self.makeSpan(start.start));
+    }
+
+    fn parseWhileLoop(self: *Parser) ParseError!Statement {
+        const start = self.peek().span;
+        _ = self.advance(); // consume 'while'
+
+        const condition = try self.allocExpr(try self.parseExpression());
+        const body = try self.parseBlock();
+
+        return Statement.init(.{ .while_loop = .{
+            .condition = condition,
+            .body = body,
+        } }, self.makeSpan(start.start));
+    }
+
+    fn parseLoopStatement(self: *Parser) ParseError!Statement {
+        const start = self.peek().span;
+        _ = self.advance(); // consume 'loop'
+
+        const body = try self.parseBlock();
+
+        return Statement.init(.{ .loop_statement = .{
             .body = body,
         } }, self.makeSpan(start.start));
     }

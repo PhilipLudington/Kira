@@ -346,6 +346,20 @@ pub const PrettyPrinter = struct {
                 try self.writeFmt("body: {d} statements", .{fl.body.len});
                 self.dedent();
             },
+            .while_loop => |wl| {
+                try self.write("WhileLoop\n");
+                self.indent();
+                try self.writeIndent();
+                try self.writeFmt("body: {d} statements", .{wl.body.len});
+                self.dedent();
+            },
+            .loop_statement => |ls| {
+                try self.write("Loop\n");
+                self.indent();
+                try self.writeIndent();
+                try self.writeFmt("body: {d} statements", .{ls.body.len});
+                self.dedent();
+            },
             .match_statement => |ms| {
                 try self.writeFmt("MatchStatement({d} arms)", .{ms.arms.len});
             },

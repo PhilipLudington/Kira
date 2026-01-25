@@ -27,6 +27,8 @@ pub const Statement = struct {
         // Control flow
         if_statement: IfStatement,
         for_loop: ForLoop,
+        while_loop: WhileLoop,
+        loop_statement: LoopStatement,
         match_statement: MatchStatement,
         return_statement: ReturnStatement,
         break_statement: BreakStatement,
@@ -97,6 +99,17 @@ pub const Statement = struct {
         body: []Statement,
     };
 
+    /// While loop: `while condition { }`
+    pub const WhileLoop = struct {
+        condition: *Expression,
+        body: []Statement,
+    };
+
+    /// Infinite loop: `loop { }` - exits via break or return
+    pub const LoopStatement = struct {
+        body: []Statement,
+    };
+
     /// Match statement: `match expr { pattern => { ... } }`
     pub const MatchStatement = struct {
         subject: *Expression,
@@ -138,7 +151,7 @@ pub const Statement = struct {
     /// Check if this is a control flow statement
     pub fn isControlFlow(self: Statement) bool {
         return switch (self.kind) {
-            .if_statement, .for_loop, .match_statement, .return_statement, .break_statement => true,
+            .if_statement, .for_loop, .while_loop, .loop_statement, .match_statement, .return_statement, .break_statement => true,
             else => false,
         };
     }

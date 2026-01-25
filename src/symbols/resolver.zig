@@ -813,6 +813,22 @@ pub const Resolver = struct {
                 }
                 try self.table.leaveScope();
             },
+            .while_loop => |while_loop| {
+                try self.resolveExpression(while_loop.condition);
+
+                _ = try self.table.enterScope(.block);
+                for (while_loop.body) |*s| {
+                    try self.resolveStatement(s);
+                }
+                try self.table.leaveScope();
+            },
+            .loop_statement => |loop_stmt| {
+                _ = try self.table.enterScope(.block);
+                for (loop_stmt.body) |*s| {
+                    try self.resolveStatement(s);
+                }
+                try self.table.leaveScope();
+            },
             .match_statement => |match_stmt| {
                 try self.resolveExpression(match_stmt.subject);
 
