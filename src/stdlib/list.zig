@@ -2,6 +2,7 @@
 //!
 //! Provides functional operations on linked lists (cons cells):
 //!   - empty, singleton, cons: Construction
+//!   - head, tail: Accessors (return Option)
 //!   - map, filter, fold, fold_right, foreach: Higher-order functions
 //!   - find, any, all: Searching and predicates
 //!   - length, reverse: Basic operations
@@ -26,6 +27,10 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "empty", root.makeBuiltin("empty", &listEmpty));
     try fields.put(allocator, "singleton", root.makeBuiltin("singleton", &listSingleton));
     try fields.put(allocator, "cons", root.makeBuiltin("cons", &listCons));
+
+    // Accessors
+    try fields.put(allocator, "head", root.makeBuiltin("head", &listHead));
+    try fields.put(allocator, "tail", root.makeBuiltin("tail", &listTail));
 
     // Higher-order functions
     try fields.put(allocator, "map", root.makeBuiltin("map", &listMap));
@@ -104,6 +109,42 @@ fn listCons(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     tail.* = args[1];
 
     return Value{ .cons = .{ .head = head, .tail = tail } };
+}
+
+// ============================================================================
+// Accessors
+// ============================================================================
+
+/// Get the first element of a list: head(list) -> Option[T]
+/// Returns Some(first_element) if list is non-empty, None if empty
+fn listHead(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    return switch (args[0]) {
+        .cons => |c| blk: {
+            const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+            inner.* = c.head.*;
+            break :blk Value{ .some = inner };
+        },
+        .nil => Value{ .none = {} },
+        else => error.TypeMismatch,
+    };
+}
+
+/// Get the rest of a list after the first element: tail(list) -> Option[List[T]]
+/// Returns Some(rest) if list is non-empty, None if empty
+fn listTail(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    return switch (args[0]) {
+        .cons => |c| blk: {
+            const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+            inner.* = c.tail.*;
+            break :blk Value{ .some = inner };
+        },
+        .nil => Value{ .none = {} },
+        else => error.TypeMismatch,
+    };
 }
 
 // ============================================================================
@@ -971,4 +1012,50 @@ test "list concat" {
     const combined = try listConcat(ctx, &.{ list1, list2 });
     const len = try listLength(ctx, &.{combined});
     try std.testing.expectEqual(@as(i128, 4), len.integer);
+}
+
+test "list head" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
+
+    // Empty list returns None
+    const empty_head = try listHead(ctx, &.{Value{ .nil = {} }});
+    try std.testing.expect(empty_head == .none);
+
+    // Non-empty list returns Some(first element)
+    const list = try buildList(allocator, &.{
+        Value{ .integer = 1 },
+        Value{ .integer = 2 },
+        Value{ .integer = 3 },
+    });
+    const head_result = try listHead(ctx, &.{list});
+    try std.testing.expect(head_result == .some);
+    try std.testing.expectEqual(@as(i128, 1), head_result.some.*.integer);
+}
+
+test "list tail" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
+
+    // Empty list returns None
+    const empty_tail = try listTail(ctx, &.{Value{ .nil = {} }});
+    try std.testing.expect(empty_tail == .none);
+
+    // Non-empty list returns Some(rest of list)
+    const list = try buildList(allocator, &.{
+        Value{ .integer = 1 },
+        Value{ .integer = 2 },
+        Value{ .integer = 3 },
+    });
+    const tail_result = try listTail(ctx, &.{list});
+    try std.testing.expect(tail_result == .some);
+
+    // Tail should be [2, 3]
+    const tail_len = try listLength(ctx, &.{tail_result.some.*});
+    try std.testing.expectEqual(@as(i128, 2), tail_len.integer);
+    try std.testing.expectEqual(@as(i128, 2), tail_result.some.*.cons.head.*.integer);
 }

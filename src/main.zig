@@ -416,6 +416,12 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {}\n", .{err}) catch "Runtime error\n";
         try stderr.writeAll(msg);
+        // Print error context if available
+        if (interp.getErrorContext()) |context| {
+            var ctx_buf: [512]u8 = undefined;
+            const ctx_msg = std.fmt.bufPrint(&ctx_buf, "  {s}\n", .{context}) catch "";
+            try stderr.writeAll(ctx_msg);
+        }
         return error.RuntimeError;
     };
 
@@ -1026,6 +1032,12 @@ fn evalLine(
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {}\n", .{err}) catch "Runtime error\n";
         try writer.writeAll(msg);
+        // Print error context if available
+        if (interp.getErrorContext()) |context| {
+            var ctx_buf: [512]u8 = undefined;
+            const ctx_msg = std.fmt.bufPrint(&ctx_buf, "  {s}\n", .{context}) catch "";
+            try writer.writeAll(ctx_msg);
+        }
         return;
     };
 
@@ -1185,6 +1197,12 @@ fn loadFile(
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {}\n", .{err}) catch "Runtime error\n";
         try writer.writeAll(msg);
+        // Print error context if available
+        if (interp.getErrorContext()) |context| {
+            var ctx_buf: [512]u8 = undefined;
+            const ctx_msg = std.fmt.bufPrint(&ctx_buf, "  {s}\n", .{context}) catch "";
+            try writer.writeAll(ctx_msg);
+        }
         return error.RuntimeError;
     };
 

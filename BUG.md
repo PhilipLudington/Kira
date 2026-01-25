@@ -6,26 +6,7 @@ This document tracks issues discovered in the Kira interpreter while developing 
 
 ## Open Issues
 
-### 1. `std.string.to_lower` Inconsistent Behavior
-
-**Severity:** Medium
-**Version:** v0.1.0
-
-**Description:**
-The function `std.string.to_lower` sometimes causes `error.FieldNotFound` depending on context. It appears to work in some files but not others, possibly related to how the function is called or the surrounding code structure.
-
-**Example:**
-```kira
-let name: string = "Content-Type"
-let lower: string = std.string.to_lower(name)  // Sometimes fails with error.FieldNotFound
-```
-
-**Workaround:**
-Avoid case-insensitive comparisons, or use direct string equality where possible.
-
----
-
-### 2. `std.string.from_int` Status Unknown
+### 1. `std.string.from_int` Status Unknown
 
 **Severity:** Medium
 **Version:** v0.1.0
@@ -38,7 +19,7 @@ Avoid integer-to-string conversion where possible.
 
 ---
 
-### 3. Path Parameter Matching Fails
+### 2. Path Parameter Matching Fails
 
 **Severity:** Medium
 **Version:** v0.1.0
@@ -59,7 +40,7 @@ paths_match("/users/:id", "/users/123")
 
 ---
 
-### 4. No `loop`/`break` Construct
+### 3. No `loop`/`break` Construct
 
 **Severity:** Low
 **Version:** v0.1.0
@@ -72,7 +53,7 @@ Use recursive functions for infinite loop patterns.
 
 ---
 
-### 5. Tuple Pattern Matching Limited
+### 4. Tuple Pattern Matching Limited
 
 **Severity:** Low
 **Version:** v0.1.0
@@ -98,7 +79,6 @@ Use nested match statements instead of tuple patterns.
 
 | Issue | Severity | Status |
 |-------|----------|--------|
-| `std.string.to_lower` inconsistent | Medium | Open |
 | `std.string.from_int` unknown | Medium | Open |
 | Path parameter matching fails | Medium | Open |
 | `loop`/`break` not available | Low | Use recursion |
@@ -107,6 +87,81 @@ Use nested match statements instead of tuple patterns.
 ---
 
 ## Resolved Issues
+
+### `std.string.to_lower` Inconsistent Behavior (MISDIAGNOSIS)
+
+**Severity:** Medium
+**Fixed:** 2026-01-24
+
+**Original Description:**
+The function `std.string.to_lower` sometimes causes `error.FieldNotFound` depending on context.
+
+**Root Cause:**
+This was a misdiagnosis. The actual issue was that `std.list.head` was not implemented. Users calling `std.list.head(list)` would get `error.FieldNotFound`, and if that code was near `to_lower` calls, it would appear that `to_lower` was the problem.
+
+**Actual Fix:**
+Added `std.list.head` and `std.list.tail` functions (see below).
+
+**Note:** `std.string.to_lower` works correctly in all contexts.
+
+---
+
+### `std.list.head` and `std.list.tail` Missing
+
+**Severity:** High
+**Fixed:** 2026-01-24
+
+**Description:**
+The `std.list` module was missing `head` and `tail` accessor functions, causing `error.FieldNotFound` when trying to access the first element or rest of a list.
+
+**Root Cause:**
+The functions were never implemented in the standard library.
+
+**Fix:**
+Added `head` and `tail` functions to `src/stdlib/list.zig`:
+- `head(list)` - Returns `Option[T]`: `Some(first_element)` if non-empty, `None` if empty
+- `tail(list)` - Returns `Option[List[T]]`: `Some(rest)` if non-empty, `None` if empty
+
+**Usage:**
+```kira
+let list: List[int] = std.list.cons(1, std.list.cons(2, std.list.empty()))
+
+// Get first element
+match std.list.head(list) {
+    Some(first) => { std.io.println("First: " + to_string(first)) }
+    None => { std.io.println("Empty list") }
+}
+
+// Get rest of list
+match std.list.tail(list) {
+    Some(rest) => { /* process rest */ }
+    None => { /* list had only one element or was empty */ }
+}
+```
+
+---
+
+### Improved Error Messages for `FieldNotFound`
+
+**Fixed:** 2026-01-24
+
+**Description:**
+Error messages for `FieldNotFound` were previously just "Runtime error: error.FieldNotFound" with no context about which field or method was missing.
+
+**Fix:**
+Added error context to the interpreter that shows:
+- Which field/method was not found
+- Which module/record it was looked up in
+
+**Example:**
+```
+Before: Runtime error: error.FieldNotFound
+
+After:  Runtime error: error.FieldNotFound
+          method 'nonexistent' not found in 'std.list'
+```
+
+---
 
 ### `std.string.parse_int` Missing
 
@@ -161,12 +216,9 @@ The interpreter's `processImport()` function looked up imported items by simple 
 ## Recommendations
 
 1. **Standard Library:** Document all available `std.*` functions
-2. **Error Messages:** Improve error messages to distinguish between:
-   - Missing functions (`FieldNotFound`)
-   - Type mismatches
-   - Module resolution failures
+2. ~~**Error Messages:** Improve error messages to distinguish between missing functions, type mismatches, and module resolution failures~~ ✅ Done
 
 ---
 
 *Last updated: 2026-01-24*
-*Added: std.string.parse_int implementation*
+*Added: std.list.head and std.list.tail implementation, improved error messages*

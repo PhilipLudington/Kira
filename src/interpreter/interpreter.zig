@@ -46,6 +46,9 @@ pub const Interpreter = struct {
     /// Each module's exports is a map from item name to Value
     module_exports: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(Value)),
 
+    /// Error context for better error messages
+    error_context: ?[]const u8,
+
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
             .allocator = allocator,
@@ -55,7 +58,23 @@ pub const Interpreter = struct {
             .break_signal = null,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .module_exports = .{},
+            .error_context = null,
         };
+    }
+
+    /// Get the error context message, if any
+    pub fn getErrorContext(self: *const Interpreter) ?[]const u8 {
+        return self.error_context;
+    }
+
+    /// Set error context for better error messages
+    fn setErrorContext(self: *Interpreter, comptime fmt: []const u8, args: anytype) void {
+        self.error_context = std.fmt.allocPrint(self.arenaAlloc(), fmt, args) catch null;
+    }
+
+    /// Clear error context
+    fn clearErrorContext(self: *Interpreter) void {
+        self.error_context = null;
     }
 
     pub fn deinit(self: *Interpreter) void {
@@ -830,6 +849,7 @@ pub const Interpreter = struct {
                 if (r.fields.get(fa.field)) |value| {
                     return value;
                 }
+                self.setErrorContext("field '{s}' not found in record '{s}'", .{ fa.field, r.type_name orelse "<anonymous>" });
                 return error.FieldNotFound;
             },
             .variant => |v| {
@@ -840,9 +860,13 @@ pub const Interpreter = struct {
                                 return value;
                             }
                         },
-                        .tuple => return error.FieldNotFound,
+                        .tuple => {
+                            self.setErrorContext("cannot access field '{s}' on tuple variant '{s}'", .{ fa.field, v.name });
+                            return error.FieldNotFound;
+                        },
                     }
                 }
+                self.setErrorContext("field '{s}' not found in variant '{s}'", .{ fa.field, v.name });
                 return error.FieldNotFound;
             },
             else => error.TypeMismatch,
@@ -1035,9 +1059,12 @@ pub const Interpreter = struct {
                     return self.callFunction(field_value.function, args, env);
                 }
             }
+            self.setErrorContext("method '{s}' not found in '{s}'", .{ call.method, obj.record.type_name orelse "<anonymous>" });
+            return error.FieldNotFound;
         }
 
         // For user-defined methods, we would need trait/impl lookup
+        self.setErrorContext("method '{s}' not found on value", .{call.method});
         return error.FieldNotFound;
     }
 
