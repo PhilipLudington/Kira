@@ -1080,6 +1080,103 @@ effect fn main() -> void {
 }
 ```
 
+### append_file
+
+```kira
+pub effect fn append_file(path: string, content: string) -> IO[Result[void, string]]
+```
+
+Appends content to a file. Creates the file if it doesn't exist.
+
+**Example:**
+
+```kira
+effect fn main() -> void {
+    match std.fs.append_file("log.txt", "New log entry\n") {
+        Ok(_) => { std.io.println("Log updated") }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+}
+```
+
+### read_dir
+
+```kira
+pub effect fn read_dir(path: string) -> IO[Result[List[string], string]]
+```
+
+Lists all entries in a directory. Returns a list of filenames (not full paths).
+
+**Example:**
+
+```kira
+effect fn main() -> void {
+    match std.fs.read_dir("./tests") {
+        Ok(files) => {
+            std.list.each[string](files, fn(name: string) -> void {
+                std.io.println(name)
+            })
+        }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+}
+```
+
+### is_file
+
+```kira
+pub effect fn is_file(path: string) -> IO[bool]
+```
+
+Returns `true` if the path exists and is a regular file.
+
+**Example:**
+
+```kira
+effect fn main() -> void {
+    if std.fs.is_file("data.txt") {
+        std.io.println("It's a file")
+    }
+}
+```
+
+### is_dir
+
+```kira
+pub effect fn is_dir(path: string) -> IO[bool]
+```
+
+Returns `true` if the path exists and is a directory.
+
+**Example:**
+
+```kira
+effect fn main() -> void {
+    if std.fs.is_dir("./src") {
+        std.io.println("It's a directory")
+    }
+}
+```
+
+### create_dir
+
+```kira
+pub effect fn create_dir(path: string) -> IO[Result[void, string]]
+```
+
+Creates a new directory.
+
+**Example:**
+
+```kira
+effect fn main() -> void {
+    match std.fs.create_dir("output") {
+        Ok(_) => { std.io.println("Directory created") }
+        Err(e) => { std.io.println("Error: " + e) }
+    }
+}
+```
+
 ---
 
 ## std.builder
@@ -1820,6 +1917,11 @@ These constructors are available for creating instances of the core types:
 - `write_file(path, content)` - Write to file
 - `exists(path)` - Check if file exists
 - `remove(path)` - Delete file
+- `append_file(path, content)` - Append to file
+- `read_dir(path)` - List directory entries
+- `is_file(path)` - Check if path is a file
+- `is_dir(path)` - Check if path is a directory
+- `create_dir(path)` - Create directory
 
 ### std.builder
 - `new()` - Create empty string builder
