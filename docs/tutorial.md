@@ -836,13 +836,87 @@ effect fn main() -> void {
 
 ---
 
+## More Standard Library Features
+
+Kira's standard library includes several additional modules beyond what we've covered:
+
+### String Builder
+
+For efficient string concatenation when building large strings:
+
+```kira
+effect fn build_greeting(names: List[string]) -> string {
+    var b: StringBuilder = std.builder.new()
+    b = std.builder.append(b, "Hello to: ")
+
+    for name in names {
+        b = std.builder.append(b, name)
+        b = std.builder.append(b, ", ")
+    }
+
+    return std.builder.build(b)
+}
+```
+
+### Hash Maps
+
+For key-value storage with O(1) lookups:
+
+```kira
+fn count_words(words: List[string]) -> HashMap {
+    var counts: HashMap = std.map.new()
+
+    for word in words {
+        let current: i32 = std.map.get(counts, word) ?? 0
+        counts = std.map.put(counts, word, current + 1)
+    }
+
+    return counts
+}
+```
+
+### Character Operations
+
+For working with individual characters:
+
+```kira
+fn is_vowel(c: char) -> bool {
+    let code: i32 = std.char.to_i32(c)
+    // Check for a, e, i, o, u (lowercase)
+    return code == 97 or code == 101 or code == 105 or code == 111 or code == 117
+}
+
+fn process_chars(s: string) -> List[char] {
+    return std.string.chars(s)
+}
+```
+
+### Time Operations
+
+For timing and delays:
+
+```kira
+effect fn timed_operation() -> void {
+    let start: i64 = std.time.now()
+
+    // Do some work...
+    std.time.sleep(100)  // Sleep 100ms
+
+    let elapsed: i64 = std.time.elapsed(start, std.time.now())
+    std.io.println("Operation took " + to_string(elapsed) + "ms")
+}
+```
+
+---
+
 ## Next Steps
 
 Now that you've learned the basics of Kira, you can:
 
 1. **Explore the Standard Library** - See [stdlib.md](stdlib.md) for all available functions
-2. **Read Example Programs** - Check the `examples/` directory
-3. **Learn About Effects** - Deep dive into the effects system for complex applications
-4. **Build Something!** - The best way to learn is by doing
+2. **Read the Language Reference** - See [reference.md](reference.md) for complete syntax details
+3. **Use the Quick Reference** - Keep [quickref.md](quickref.md) handy while coding
+4. **Read Example Programs** - Check the `examples/` directory
+5. **Build Something!** - The best way to learn is by doing
 
 Happy coding with Kira!
