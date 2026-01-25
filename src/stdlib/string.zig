@@ -49,6 +49,9 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "from_bool", root.makeBuiltin("from_bool", &stringFromBool));
     try fields.put(allocator, "to_string", root.makeBuiltin("to_string", &stringToString));
 
+    // String-to-numeric parsing functions
+    try fields.put(allocator, "parse_int", root.makeBuiltin("parse_int", &stringParseInt));
+
     return Value{
         .record = .{
             .type_name = "std.string",
@@ -426,6 +429,31 @@ fn stringToString(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
     return Value{ .string = result };
 }
 
+/// Parse string to integer: parse_int(str) -> Option[int]
+/// Returns Some(value) if parsing succeeds, None if it fails
+fn stringParseInt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const str = switch (args[0]) {
+        .string => |s| s,
+        else => return error.TypeMismatch,
+    };
+
+    // Trim whitespace before parsing
+    const trimmed = std.mem.trim(u8, str, " \t\n\r");
+
+    // Try to parse the integer
+    const parsed = std.fmt.parseInt(i128, trimmed, 10) catch {
+        // Parsing failed, return None
+        return Value{ .none = {} };
+    };
+
+    // Parsing succeeded, return Some(value)
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    inner.* = Value{ .integer = parsed };
+    return Value{ .some = inner };
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -525,4 +553,41 @@ test "string equals" {
 
     const empty_equal = try stringEquals(ctx, &.{ Value{ .string = "" }, Value{ .string = "" } });
     try std.testing.expect(empty_equal.boolean);
+}
+
+test "string parse_int" {
+    const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
+
+    // Valid positive integer
+    const pos_result = try stringParseInt(ctx, &.{Value{ .string = "8080" }});
+    try std.testing.expect(pos_result == .some);
+    defer allocator.destroy(pos_result.some);
+    try std.testing.expectEqual(@as(i128, 8080), pos_result.some.*.integer);
+
+    // Valid negative integer
+    const neg_result = try stringParseInt(ctx, &.{Value{ .string = "-42" }});
+    try std.testing.expect(neg_result == .some);
+    defer allocator.destroy(neg_result.some);
+    try std.testing.expectEqual(@as(i128, -42), neg_result.some.*.integer);
+
+    // With whitespace (should be trimmed)
+    const ws_result = try stringParseInt(ctx, &.{Value{ .string = "  123  " }});
+    try std.testing.expect(ws_result == .some);
+    defer allocator.destroy(ws_result.some);
+    try std.testing.expectEqual(@as(i128, 123), ws_result.some.*.integer);
+
+    // Invalid string - returns None
+    const invalid = try stringParseInt(ctx, &.{Value{ .string = "not a number" }});
+    try std.testing.expect(invalid == .none);
+
+    // Empty string - returns None
+    const empty = try stringParseInt(ctx, &.{Value{ .string = "" }});
+    try std.testing.expect(empty == .none);
+
+    // Zero
+    const zero = try stringParseInt(ctx, &.{Value{ .string = "0" }});
+    try std.testing.expect(zero == .some);
+    defer allocator.destroy(zero.some);
+    try std.testing.expectEqual(@as(i128, 0), zero.some.*.integer);
 }

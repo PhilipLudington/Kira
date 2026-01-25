@@ -6,27 +6,7 @@ This document tracks issues discovered in the Kira interpreter while developing 
 
 ## Open Issues
 
-### 1. `std.string.parse_int` Not Available
-
-**Severity:** High
-**Version:** v0.1.0
-
-**Description:**
-The function `std.string.parse_int` does not exist or is not accessible, causing `error.FieldNotFound` when called.
-
-**Example:**
-```kira
-let port_str: string = "8080"
-let port_result: Option[i32] = std.string.parse_int(port_str)
-// error.FieldNotFound
-```
-
-**Workaround:**
-Cannot parse strings to integers. Tests that require integer parsing from strings must be skipped or redesigned.
-
----
-
-### 2. `std.string.to_lower` Inconsistent Behavior
+### 1. `std.string.to_lower` Inconsistent Behavior
 
 **Severity:** Medium
 **Version:** v0.1.0
@@ -45,7 +25,7 @@ Avoid case-insensitive comparisons, or use direct string equality where possible
 
 ---
 
-### 3. `std.string.from_int` Status Unknown
+### 2. `std.string.from_int` Status Unknown
 
 **Severity:** Medium
 **Version:** v0.1.0
@@ -58,7 +38,7 @@ Avoid integer-to-string conversion where possible.
 
 ---
 
-### 4. Path Parameter Matching Fails
+### 3. Path Parameter Matching Fails
 
 **Severity:** Medium
 **Version:** v0.1.0
@@ -79,7 +59,7 @@ paths_match("/users/:id", "/users/123")
 
 ---
 
-### 5. No `loop`/`break` Construct
+### 4. No `loop`/`break` Construct
 
 **Severity:** Low
 **Version:** v0.1.0
@@ -92,7 +72,7 @@ Use recursive functions for infinite loop patterns.
 
 ---
 
-### 6. Tuple Pattern Matching Limited
+### 5. Tuple Pattern Matching Limited
 
 **Severity:** Low
 **Version:** v0.1.0
@@ -118,7 +98,6 @@ Use nested match statements instead of tuple patterns.
 
 | Issue | Severity | Status |
 |-------|----------|--------|
-| `std.string.parse_int` missing | High | Open |
 | `std.string.to_lower` inconsistent | Medium | Open |
 | `std.string.from_int` unknown | Medium | Open |
 | Path parameter matching fails | Medium | Open |
@@ -128,6 +107,36 @@ Use nested match statements instead of tuple patterns.
 ---
 
 ## Resolved Issues
+
+### `std.string.parse_int` Missing
+
+**Severity:** High
+**Fixed:** 2026-01-24
+
+**Description:**
+The function `std.string.parse_int` did not exist, causing `error.FieldNotFound` when called.
+
+**Root Cause:**
+The function was simply not implemented in the standard library.
+
+**Fix:**
+Added `parse_int` function to `src/stdlib/string.zig` that:
+1. Takes a string argument
+2. Trims whitespace
+3. Parses the string as a base-10 integer
+4. Returns `Option[int]` - `Some(value)` on success, `None` on parse failure
+
+**Usage:**
+```kira
+let port_str: string = "8080"
+let port_result: Option[int] = std.string.parse_int(port_str)
+match port_result {
+    Some(port) => { /* use port */ }
+    None => { /* handle parse error */ }
+}
+```
+
+---
 
 ### Module System Import Resolution
 
@@ -160,3 +169,4 @@ The interpreter's `processImport()` function looked up imported items by simple 
 ---
 
 *Last updated: 2026-01-24*
+*Added: std.string.parse_int implementation*
