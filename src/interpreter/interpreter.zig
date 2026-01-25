@@ -42,6 +42,10 @@ pub const Interpreter = struct {
     /// Arena for temporary allocations during interpretation
     arena: std.heap.ArenaAllocator,
 
+    /// Module exports: maps module path (e.g., "mytool.core") to exported items
+    /// Each module's exports is a map from item name to Value
+    module_exports: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(Value)),
+
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
             .allocator = allocator,
@@ -50,18 +54,80 @@ pub const Interpreter = struct {
             .return_value = null,
             .break_signal = null,
             .arena = std.heap.ArenaAllocator.init(allocator),
+            .module_exports = .{},
         };
     }
 
     pub fn deinit(self: *Interpreter) void {
         self.global_env.deinit();
         self.arena.deinit();
+        // module_exports uses arena allocator, so no need to free explicitly
     }
 
     /// Get arena allocator for allocations that live for the interpreter's lifetime.
     /// Used for stdlib and builtin registrations.
     pub fn arenaAlloc(self: *Interpreter) Allocator {
         return self.arena.allocator();
+    }
+
+    /// Register a module's exports so they can be imported by other files.
+    /// Called from main.zig after loading modules.
+    /// module_path is the dot-separated path like "mytool.core"
+    pub fn registerModuleExports(
+        self: *Interpreter,
+        module_path: []const u8,
+        declarations: []const Declaration,
+    ) InterpreterError!void {
+        var exports = std.StringHashMapUnmanaged(Value){};
+
+        // Evaluate and store all public declarations from the module
+        for (declarations) |*decl| {
+            switch (decl.kind) {
+                .function_decl => |f| {
+                    // For now export all functions (TODO: respect is_public)
+                    const func_value = Value{
+                        .function = .{
+                            .name = f.name,
+                            .parameters = self.extractParamNames(f.parameters) catch continue,
+                            .body = if (f.body) |body| .{ .ast_body = body } else continue,
+                            .captured_env = null,
+                            .is_effect = f.is_effect,
+                        },
+                    };
+                    exports.put(self.arenaAlloc(), f.name, func_value) catch continue;
+                },
+                .const_decl => |c| {
+                    const value = self.evalExpression(c.value, &self.global_env) catch continue;
+                    exports.put(self.arenaAlloc(), c.name, value) catch continue;
+                },
+                .let_decl => |l| {
+                    const value = self.evalExpression(l.value, &self.global_env) catch continue;
+                    exports.put(self.arenaAlloc(), l.name, value) catch continue;
+                },
+                .type_decl => |t| {
+                    // For sum types, register variant constructors
+                    switch (t.definition) {
+                        .sum_type => |st| {
+                            for (st.variants) |variant| {
+                                const variant_val = Value{
+                                    .variant = .{
+                                        .name = variant.name,
+                                        .fields = null,
+                                    },
+                                };
+                                exports.put(self.arenaAlloc(), variant.name, variant_val) catch continue;
+                            }
+                        },
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Store in module_exports map
+        const path_copy = self.arenaAlloc().dupe(u8, module_path) catch return error.OutOfMemory;
+        self.module_exports.put(self.arenaAlloc(), path_copy, exports) catch return error.OutOfMemory;
     }
 
     /// Interpret a complete program
@@ -90,23 +156,49 @@ pub const Interpreter = struct {
 
     /// Process an import declaration and create bindings for imported items
     fn processImport(self: *Interpreter, import_decl: *const Declaration.ImportDecl, env: *Environment) InterpreterError!void {
-        _ = self;
+        // Build the module path from the import path segments
+        // e.g., ["mytool", "core"] -> "mytool.core"
+        var path_builder = std.ArrayListUnmanaged(u8){};
+        defer path_builder.deinit(self.allocator);
 
-        // If the import has specific items, create bindings for each
-        if (import_decl.items) |items| {
-            for (items) |item| {
-                // Look up the original name in the environment (from the loaded module)
-                if (env.get(item.name)) |original| {
-                    // Use alias if provided, otherwise use the original name
-                    const binding_name = item.alias orelse item.name;
-                    // Create the binding (define handles duplicates)
-                    env.define(binding_name, original.value, original.is_mutable) catch {};
+        for (import_decl.path, 0..) |segment, i| {
+            if (i > 0) path_builder.append(self.allocator, '.') catch return error.OutOfMemory;
+            path_builder.appendSlice(self.allocator, segment) catch return error.OutOfMemory;
+        }
+        const module_path = path_builder.items;
+
+        // Look up the module's exports
+        if (self.module_exports.get(module_path)) |exports| {
+            if (import_decl.items) |items| {
+                // Selective import: import specific items
+                for (items) |item| {
+                    if (exports.get(item.name)) |value| {
+                        // Use alias if provided, otherwise use the original name
+                        const binding_name = item.alias orelse item.name;
+                        env.define(binding_name, value, false) catch {};
+                    }
+                    // If not found in exports, the type checker should have caught this
                 }
-                // If not found, the symbol wasn't registered - this is a runtime error
-                // but we skip silently here as it should have been caught by the type checker
+            } else {
+                // Whole-module import: import all exports
+                // This is already handled by registerModuleNamespace for qualified access
+                // But we can also import all items directly into the namespace
+                var iter = exports.iterator();
+                while (iter.next()) |entry| {
+                    env.define(entry.key_ptr.*, entry.value_ptr.*, false) catch {};
+                }
             }
         }
-        // Whole-module imports are handled by registerModuleNamespace in main.zig
+        // If module not found in exports, fall back to checking environment
+        // (for backward compatibility with directly registered modules)
+        else if (import_decl.items) |items| {
+            for (items) |item| {
+                if (env.get(item.name)) |original| {
+                    const binding_name = item.alias orelse item.name;
+                    env.define(binding_name, original.value, original.is_mutable) catch {};
+                }
+            }
+        }
     }
 
     /// Register a module namespace value at the given path.

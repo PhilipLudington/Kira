@@ -374,6 +374,13 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     var modules_iter = loader.loadedModulesIterator();
     while (modules_iter.next()) |entry| {
         if (entry.value_ptr.program) |mod_program| {
+            // Register module exports for import resolution
+            // This allows `import module.{ item }` to find the item
+            interp.registerModuleExports(
+                entry.key_ptr.*,
+                mod_program.declarations,
+            ) catch {};
+
             // Parse module path from the key (e.g., "src.json" -> ["src", "json"])
             var path_segments = std.ArrayListUnmanaged([]const u8){};
             defer path_segments.deinit(allocator);
