@@ -259,94 +259,11 @@ pub const Symbol = struct {
     /// type checker, and program arena, we only free top-level arrays that we
     /// are confident are solely owned by the symbol table.
     pub fn deinit(self: *Symbol, allocator: std.mem.Allocator) void {
-        switch (self.kind) {
-            .function => |*f| {
-                // These arrays were allocated by the resolver using toOwnedSlice()
-                // The contents (Type pointers and name slices) point to AST memory
-                if (f.generic_params) |gp| {
-                    if (gp.len > 0) {
-                        allocator.free(gp);
-                    }
-                }
-                if (f.parameter_types.len > 0) {
-                    allocator.free(f.parameter_types);
-                }
-                if (f.parameter_names.len > 0) {
-                    allocator.free(f.parameter_names);
-                }
-            },
-            .type_def => |*t| {
-                if (t.generic_params) |gp| {
-                    if (gp.len > 0) {
-                        allocator.free(gp);
-                    }
-                }
-                switch (t.definition) {
-                    .sum_type => |*s| {
-                        if (s.variants.len > 0) {
-                            for (s.variants) |*v| {
-                                if (v.fields) |*fields| {
-                                    switch (fields.*) {
-                                        .record_fields => |rf| {
-                                            if (rf.len > 0) {
-                                                allocator.free(rf);
-                                            }
-                                        },
-                                        .tuple_fields => {
-                                            // Tuple fields point to AST types, don't free
-                                        },
-                                    }
-                                }
-                            }
-                            allocator.free(s.variants);
-                        }
-                    },
-                    .product_type => |*p| {
-                        if (p.fields.len > 0) {
-                            allocator.free(p.fields);
-                        }
-                    },
-                    .alias => {
-                        // Alias points to AST type, don't free
-                    },
-                }
-            },
-            .trait_def => |*t| {
-                if (t.generic_params) |gp| {
-                    if (gp.len > 0) {
-                        allocator.free(gp);
-                    }
-                }
-                // super_traits points to AST data, don't free
-                if (t.methods.len > 0) {
-                    for (t.methods) |*m| {
-                        if (m.generic_params) |gp| {
-                            if (gp.len > 0) {
-                                allocator.free(gp);
-                            }
-                        }
-                        if (m.parameter_types.len > 0) {
-                            allocator.free(m.parameter_types);
-                        }
-                        if (m.parameter_names.len > 0) {
-                            allocator.free(m.parameter_names);
-                        }
-                    }
-                    allocator.free(t.methods);
-                }
-            },
-            .module => {
-                // Module paths point to AST data owned by the program arena,
-                // not allocated by the symbol table allocator, so don't free them here
-            },
-            .import_alias => {
-                // Import alias source paths point to AST data owned by the program arena,
-                // not allocated by the symbol table allocator, so don't free them here
-            },
-            .variable, .type_param => {
-                // Variable binding_type and type_param constraints point to AST data
-            },
-        }
+        _ = self;
+        _ = allocator;
+        // All symbol memory is owned by the program arena allocator.
+        // Attempting to free here causes double-free on exit.
+        // The arena frees everything at once when the program ends.
     }
 };
 

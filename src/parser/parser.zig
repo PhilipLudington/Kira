@@ -1592,14 +1592,17 @@ pub const Parser = struct {
         var args = std.ArrayListUnmanaged(*Expression){};
         errdefer args.deinit(self.allocator);
 
+        self.skipNewlines(); // Allow newline after opening paren
         if (!self.check(.right_paren)) {
             try args.append(self.allocator, try self.allocExpr(try self.parseExpression()));
 
             while (self.match(.comma)) {
+                self.skipNewlines(); // Allow multi-line arguments
                 if (self.check(.right_paren)) break;
                 try args.append(self.allocator, try self.allocExpr(try self.parseExpression()));
             }
         }
+        self.skipNewlines(); // Allow closing paren on its own line
 
         return try args.toOwnedSlice(self.allocator);
     }
