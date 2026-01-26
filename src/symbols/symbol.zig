@@ -250,20 +250,79 @@ pub const Symbol = struct {
 
     /// Free all nested allocations in this symbol.
     ///
-    /// NOTE: This function is intentionally conservative about freeing memory.
-    /// Some arrays (like parameter_types, parameter_names) are allocated by the
-    /// resolver using toOwnedSlice(), but their contents (the actual types and
-    /// names) point to AST data owned by the program arena.
-    ///
-    /// Due to complex ownership patterns between the symbol table, resolver,
-    /// type checker, and program arena, we only free top-level arrays that we
-    /// are confident are solely owned by the symbol table.
+    /// This frees the slices created by toOwnedSlice() during symbol resolution.
+    /// The contents of these slices (strings, type pointers) point to AST data
+    /// owned by the program arena and are NOT freed here.
     pub fn deinit(self: *Symbol, allocator: std.mem.Allocator) void {
-        _ = self;
-        _ = allocator;
-        // All symbol memory is owned by the program arena allocator.
-        // Attempting to free here causes double-free on exit.
-        // The arena frees everything at once when the program ends.
+        switch (self.kind) {
+            .function => |func| {
+                // Free the slice containers (not their string/type contents)
+                if (func.generic_params) |gp| {
+                    allocator.free(gp);
+                }
+                if (func.parameter_types.len > 0) {
+                    allocator.free(func.parameter_types);
+                }
+                if (func.parameter_names.len > 0) {
+                    allocator.free(func.parameter_names);
+                }
+            },
+            .type_def => |td| {
+                if (td.generic_params) |gp| {
+                    allocator.free(gp);
+                }
+                switch (td.definition) {
+                    .sum_type => |st| {
+                        // Free record_fields slices inside variants
+                        for (st.variants) |v| {
+                            if (v.fields) |fields| {
+                                switch (fields) {
+                                    .record_fields => |rf| {
+                                        if (rf.len > 0) {
+                                            allocator.free(rf);
+                                        }
+                                    },
+                                    .tuple_fields => {}, // Points to AST, don't free
+                                }
+                            }
+                        }
+                        // Free the variants slice itself
+                        if (st.variants.len > 0) {
+                            allocator.free(st.variants);
+                        }
+                    },
+                    .product_type => |pt| {
+                        if (pt.fields.len > 0) {
+                            allocator.free(pt.fields);
+                        }
+                    },
+                    .alias => {}, // Points to AST, don't free
+                }
+            },
+            .trait_def => |trait| {
+                if (trait.generic_params) |gp| {
+                    allocator.free(gp);
+                }
+                // Free nested allocations in each method
+                for (trait.methods) |m| {
+                    if (m.generic_params) |mgp| {
+                        allocator.free(mgp);
+                    }
+                    if (m.parameter_types.len > 0) {
+                        allocator.free(m.parameter_types);
+                    }
+                    if (m.parameter_names.len > 0) {
+                        allocator.free(m.parameter_names);
+                    }
+                }
+                // Free the methods slice itself
+                if (trait.methods.len > 0) {
+                    allocator.free(trait.methods);
+                }
+            },
+            // These don't have owned slice allocations
+            .variable, .module, .type_param, .import_alias => {},
+        }
     }
 };
 

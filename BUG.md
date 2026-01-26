@@ -1,221 +1,85 @@
-# Bug: Kira Runtime Panics on Invalid UTF-8 Input
+# Bug: Kira Runtime Memory Leaks During Module Loading
 
-## Status: FIXED
-
-**Fixed in commit**: 8075771
+**Status: FIXED**
 
 ## Summary
 
-~~The Kira runtime panics when processing strings containing invalid UTF-8 bytes, preventing graceful error handling of malformed input.~~
-
-**FIXED**: String functions now validate UTF-8 and return `Result` types with `Err("InvalidUtf8")` instead of panicking.
+The Kira runtime reports memory leaks during module loading and symbol resolution. These occur consistently when running any Kira program that imports modules.
 
 ## Severity
 
-~~**High** - Causes unrecoverable runtime crash instead of returning an error.~~
-
-**Resolved** - Invalid UTF-8 input now returns an error that can be handled gracefully.
+**Low** - Does not affect program correctness. Memory is leaked but programs run successfully.
 
 ## Reproduction
 
-Any file containing invalid UTF-8 bytes will trigger this when read and processed:
+Run any Kira program that imports modules:
 
-```kira
-effect fn main() -> IO[void] {
-    // Read a file containing invalid UTF-8 (e.g., raw 0x80 byte)
-    match std.fs.read_file("file_with_invalid_utf8.txt") {
-        Ok(content) => {
-            // This line crashes the runtime:
-            let len: i32 = std.string.length(content)
-            std.io.println(std.int.to_string(len))
-        }
-        Err(e) => {
-            std.io.println(e)
-        }
-    }
-    return
-}
+```bash
+kira run tests/test_json_testsuite.ki
 ```
 
-**Error:**
+Or even just check syntax:
+
+```bash
+kira check tests/test_json_testsuite.ki
 ```
-thread panic: attempt to unwrap error: Utf8InvalidStartByte
+
+**Output (truncated):**
+```
+error(gpa): memory address 0x103800040 leaked:
+???:?:?: 0x103025957 in _array_list.Aligned(symbols.symbol.Symbol.GenericParamInfo,null).toOwnedSlice (???)
+???:?:?: 0x103071583 in _modules.loader.ModuleLoader.addTypeSymbol (???)
+???:?:?: 0x10305203b in _modules.loader.ModuleLoader.loadAndResolveFile (???)
+???:?:?: 0x10302928f in _modules.loader.ModuleLoader.loadModule (???)
+???:?:?: 0x102ffed27 in _symbols.resolver.Resolver.resolveImportDecl (???)
+???:?:?: 0x102fcb95f in _symbols.resolver.Resolver.resolveImports (???)
+
+error(gpa): memory address 0x102300000 leaked:
+???:?:?: 0x10106a2c3 in _array_list.Aligned(symbols.symbol.Symbol.RecordFieldInfo,null).toOwnedSlice (???)
+???:?:?: 0x1010b59c7 in _modules.loader.ModuleLoader.addTypeSymbol (???)
+...
 ```
 
 ## Root Cause
 
-In `src/stdlib/string.zig`, the `stringLength` function uses Zig's UTF-8 iterator which panics on invalid sequences:
+The leaks originate in Kira's module loader (`ModuleLoader`) and symbol resolver (`Resolver`), specifically in:
 
-```zig
-fn stringLength(ctx: builinContext, args: []const Value) InterpreterError!Value {
-    // ...
-    var iter = std.unicode.Utf8Iterator{ .bytes = s };
-    while (iter.nextCodepoint()) |_| {  // Panics on invalid UTF-8
-        len += 1;
-    }
-    // ...
-}
-```
+1. `ModuleLoader.addTypeSymbol` - When adding type symbols to the symbol table
+2. `ModuleLoader.loadAndResolveFile` - When loading and resolving imported files
+3. `Resolver.resolveImportDecl` - When resolving import declarations
 
-The same issue likely affects other string functions: `std.string.chars`, `std.string.substring`, etc.
+The leaked memory appears to be from `ArrayList.toOwnedSlice` calls for:
+- `Symbol.GenericParamInfo` - Generic type parameters
+- `Symbol.RecordFieldInfo` - Record/struct field information
+- `Symbol.VariantInfo` - Sum type variant information
 
 ## Impact
 
-This bug prevents:
-1. **Graceful error handling** - Programs cannot catch and handle invalid input
-2. **Security validation** - Cannot reject malformed input safely
-3. **Testing** - Cannot test parser behavior on invalid UTF-8 (25 JSONTestSuite tests skipped)
-
-### Affected JSONTestSuite Files (25)
-
-```
-i_string_UTF-8_invalid_sequence.json
-i_string_invalid_utf-8.json
-i_string_iso_latin_1.json
-i_string_lone_utf8_continuation_byte.json
-i_string_not_in_unicode_range.json
-i_string_overlong_sequence_2_bytes.json
-i_string_overlong_sequence_6_bytes.json
-i_string_overlong_sequence_6_bytes_null.json
-i_string_truncated-utf-8.json
-i_string_UTF-16LE_with_BOM.json
-i_string_UTF8_surrogate_U+D800.json
-i_string_utf16BE_no_BOM.json
-i_string_utf16LE_no_BOM.json
-n_array_a_invalid_utf8.json
-n_array_invalid_utf8.json
-n_number_invalid-utf-8-in-bigger-int.json
-n_number_invalid-utf-8-in-exponent.json
-n_number_invalid-utf-8-in-int.json
-n_number_real_with_invalid_utf8_after_e.json
-n_object_lone_continuation_byte_in_key_and_trailing_comma.json
-n_string_invalid-utf-8-in-escape.json
-n_string_invalid_utf8_after_escape.json
-n_structure_incomplete_UTF8_BOM.json
-n_structure_lone-invalid-utf-8.json
-n_structure_single_eacute.json
-```
-
-## Proposed Fix
-
-### Option A: Return Error (Recommended)
-
-String functions should return `Result[T, StringError]` or handle invalid UTF-8 gracefully:
-
-```zig
-fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
-    const s = switch (args[0]) {
-        .string => |str| str,
-        else => return error.TypeMismatch,
-    };
-
-    var len: i32 = 0;
-    var iter = std.unicode.Utf8Iterator{ .bytes = s };
-    while (true) {
-        const codepoint = iter.nextCodepoint() catch {
-            // Return error instead of panicking
-            return makeError(ctx.allocator, "InvalidUtf8");
-        };
-        if (codepoint == null) break;
-        len += 1;
-    }
-    return Value{ .integer = len };
-}
-```
-
-### Option B: Add Validation Function
-
-Add `std.string.is_valid_utf8(s) -> bool` so users can check before processing:
-
-```kira
-effect fn safe_process(content: string) -> IO[void] {
-    if not std.string.is_valid_utf8(content) {
-        std.io.println("Invalid UTF-8 input")
-        return
-    }
-    // Safe to process
-    let len: i32 = std.string.length(content)
-    // ...
-}
-```
-
-### Option C: Add Byte-Level API
-
-Add `std.fs.read_file_bytes(path) -> Result[List[u8], string]` for raw byte access:
-
-```kira
-effect fn handle_raw(path: string) -> IO[void] {
-    match std.fs.read_file_bytes(path) {
-        Ok(bytes) => {
-            // Process raw bytes, validate UTF-8 manually
-        }
-        Err(e) => { ... }
-    }
-}
-```
+- Memory usage grows with each module load
+- Does not affect program correctness
+- May cause issues in long-running processes or when loading many modules
 
 ## Workaround
 
-Currently, the only workaround is to skip files known to contain invalid UTF-8:
+None required for correctness. The leaks are small and programs complete successfully.
 
-```kira
-let should_skip_file: fn(string) -> bool = fn(filename: string) -> bool {
-    if std.string.contains(filename, "invalid_utf") { return true }
-    if std.string.contains(filename, "invalid-utf") { return true }
-    // ... etc
-    return false
-}
-```
+## Notes
 
-This is unsatisfactory because it requires knowing which files are problematic in advance.
+This is a Kira runtime/compiler issue, not a kira-json library issue. The fix would need to be in:
+- `~/Fun/Kira/src/modules/loader.zig`
+- `~/Fun/Kira/src/symbols/resolver.zig`
 
-## References
+The issue is likely missing `deinit` or `free` calls when the module loader completes, or arena allocator cleanup not happening properly.
 
-- JSONTestSuite: https://github.com/nst/JSONTestSuite
-- Kira stdlib implementation: `~/Fun/Kira/src/stdlib/string.zig`
-- Test file demonstrating issue: `tests/test_json_testsuite.ki`
+## Fix
 
----
+**Fixed in:** `src/symbols/symbol.zig`
 
-## Implemented Fix
+The root cause was that `Symbol.deinit()` did nothing - it had an incorrect comment claiming all memory was owned by the program arena. In reality, slices created by `toOwnedSlice()` during symbol resolution were allocated with the resolver's allocator and needed to be freed.
 
-**Option A was implemented**: String functions now return `Result` types with proper error handling.
+The fix implements proper cleanup in `Symbol.deinit()` that frees:
+- `FunctionSymbol`: generic_params, parameter_types, parameter_names slices
+- `TypeDefSymbol`: generic_params, and for sum_type/product_type the variants/fields slices
+- `TraitDefSymbol`: generic_params, methods slice, and nested allocations in each method
 
-### API Changes
-
-The following functions now return `Result[T, string]` instead of `T` directly:
-
-| Function | Old Return Type | New Return Type |
-|----------|----------------|-----------------|
-| `std.string.length(str)` | `int` | `Result[int, string]` |
-| `std.string.substring(str, start, end)` | `string` | `Result[string, string]` |
-| `std.string.char_at(str, index)` | `Option[char]` | `Result[Option[char], string]` |
-| `std.string.index_of(str, substr)` | `Option[int]` | `Result[Option[int], string]` |
-| `std.string.chars(str)` | `List[char]` | `Result[List[char], string]` |
-
-### New Functions Added
-
-- `std.string.is_valid_utf8(str) -> bool` - Check if string is valid UTF-8
-- `std.string.byte_length(str) -> int` - Get byte count (works on any string)
-
-### Usage Example
-
-```kira
-effect fn safe_process(content: string) -> IO[void] {
-    // Option 1: Check first with is_valid_utf8
-    if not std.string.is_valid_utf8(content) {
-        std.io.println("Invalid UTF-8 input")
-        return
-    }
-
-    // Option 2: Handle Result from string functions
-    match std.string.length(content) {
-        Ok(len) => std.io.println("Length: " ++ std.int.to_string(len))
-        Err(e) => std.io.println("Error: " ++ e)
-    }
-}
-```
-
-### Implementation Details
-
-Changed `Utf8View.initUnchecked()` to `Utf8View.init()` which validates UTF-8 and returns an error on invalid sequences. Error handling uses Kira-level `Result` types (`Ok`/`Err` values) rather than Zig-level panics.
+String contents and type pointers are NOT freed as they point to AST data owned by the program arena.
