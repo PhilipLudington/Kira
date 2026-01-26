@@ -541,6 +541,8 @@ pub const InterpreterError = error{
     AssertionFailed,
     /// Stack overflow (recursion depth exceeded)
     StackOverflow,
+    /// Tail call encountered (used for TCO)
+    TailCallEncountered,
 };
 
 test "value equality" {

@@ -31,6 +31,13 @@ const BreakValue = struct {
     value: ?Value,
 };
 
+/// Control flow signal for tail calls (TCO)
+const TailCallSignal = struct {
+    func: Value.FunctionValue,
+    args: []const Value,
+    caller_env: *Environment,
+};
+
 /// Maximum recursion depth before stack overflow error.
 /// Set conservatively to prevent stack overflow in the Zig runtime.
 const max_recursion_depth: usize = 1000;
@@ -42,6 +49,8 @@ pub const Interpreter = struct {
     global_env: Environment,
     return_value: ?Value,
     break_signal: ?BreakValue,
+    /// Tail call signal for TCO
+    tail_call_signal: ?TailCallSignal,
 
     /// Arena for temporary allocations during interpretation
     arena: std.heap.ArenaAllocator,
@@ -63,6 +72,7 @@ pub const Interpreter = struct {
             .global_env = Environment.init(allocator),
             .return_value = null,
             .break_signal = null,
+            .tail_call_signal = null,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .module_exports = .{},
             .error_context = null,
@@ -981,9 +991,51 @@ pub const Interpreter = struct {
         };
     }
 
-    /// Call a function with given arguments
+    /// Check if an expression is a direct function call (potential tail call)
+    fn isTailCall(self: *Interpreter, expr: *const Expression) bool {
+        return switch (expr.kind) {
+            .function_call => true,
+            .method_call => true,
+            .grouped => |g| self.isTailCall(g),
+            else => false,
+        };
+    }
+
+    /// Set up a tail call signal without making the call
+    fn setupTailCall(self: *Interpreter, expr: *const Expression, env: *Environment) InterpreterError!void {
+        switch (expr.kind) {
+            .function_call => |call| {
+                const callee = try self.evalExpression(call.callee, env);
+                switch (callee) {
+                    .function => |f| {
+                        const args = try self.arenaAlloc().alloc(Value, call.arguments.len);
+                        for (call.arguments, 0..) |arg, i| {
+                            args[i] = try self.evalExpression(arg, env);
+                        }
+                        self.tail_call_signal = .{
+                            .func = f,
+                            .args = args,
+                            .caller_env = env,
+                        };
+                    },
+                    else => return error.NotCallable,
+                }
+            },
+            .method_call => |call| {
+                // Evaluate method call and check if result is callable
+                const result = try self.evalMethodCall(call, env);
+                // Method calls to builtins don't participate in TCO
+                // Just store as return value (caller will use ReturnEncountered)
+                self.return_value = result;
+            },
+            .grouped => |g| try self.setupTailCall(g, env),
+            else => unreachable,
+        }
+    }
+
+    /// Call a function with given arguments (with tail-call optimization via trampoline)
     fn callFunction(self: *Interpreter, func: Value.FunctionValue, args: []const Value, caller_env: *Environment) InterpreterError!Value {
-        // Check recursion depth to prevent stack overflow
+        // Check recursion depth to prevent stack overflow (only on initial call, TCO doesn't increment)
         if (self.recursion_depth >= max_recursion_depth) {
             self.setErrorContext("maximum recursion depth ({d}) exceeded", .{max_recursion_depth});
             return error.StackOverflow;
@@ -992,42 +1044,59 @@ pub const Interpreter = struct {
         self.recursion_depth += 1;
         defer self.recursion_depth -= 1;
 
-        switch (func.body) {
-            .ast_body => |body| {
-                // Check arity for AST functions
-                if (args.len != func.parameters.len) {
-                    return error.ArityMismatch;
-                }
-                // Create new environment for function call on the heap (arena)
-                // This is important because closures may capture this environment,
-                // and we need it to outlive the function call.
-                const base_env = func.captured_env orelse caller_env;
-                const func_env = try self.arenaAlloc().create(Environment);
-                func_env.* = Environment.initWithParent(self.arenaAlloc(), base_env);
+        // Trampoline variables - updated on tail calls
+        var current_func = func;
+        var current_args = args;
+        var current_caller_env = caller_env;
 
-                // Bind parameters
-                for (func.parameters, 0..) |param, i| {
-                    try func_env.define(param, args[i], false);
-                }
+        // Trampoline loop (labeled so we can continue from inner loop)
+        trampoline: while (true) {
+            switch (current_func.body) {
+                .ast_body => |body| {
+                    // Check arity for AST functions
+                    if (current_args.len != current_func.parameters.len) {
+                        return error.ArityMismatch;
+                    }
+                    // Create new environment for function call on the heap (arena)
+                    // This is important because closures may capture this environment,
+                    // and we need it to outlive the function call.
+                    const base_env = current_func.captured_env orelse current_caller_env;
+                    const func_env = try self.arenaAlloc().create(Environment);
+                    func_env.* = Environment.initWithParent(self.arenaAlloc(), base_env);
 
-                // Execute body
-                for (body) |stmt| {
-                    self.evalStatement(&stmt, func_env) catch |err| {
-                        if (err == error.ReturnEncountered) {
-                            const result = self.return_value orelse Value{ .void = {} };
-                            self.return_value = null;
-                            return result;
-                        }
-                        return err;
-                    };
-                }
+                    // Bind parameters
+                    for (current_func.parameters, 0..) |param, i| {
+                        try func_env.define(param, current_args[i], false);
+                    }
 
-                return Value{ .void = {} };
-            },
-            .builtin => |builtin_fn| {
-                const ctx = self.makeBuiltinContext();
-                return builtin_fn(ctx, args);
-            },
+                    // Execute body
+                    for (body) |stmt| {
+                        self.evalStatement(&stmt, func_env) catch |err| {
+                            if (err == error.ReturnEncountered) {
+                                const result = self.return_value orelse Value{ .void = {} };
+                                self.return_value = null;
+                                return result;
+                            }
+                            if (err == error.TailCallEncountered) {
+                                // Tail call - update trampoline and continue outer loop
+                                const signal = self.tail_call_signal.?;
+                                self.tail_call_signal = null;
+                                current_func = signal.func;
+                                current_args = signal.args;
+                                current_caller_env = signal.caller_env;
+                                continue :trampoline;
+                            }
+                            return err;
+                        };
+                    }
+
+                    return Value{ .void = {} };
+                },
+                .builtin => |builtin_fn| {
+                    const ctx = self.makeBuiltinContext();
+                    return builtin_fn(ctx, args);
+                },
+            }
         }
     }
 
@@ -1625,13 +1694,24 @@ pub const Interpreter = struct {
         return error.MatchFailed;
     }
 
-    /// Evaluate a return statement
+    /// Evaluate a return statement (with tail call detection for TCO)
     fn evalReturnStatement(self: *Interpreter, ret: Statement.ReturnStatement, env: *Environment) InterpreterError!void {
-        self.return_value = if (ret.value) |val|
-            try self.evalExpression(val, env)
-        else
-            Value{ .void = {} };
-
+        if (ret.value) |val| {
+            // Check if this is a tail call (direct function call being returned)
+            if (self.isTailCall(val)) {
+                try self.setupTailCall(val, env);
+                // If setupTailCall set tail_call_signal, use TCO
+                if (self.tail_call_signal != null) {
+                    return error.TailCallEncountered;
+                }
+                // Otherwise it set return_value (e.g., method call), use normal return
+                return error.ReturnEncountered;
+            }
+            // Not a tail call - evaluate normally
+            self.return_value = try self.evalExpression(val, env);
+        } else {
+            self.return_value = Value{ .void = {} };
+        }
         return error.ReturnEncountered;
     }
 

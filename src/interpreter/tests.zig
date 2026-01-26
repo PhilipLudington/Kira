@@ -433,6 +433,53 @@ test "interpreter: fibonacci" {
     try testing.expectEqual(@as(i128, 55), result.?.integer);
 }
 
+test "interpreter: tail call optimization" {
+    const allocator = testing.allocator;
+
+    // This would fail with StackOverflow (limit 1000) without TCO
+    const source =
+        \\fn countdown(n: i64) -> i64 {
+        \\    if n <= 0 {
+        \\        return 0
+        \\    }
+        \\    return countdown(n - 1)
+        \\}
+        \\
+        \\fn main() -> i64 {
+        \\    return countdown(2000)
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i128, 0), result.?.integer);
+}
+
+test "interpreter: mutual tail recursion" {
+    const allocator = testing.allocator;
+
+    // Mutual recursion with TCO
+    const source =
+        \\fn is_even(n: i64) -> bool {
+        \\    if n == 0 { return true }
+        \\    return is_odd(n - 1)
+        \\}
+        \\
+        \\fn is_odd(n: i64) -> bool {
+        \\    if n == 0 { return false }
+        \\    return is_even(n - 1)
+        \\}
+        \\
+        \\fn main() -> bool {
+        \\    return is_even(2000)
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(true, result.?.boolean);
+}
+
 // ============================================================================
 // Tuple Tests
 // ============================================================================

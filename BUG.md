@@ -34,54 +34,56 @@ std.string.substring("Hello, 世界!", 7, 9)  // Returns "世界"
 
 ## Limitations
 
-### ~~1. Recursive Interpreter Causes Stack Overflow~~ (PARTIALLY FIXED)
+### ~~1. Recursive Interpreter Causes Stack Overflow~~ (FIXED)
 
-**Status:** Partially fixed (2026-01-25)
+**Status:** Fixed (2026-01-25)
 
-**Severity:** Medium → Low
+**Severity:** ~~Medium~~ → Resolved
 
 **Description:** The Kira interpreter previously used recursive evaluation which caused stack overflow when processing deeply recursive operations.
 
 **Fixes applied:**
-1. **Recursion depth tracking**: The interpreter now tracks call depth and returns a clean `StackOverflow` error at 1000 depth instead of crashing.
-2. **Iterative Cons pattern matching**: List pattern matching (`Cons(h, t)` patterns) now uses iterative traversal instead of recursion, allowing pattern matching on arbitrarily large lists.
-3. **Iterative Cons binding**: List destructuring in let bindings also uses iterative traversal.
+1. **Recursion depth tracking**: The interpreter tracks call depth and returns a clean `StackOverflow` error at 1000 depth for non-tail-recursive calls.
+2. **Tail-call optimization (TCO)**: Tail-recursive functions now use a trampoline pattern, allowing unlimited recursion depth without consuming stack space.
+3. **Iterative Cons pattern matching**: List pattern matching (`Cons(h, t)` patterns) uses iterative traversal instead of recursion.
+4. **Iterative Cons binding**: List destructuring in let bindings also uses iterative traversal.
 
-**Current limits:**
-- User recursive functions are limited to ~1000 call depth (configurable via `max_recursion_depth`)
-- Lists can now be pattern-matched regardless of size (fixed)
-- External parsers may still have their own recursion limits
-
-**What's fixed:**
+**What's now possible with TCO:**
 ```kira
-// This now works - iterative pattern matching
-fn sum_list(lst: List[i64]) -> i64 {
-    match lst {
-        Nil => { return 0 }
-        Cons(h, t) => { return h + sum_list(t) }
-    }
-}
-// Can handle lists with 100+ elements without crashing
-```
-
-**What gives a clean error:**
-```kira
-// Deep recursion now gives StackOverflow error instead of crashing
-fn deep(n: i64) -> i64 {
+// Tail recursion - unlimited depth via TCO
+fn countdown(n: i64) -> i64 {
     if n <= 0 { return 0 }
-    return deep(n - 1)
+    return countdown(n - 1)  // Tail call - optimized!
 }
-deep(2000)  // Returns error.StackOverflow with message
+countdown(100000)  // Works! Returns 0
 
-// Output: Runtime error: error.StackOverflow
-//         maximum recursion depth (1000) exceeded
+// Mutual tail recursion also works
+fn is_even(n: i64) -> bool {
+    if n == 0 { return true }
+    return is_odd(n - 1)  // Tail call
+}
+fn is_odd(n: i64) -> bool {
+    if n == 0 { return false }
+    return is_even(n - 1)  // Tail call
+}
+is_even(100000)  // Works! Returns true
 ```
 
-**Remaining workarounds:**
-- Keep user recursion depth under 1000 calls
-- Use iterative patterns with `while` loops for very deep recursion
+**Non-tail calls still limited (by design):**
+```kira
+// Non-tail recursion still limited to 1000 depth
+fn factorial(n: i64) -> i64 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)  // NOT a tail call (multiply happens after)
+}
+factorial(2000)  // Returns StackOverflow error
+```
 
-**Feature request:** Consider tail-call optimization for recursive functions to remove depth limits entirely.
+**TCO implementation details:**
+- Detects tail calls in `return` statements (direct function calls being returned)
+- Uses trampoline loop pattern instead of actual recursion
+- Works with closures (captured environments preserved)
+- Works with mutual recursion (operates on function values)
 
 ### 2. No Iterative String Building in Parser
 
@@ -97,15 +99,27 @@ deep(2000)  // Returns error.StackOverflow with message
 
 ## Feature Requests
 
-### 1. Tail-Call Optimization
+### ~~1. Tail-Call Optimization~~ (IMPLEMENTED)
 
-**Priority:** Medium (was High - mitigated by depth tracking)
+**Status:** Implemented (2026-01-25)
 
-**Description:** Many functional patterns rely on tail recursion. Without TCO, these patterns hit the recursion depth limit (1000 calls) for deep recursion.
+**Description:** Tail-call optimization is now implemented using a trampoline pattern. Tail-recursive functions can recurse to unlimited depth without consuming stack space.
 
-**Note:** The immediate crash issue has been mitigated by recursion depth tracking (2026-01-25). Programs now get a clean `StackOverflow` error instead of crashing. However, TCO would still be beneficial to remove depth limits entirely.
+**Implementation:**
+- Added `TailCallEncountered` error for TCO control flow
+- Added `TailCallSignal` struct to hold tail call information
+- `evalReturnStatement()` detects direct function calls being returned
+- `callFunction()` uses a labeled trampoline loop to handle tail calls iteratively
+- Works with closures and mutual recursion
 
-**Use case:** The JSON library's recursive list operations (`list_length`, `parse_array_elements`, etc.) would benefit from unlimited recursion depth.
+**Verification:**
+```kira
+fn deep(n: i64) -> i64 {
+    if n <= 0 { return 0 }
+    return deep(n - 1)
+}
+deep(100000)  // Works! (10x beyond old limit)
+```
 
 ### 2. Iterative List Operations in Standard Library
 
