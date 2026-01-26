@@ -31,6 +31,10 @@ const BreakValue = struct {
     value: ?Value,
 };
 
+/// Maximum recursion depth before stack overflow error.
+/// Set conservatively to prevent stack overflow in the Zig runtime.
+const max_recursion_depth: usize = 1000;
+
 /// The Kira interpreter.
 pub const Interpreter = struct {
     allocator: Allocator,
@@ -49,6 +53,9 @@ pub const Interpreter = struct {
     /// Error context for better error messages
     error_context: ?[]const u8,
 
+    /// Current recursion depth for stack overflow detection
+    recursion_depth: usize,
+
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
             .allocator = allocator,
@@ -59,6 +66,7 @@ pub const Interpreter = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .module_exports = .{},
             .error_context = null,
+            .recursion_depth = 0,
         };
     }
 
@@ -975,6 +983,15 @@ pub const Interpreter = struct {
 
     /// Call a function with given arguments
     fn callFunction(self: *Interpreter, func: Value.FunctionValue, args: []const Value, caller_env: *Environment) InterpreterError!Value {
+        // Check recursion depth to prevent stack overflow
+        if (self.recursion_depth >= max_recursion_depth) {
+            self.setErrorContext("maximum recursion depth ({d}) exceeded", .{max_recursion_depth});
+            return error.StackOverflow;
+        }
+
+        self.recursion_depth += 1;
+        defer self.recursion_depth -= 1;
+
         switch (func.body) {
             .ast_body => |body| {
                 // Check arity for AST functions
@@ -1718,27 +1735,9 @@ pub const Interpreter = struct {
                     };
                 }
 
-                // Handle List
+                // Handle List - iterative implementation to avoid stack overflow
                 if (std.mem.eql(u8, c.variant_name, "Cons")) {
-                    return switch (value) {
-                        .cons => |cons| {
-                            if (c.arguments) |args| {
-                                if (args.len != 2) return false;
-                                const head_pat = switch (args[0]) {
-                                    .positional => |p| p,
-                                    .named => |n| n.pattern,
-                                };
-                                const tail_pat = switch (args[1]) {
-                                    .positional => |p| p,
-                                    .named => |n| n.pattern,
-                                };
-                                if (!try self.matchPattern(head_pat, cons.head.*, env)) return false;
-                                return self.matchPattern(tail_pat, cons.tail.*, env);
-                            }
-                            return false;
-                        },
-                        else => false,
-                    };
+                    return self.matchConsPatternIterative(pattern, value, env);
                 }
 
                 if (std.mem.eql(u8, c.variant_name, "Nil")) {
@@ -1877,6 +1876,70 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Iteratively match a Cons pattern against a list value.
+    /// This avoids stack overflow for large lists by using a loop instead of recursion.
+    fn matchConsPatternIterative(self: *Interpreter, initial_pattern: *const Pattern, initial_value: Value, env: *Environment) InterpreterError!bool {
+        var current_pattern: *const Pattern = initial_pattern;
+        var current_value: Value = initial_value;
+
+        // Iterate through nested Cons patterns and cons values
+        while (true) {
+            // Check if current pattern is a Cons constructor
+            const cons_pattern = switch (current_pattern.kind) {
+                .constructor => |c| blk: {
+                    if (std.mem.eql(u8, c.variant_name, "Cons")) {
+                        break :blk c;
+                    }
+                    // Not a Cons pattern - fall through to match normally
+                    return self.matchPattern(current_pattern, current_value, env);
+                },
+                // Handle identifier pattern (matches rest of list)
+                .identifier, .wildcard => return self.matchPattern(current_pattern, current_value, env),
+                // Nil pattern
+                else => return self.matchPattern(current_pattern, current_value, env),
+            };
+
+            // Check if current value is a cons cell
+            const cons_value = switch (current_value) {
+                .cons => |c| c,
+                // Pattern expects Cons but value isn't - no match
+                else => return false,
+            };
+
+            // Get head and tail patterns
+            const args = cons_pattern.arguments orelse return false;
+            if (args.len != 2) return false;
+
+            const head_pat = switch (args[0]) {
+                .positional => |p| p,
+                .named => |n| n.pattern,
+            };
+            const tail_pat = switch (args[1]) {
+                .positional => |p| p,
+                .named => |n| n.pattern,
+            };
+
+            // Match head pattern against head value
+            if (!try self.matchPattern(head_pat, cons_value.head.*, env)) {
+                return false;
+            }
+
+            // Check if tail pattern is also a Cons - if so, continue iterating
+            if (tail_pat.kind == .constructor) {
+                const tail_cons = tail_pat.kind.constructor;
+                if (std.mem.eql(u8, tail_cons.variant_name, "Cons")) {
+                    // Continue iteration with tail pattern and tail value
+                    current_pattern = tail_pat;
+                    current_value = cons_value.tail.*;
+                    continue;
+                }
+            }
+
+            // Tail pattern is not Cons - match it directly against remaining value
+            return self.matchPattern(tail_pat, cons_value.tail.*, env);
+        }
+    }
+
     /// Bind a pattern to a value (assumes pattern matches)
     fn bindPattern(self: *Interpreter, pattern: *const Pattern, value: Value, env: *Environment, is_mutable: bool) InterpreterError!void {
         switch (pattern.kind) {
@@ -1889,13 +1952,18 @@ pub const Interpreter = struct {
             .integer_literal, .float_literal, .string_literal, .char_literal, .bool_literal => {},
 
             .constructor => |c| {
-                // Extract and bind arguments
+                // Handle Cons pattern iteratively to avoid stack overflow
+                if (std.mem.eql(u8, c.variant_name, "Cons")) {
+                    try self.bindConsPatternIterative(pattern, value, env, is_mutable);
+                    return;
+                }
+
+                // Extract and bind arguments for other constructors
                 if (c.arguments) |args| {
                     const fields = switch (value) {
                         .some => |v| &[_]Value{v.*},
                         .ok => |v| &[_]Value{v.*},
                         .err => |v| &[_]Value{v.*},
-                        .cons => |cons| &[_]Value{ cons.head.*, cons.tail.* },
                         .variant => |v| if (v.fields) |f| switch (f) {
                             .tuple => |t| t,
                             .record => return error.TypeMismatch, // TODO: handle record fields
@@ -1957,6 +2025,76 @@ pub const Interpreter = struct {
             .range => {},
 
             .typed => |t| try self.bindPattern(t.pattern, value, env, is_mutable),
+        }
+    }
+
+    /// Iteratively bind a Cons pattern to a list value.
+    /// This avoids stack overflow for large lists by using a loop instead of recursion.
+    fn bindConsPatternIterative(self: *Interpreter, initial_pattern: *const Pattern, initial_value: Value, env: *Environment, is_mutable: bool) InterpreterError!void {
+        var current_pattern: *const Pattern = initial_pattern;
+        var current_value: Value = initial_value;
+
+        // Iterate through nested Cons patterns and cons values
+        while (true) {
+            // Check if current pattern is a Cons constructor
+            const cons_pattern = switch (current_pattern.kind) {
+                .constructor => |c| blk: {
+                    if (std.mem.eql(u8, c.variant_name, "Cons")) {
+                        break :blk c;
+                    }
+                    // Not a Cons pattern - bind normally and return
+                    try self.bindPattern(current_pattern, current_value, env, is_mutable);
+                    return;
+                },
+                // Handle identifier/wildcard patterns (bind rest of list)
+                .identifier, .wildcard => {
+                    try self.bindPattern(current_pattern, current_value, env, is_mutable);
+                    return;
+                },
+                // Other patterns - bind normally
+                else => {
+                    try self.bindPattern(current_pattern, current_value, env, is_mutable);
+                    return;
+                },
+            };
+
+            // Check if current value is a cons cell
+            const cons_value = switch (current_value) {
+                .cons => |c| c,
+                // Pattern is Cons but value isn't - just return (mismatch)
+                else => return,
+            };
+
+            // Get head and tail patterns
+            const args = cons_pattern.arguments orelse return;
+            if (args.len != 2) return;
+
+            const head_pat = switch (args[0]) {
+                .positional => |p| p,
+                .named => |n| n.pattern,
+            };
+            const tail_pat = switch (args[1]) {
+                .positional => |p| p,
+                .named => |n| n.pattern,
+            };
+
+            // Bind head pattern to head value
+            try self.bindPattern(head_pat, cons_value.head.*, env, is_mutable);
+
+            // Check if tail pattern is also a Cons - if so, continue iterating
+            if (tail_pat.kind == .constructor) {
+                const tail_cons = tail_pat.kind.constructor;
+                if (std.mem.eql(u8, tail_cons.variant_name, "Cons")) {
+                    // Continue iteration with tail pattern and tail value
+                    current_pattern = tail_pat;
+                    current_value = cons_value.tail.*;
+                    continue;
+                }
+            }
+
+            // Tail pattern is not Cons - bind it directly and return
+            try self.bindPattern(tail_pat, cons_value.tail.*, env, is_mutable);
+            return;
         }
     }
 };

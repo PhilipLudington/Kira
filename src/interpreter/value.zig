@@ -539,6 +539,8 @@ pub const InterpreterError = error{
     InvalidOperation,
     /// Assertion failed
     AssertionFailed,
+    /// Stack overflow (recursion depth exceeded)
+    StackOverflow,
 };
 
 test "value equality" {

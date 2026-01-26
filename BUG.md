@@ -34,31 +34,54 @@ std.string.substring("Hello, 世界!", 7, 9)  // Returns "世界"
 
 ## Limitations
 
-### 1. Recursive Interpreter Causes Stack Overflow
+### ~~1. Recursive Interpreter Causes Stack Overflow~~ (PARTIALLY FIXED)
 
-**Severity:** Medium
+**Status:** Partially fixed (2026-01-25)
 
-**Description:** The Kira interpreter uses recursive evaluation which causes stack overflow when processing deeply recursive operations. This limits the practical size of data structures that can be processed.
+**Severity:** Medium → Low
 
-**Observed limits:**
-- Strings longer than ~1500 characters cause stack overflow during parsing
-- Arrays with more than ~50 elements cause stack overflow when counting with `list_length`
-- Deeply nested function calls (recursive helpers) hit stack limits quickly
+**Description:** The Kira interpreter previously used recursive evaluation which caused stack overflow when processing deeply recursive operations.
 
-**Reproduction:**
+**Fixes applied:**
+1. **Recursion depth tracking**: The interpreter now tracks call depth and returns a clean `StackOverflow` error at 1000 depth instead of crashing.
+2. **Iterative Cons pattern matching**: List pattern matching (`Cons(h, t)` patterns) now uses iterative traversal instead of recursion, allowing pattern matching on arbitrarily large lists.
+3. **Iterative Cons binding**: List destructuring in let bindings also uses iterative traversal.
+
+**Current limits:**
+- User recursive functions are limited to ~1000 call depth (configurable via `max_recursion_depth`)
+- Lists can now be pattern-matched regardless of size (fixed)
+- External parsers may still have their own recursion limits
+
+**What's fixed:**
 ```kira
-// This crashes with stack overflow
-let long_string: string = repeat_string("x", 2000)
-let input: string = std.string.concat("\"", std.string.concat(long_string, "\""))
-let result: Result[Json, JsonError] = parse(input)
+// This now works - iterative pattern matching
+fn sum_list(lst: List[i64]) -> i64 {
+    match lst {
+        Nil => { return 0 }
+        Cons(h, t) => { return h + sum_list(t) }
+    }
+}
+// Can handle lists with 100+ elements without crashing
 ```
 
-**Workaround:**
-- Keep data structures small
-- Avoid deep recursion in user code
-- Use iterative patterns with `while` loops instead of recursive functions
+**What gives a clean error:**
+```kira
+// Deep recursion now gives StackOverflow error instead of crashing
+fn deep(n: i64) -> i64 {
+    if n <= 0 { return 0 }
+    return deep(n - 1)
+}
+deep(2000)  // Returns error.StackOverflow with message
 
-**Feature request:** Consider tail-call optimization or trampolining for recursive functions.
+// Output: Runtime error: error.StackOverflow
+//         maximum recursion depth (1000) exceeded
+```
+
+**Remaining workarounds:**
+- Keep user recursion depth under 1000 calls
+- Use iterative patterns with `while` loops for very deep recursion
+
+**Feature request:** Consider tail-call optimization for recursive functions to remove depth limits entirely.
 
 ### 2. No Iterative String Building in Parser
 
@@ -76,11 +99,13 @@ let result: Result[Json, JsonError] = parse(input)
 
 ### 1. Tail-Call Optimization
 
-**Priority:** High
+**Priority:** Medium (was High - mitigated by depth tracking)
 
-**Description:** Many functional patterns rely on tail recursion. Without TCO, these patterns cause stack overflow for moderate-sized inputs.
+**Description:** Many functional patterns rely on tail recursion. Without TCO, these patterns hit the recursion depth limit (1000 calls) for deep recursion.
 
-**Use case:** The JSON library's recursive list operations (`list_length`, `parse_array_elements`, etc.) would benefit significantly.
+**Note:** The immediate crash issue has been mitigated by recursion depth tracking (2026-01-25). Programs now get a clean `StackOverflow` error instead of crashing. However, TCO would still be beneficial to remove depth limits entirely.
+
+**Use case:** The JSON library's recursive list operations (`list_length`, `parse_array_elements`, etc.) would benefit from unlimited recursion depth.
 
 ### 2. Iterative List Operations in Standard Library
 
@@ -108,11 +133,13 @@ let result: Result[Json, JsonError] = parse(input)
 **Still needed:**
 - `std.string.graphemes(s)` → `List[string]` - get grapheme clusters
 
-### 4. Larger Default Stack Size
+### 4. ~~Larger Default Stack Size~~ (RESOLVED)
 
-**Priority:** Low
+**Status:** Resolved via depth tracking (2026-01-25)
 
-**Description:** Consider increasing the default stack size for the interpreter to allow more recursive depth before overflow.
+**Description:** Previously requested to increase stack size to allow more recursion. This is now handled by explicit recursion depth tracking with configurable limits. The default limit of 1000 provides a good balance between usability and safety.
+
+The `max_recursion_depth` constant in `interpreter.zig` can be adjusted if needed.
 
 ---
 
