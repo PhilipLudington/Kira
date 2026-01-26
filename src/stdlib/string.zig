@@ -62,6 +62,7 @@ pub fn createModule(allocator: Allocator) !Value {
 }
 
 /// Get string length: length(str) -> int
+/// Returns the number of Unicode codepoints (not bytes).
 fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
@@ -71,7 +72,15 @@ fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
         else => return error.TypeMismatch,
     };
 
-    return Value{ .integer = @intCast(str.len) };
+    // Count codepoints, not bytes
+    var utf8_view = std.unicode.Utf8View.initUnchecked(str);
+    var iter = utf8_view.iterator();
+    var count: i64 = 0;
+    while (iter.nextCodepoint()) |_| {
+        count += 1;
+    }
+
+    return Value{ .integer = count };
 }
 
 /// Split string by delimiter: split(str, delim) -> array of strings
@@ -279,6 +288,7 @@ fn stringReplace(ctx: BuiltinContext, args: []const Value) InterpreterError!Valu
 }
 
 /// Get substring: substring(str, start, end) -> str
+/// Indices are by Unicode codepoint, not by byte.
 fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     _ = ctx;
     if (args.len != 3) return error.ArityMismatch;
@@ -299,15 +309,54 @@ fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Va
     };
 
     if (start_raw < 0 or end_raw < 0) return error.IndexOutOfBounds;
-    const start: usize = @intCast(start_raw);
-    const end: usize = @intCast(end_raw);
+    const start_codepoint: usize = @intCast(start_raw);
+    const end_codepoint: usize = @intCast(end_raw);
 
-    if (start > str.len or end > str.len or start > end) return error.IndexOutOfBounds;
+    if (start_codepoint > end_codepoint) return error.IndexOutOfBounds;
 
-    return Value{ .string = str[start..end] };
+    // Convert codepoint indices to byte offsets using UTF-8 iterator
+    var utf8_view = std.unicode.Utf8View.initUnchecked(str);
+    var iter = utf8_view.iterator();
+    var current_codepoint: usize = 0;
+    var start_byte: usize = 0;
+    var end_byte: usize = str.len;
+    var found_start = false;
+    var found_end = false;
+
+    while (iter.nextCodepointSlice()) |slice| {
+        if (current_codepoint == start_codepoint) {
+            start_byte = @intFromPtr(slice.ptr) - @intFromPtr(str.ptr);
+            found_start = true;
+        }
+        if (current_codepoint == end_codepoint) {
+            end_byte = @intFromPtr(slice.ptr) - @intFromPtr(str.ptr);
+            found_end = true;
+            break;
+        }
+        current_codepoint += 1;
+    }
+
+    // Handle edge case: end index equals total codepoint count (end of string)
+    if (!found_end and current_codepoint == end_codepoint) {
+        end_byte = str.len;
+        found_end = true;
+    }
+
+    // If start index wasn't found, check if it equals total count (empty substring at end)
+    if (!found_start and current_codepoint == start_codepoint) {
+        start_byte = str.len;
+        found_start = true;
+    }
+
+    if (!found_start or (!found_end and end_codepoint != current_codepoint + 1)) {
+        return error.IndexOutOfBounds;
+    }
+
+    return Value{ .string = str[start_byte..end_byte] };
 }
 
 /// Get character at index: char_at(str, index) -> Option[char]
+/// Index is by Unicode codepoint, not by byte.
 fn stringCharAt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
@@ -324,14 +373,24 @@ fn stringCharAt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
     if (index_raw < 0) return Value{ .none = {} };
     const index: usize = @intCast(index_raw);
 
-    if (index >= str.len) return Value{ .none = {} };
+    // Use UTF-8 iterator to get the index-th codepoint (not byte)
+    var utf8_view = std.unicode.Utf8View.initUnchecked(str);
+    var iter = utf8_view.iterator();
+    var current_idx: usize = 0;
+    while (iter.nextCodepoint()) |codepoint| {
+        if (current_idx == index) {
+            const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+            inner.* = Value{ .char = codepoint };
+            return Value{ .some = inner };
+        }
+        current_idx += 1;
+    }
 
-    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
-    inner.* = Value{ .char = str[index] };
-    return Value{ .some = inner };
+    return Value{ .none = {} };
 }
 
 /// Find index of substring: index_of(str, substr) -> Option[int]
+/// Returns the codepoint index (not byte index) of the first occurrence.
 fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
@@ -345,10 +404,30 @@ fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Valu
         else => return error.TypeMismatch,
     };
 
-    if (std.mem.indexOf(u8, haystack, needle)) |idx| {
-        const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
-        inner.* = Value{ .integer = @intCast(idx) };
-        return Value{ .some = inner };
+    // Find byte index first
+    if (std.mem.indexOf(u8, haystack, needle)) |byte_idx| {
+        // Convert byte index to codepoint index
+        var utf8_view = std.unicode.Utf8View.initUnchecked(haystack);
+        var iter = utf8_view.iterator();
+        var codepoint_idx: i64 = 0;
+        var current_byte: usize = 0;
+
+        while (iter.nextCodepointSlice()) |slice| {
+            if (current_byte == byte_idx) {
+                const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+                inner.* = Value{ .integer = codepoint_idx };
+                return Value{ .some = inner };
+            }
+            current_byte += slice.len;
+            codepoint_idx += 1;
+        }
+
+        // Edge case: byte_idx points exactly at the end
+        if (current_byte == byte_idx) {
+            const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+            inner.* = Value{ .integer = codepoint_idx };
+            return Value{ .some = inner };
+        }
     }
 
     return Value{ .none = {} };

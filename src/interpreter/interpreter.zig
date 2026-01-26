@@ -927,8 +927,17 @@ pub const Interpreter = struct {
                     },
                     else => return error.TypeMismatch,
                 };
-                if (idx >= s.len) return error.IndexOutOfBounds;
-                return Value{ .char = s[idx] };
+                // Use UTF-8 iterator to get the idx-th codepoint (not byte)
+                var utf8_view = std.unicode.Utf8View.initUnchecked(s);
+                var iter = utf8_view.iterator();
+                var current_idx: usize = 0;
+                while (iter.nextCodepoint()) |codepoint| {
+                    if (current_idx == idx) {
+                        return Value{ .char = codepoint };
+                    }
+                    current_idx += 1;
+                }
+                return error.IndexOutOfBounds;
             },
             else => error.TypeMismatch,
         };
@@ -1509,12 +1518,15 @@ pub const Interpreter = struct {
                     current = current.cons.tail.*;
                 }
             },
-            .string => |s| {
-                for (s) |c| {
+            .string => |str| {
+                // Use UTF-8 iterator to iterate by codepoint (not byte)
+                var utf8_view = std.unicode.Utf8View.initUnchecked(str);
+                var iter = utf8_view.iterator();
+                while (iter.nextCodepoint()) |codepoint| {
                     // Heap-allocate loop environment since closures may capture it
                     const loop_env = try self.arenaAlloc().create(Environment);
                     loop_env.* = Environment.initWithParent(self.arenaAlloc(), env);
-                    try self.bindPattern(fl.pattern, Value{ .char = c }, loop_env, false);
+                    try self.bindPattern(fl.pattern, Value{ .char = codepoint }, loop_env, false);
 
                     for (fl.body) |stmt| {
                         self.evalStatement(&stmt, loop_env) catch |err| {
