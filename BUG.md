@@ -58,21 +58,21 @@ effect fn main() -> void {
 
 ---
 
-## [ ] Bug 4: Multi-line string literals not supported
+## [x] Bug 4: Multi-line string literals not supported
 
-**Status:** Open (workaround in place)
+**Status:** Fixed (2026-01-27)
 
-**Description:** Kira does not support multi-line string literals. A string must be on a single line.
+**Description:** Kira did not support multi-line string literals. A string had to be on a single line.
 
-**Reproduction:**
+**Root Cause:** In `scanString()` in `src/lexer/lexer.zig`, the while loop condition explicitly rejected newlines (`self.peek() != '\n'`), and the subsequent error check also treated newlines as invalid.
+
+**Solution:** Removed the newline checks from `scanString()`. The lexer's location tracking already handles newlines correctly via `advance()`, so multi-line strings work naturally.
+
+**Usage:**
 ```kira
 let s: string = "line 1
-line 2"  // Parse error
+line 2
+line 3"
 ```
 
-**Workaround:** Use `StringBuilder` to construct multi-line strings, or concatenate with `"\n"`:
-```kira
-let s: string = "line 1" + "\n" + "line 2"
-```
-
-**Affected code:** `generate_runtime()` function uses `StringBuilder` to build the runtime library source code.
+**Note:** The workarounds in `src/main.ki` can now be simplified to use multi-line string literals directly instead of `StringBuilder`.

@@ -220,7 +220,7 @@ pub const Lexer = struct {
     }
 
     fn scanString(self: *Lexer, start_location: Location) Token {
-        while (!self.isAtEnd() and self.peek() != '"' and self.peek() != '\n') {
+        while (!self.isAtEnd() and self.peek() != '"') {
             if (self.peek() == '\\' and !self.isAtEnd()) {
                 _ = self.advance(); // consume backslash
                 _ = self.advance(); // consume escaped char
@@ -229,7 +229,7 @@ pub const Lexer = struct {
             }
         }
 
-        if (self.isAtEnd() or self.peek() == '\n') {
+        if (self.isAtEnd()) {
             return self.makeTokenAt(.invalid, self.source[start_location.offset..self.current], start_location);
         }
 
@@ -596,6 +596,17 @@ test "lexer string literals" {
     try std.testing.expectEqual(TokenType.string_literal, tokens.items[0].type);
     try std.testing.expectEqualStrings("\"hello world\"", tokens.items[0].lexeme);
     try std.testing.expectEqual(TokenType.string_literal, tokens.items[1].type);
+}
+
+test "lexer multi-line string literals" {
+    var lexer = Lexer.init("\"line 1\nline 2\nline 3\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), tokens.items.len);
+    try std.testing.expectEqual(TokenType.string_literal, tokens.items[0].type);
+    try std.testing.expectEqualStrings("\"line 1\nline 2\nline 3\"", tokens.items[0].lexeme);
+    try std.testing.expectEqual(TokenType.eof, tokens.items[1].type);
 }
 
 test "lexer number literals" {
