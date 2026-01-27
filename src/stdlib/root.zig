@@ -8,6 +8,7 @@
 //!   - std.string: String operations (length, split, trim, etc.)
 //!   - std.io: I/O effects (print, println, read_line)
 //!   - std.fs: Filesystem effects (read_file, write_file, exists, remove)
+//!   - std.env: Environment access (args)
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,6 +31,7 @@ pub const char = @import("char.zig");
 pub const io = @import("io.zig");
 pub const fs = @import("fs.zig");
 pub const time = @import("time.zig");
+pub const env_mod = @import("env.zig");
 pub const assert = @import("assert.zig");
 pub const builder = @import("builder.zig");
 pub const map = @import("map.zig");
@@ -54,6 +56,7 @@ pub fn registerStdlib(allocator: Allocator, env: *Environment) !void {
     try std_fields.put(allocator, "io", try io.createModule(allocator));
     try std_fields.put(allocator, "fs", try fs.createModule(allocator));
     try std_fields.put(allocator, "time", try time.createModule(allocator));
+    try std_fields.put(allocator, "env", try env_mod.createModule(allocator));
     try std_fields.put(allocator, "assert", try assert.createModule(allocator));
     try std_fields.put(allocator, "builder", try builder.createModule(allocator));
     try std_fields.put(allocator, "map", try map.createModule(allocator));
@@ -113,6 +116,7 @@ test {
     _ = io;
     _ = fs;
     _ = time;
+    _ = env_mod;
     _ = assert;
     _ = builder;
     _ = map;

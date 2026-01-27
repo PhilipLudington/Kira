@@ -20,6 +20,8 @@ const Args = struct {
     file_path: ?[]const u8,
     show_tokens: bool,
     show_ast: bool,
+    /// Arguments passed to the Kira program (after the file path)
+    user_args: []const []const u8,
 };
 
 pub fn main() !void {
@@ -42,6 +44,10 @@ pub fn main() !void {
         .version_info => printVersion(),
         .run => {
             if (args.file_path) |path| {
+                // Set program arguments for std.env.args()
+                Kira.interpreter_mod.stdlib.env_mod.setArgs(allocator, args.user_args) catch {};
+                defer Kira.interpreter_mod.stdlib.env_mod.clearArgs();
+
                 runFile(allocator, path, false) catch |err| {
                     reportError(err);
                     std.process.exit(1);
@@ -72,6 +78,10 @@ pub fn main() !void {
         },
         .test_cmd => {
             if (args.file_path) |path| {
+                // Set program arguments for std.env.args()
+                Kira.interpreter_mod.stdlib.env_mod.setArgs(allocator, args.user_args) catch {};
+                defer Kira.interpreter_mod.stdlib.env_mod.clearArgs();
+
                 testFile(allocator, path) catch |err| {
                     reportError(err);
                     std.process.exit(1);
@@ -93,6 +103,10 @@ fn reportError(err: anyerror) void {
     stderr.writeAll(msg) catch {};
 }
 
+/// Buffer for storing user arguments (static to preserve lifetime)
+var user_args_buffer: [256][]const u8 = undefined;
+var user_args_count: usize = 0;
+
 fn parseArgs() !Args {
     var args_iter = std.process.args();
     _ = args_iter.skip(); // Skip program name
@@ -102,9 +116,22 @@ fn parseArgs() !Args {
         .file_path = null,
         .show_tokens = false,
         .show_ast = false,
+        .user_args = &.{},
     };
 
+    user_args_count = 0;
+    var file_path_seen = false;
+
     while (args_iter.next()) |arg| {
+        // If we've seen the file path, collect remaining as user args
+        if (file_path_seen) {
+            if (user_args_count < user_args_buffer.len) {
+                user_args_buffer[user_args_count] = arg;
+                user_args_count += 1;
+            }
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.mode = .help;
             return result;
@@ -115,16 +142,19 @@ fn parseArgs() !Args {
             result.mode = .run;
             if (args_iter.next()) |path| {
                 result.file_path = path;
+                file_path_seen = true;
             }
         } else if (std.mem.eql(u8, arg, "check")) {
             result.mode = .check;
             if (args_iter.next()) |path| {
                 result.file_path = path;
+                file_path_seen = true;
             }
         } else if (std.mem.eql(u8, arg, "test")) {
             result.mode = .test_cmd;
             if (args_iter.next()) |path| {
                 result.file_path = path;
+                file_path_seen = true;
             }
         } else if (std.mem.eql(u8, arg, "--tokens")) {
             result.show_tokens = true;
@@ -134,10 +164,14 @@ fn parseArgs() !Args {
             // Bare file path - treat as run
             result.mode = .run;
             result.file_path = arg;
+            file_path_seen = true;
         } else {
             return error.UnknownOption;
         }
     }
+
+    // Set user_args slice to the collected args
+    result.user_args = user_args_buffer[0..user_args_count];
 
     return result;
 }
@@ -1498,6 +1532,7 @@ test "parse args help" {
         .file_path = null,
         .show_tokens = false,
         .show_ast = false,
+        .user_args = &.{},
     };
 }
 

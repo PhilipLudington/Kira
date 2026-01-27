@@ -36,17 +36,25 @@ let grade: string = if score >= 90 { "A" } else if score >= 80 { "B" } else { "F
 
 ---
 
-## [ ] Bug 3: No command-line argument support
+## [x] Bug 3: No command-line argument support
 
-**Status:** Open (workaround in place)
+**Status:** Fixed (2026-01-27)
 
-**Description:** Kira does not provide access to command-line arguments. There is no `std.env.args()` or similar function.
+**Description:** Kira did not provide access to command-line arguments.
 
-**Expected:** A way to access command-line arguments passed to the program.
+**Solution:** Added `std.env.args()` function that returns `[string]` (array of strings) containing command-line arguments passed after the file path.
 
-**Actual:** `std.env` module does not exist.
+**Usage:**
+```kira
+effect fn main() -> void {
+    let args: [string] = std.env.args()
+    for arg in args {
+        std.io.println(arg)
+    }
+}
+```
 
-**Workaround:** Modify source code to switch between modes (REPL vs compile) by commenting/uncommenting code in `main()`.
+**Running:** `kira run myprogram.ki arg1 arg2 arg3`
 
 ---
 
