@@ -72,20 +72,18 @@ type LispLambda = | Lambda(List[string], LispValue, Env)
 
 ---
 
-## [ ] Bug 5: std.list.append Does Not Exist
+## [x] Bug 5: std.list.append Does Not Exist
 
-**Severity:** Medium (missing functionality)
+**Status:** Fixed - added `std.list.append(list, elem) -> list`
 
-**Description:** There is no function to append an element to the end of a list.
-
-**Workaround:** Use `Cons` to prepend, then reverse:
+**Usage:**
 ```kira
-fn list_append[T](lst: List[T], item: T) -> List[T] {
-    return std.list.reverse(Cons(item, std.list.reverse(lst)))
-}
+let lst: List[i32] = Cons(1, Cons(2, Nil))
+let result: List[i32] = std.list.append(lst, 3)
+// result is [1, 2, 3]
 ```
 
-**Impact:** O(n) operation for what should be a common list operation. Consider adding `append` or documenting that lists are head-oriented.
+**Note:** This is an O(n) operation since it must traverse the entire list. For frequent appends, consider building lists with `Cons` (prepend) and reversing at the end.
 
 ---
 

@@ -5,7 +5,7 @@
 //!   - head, tail: Accessors (return Option)
 //!   - map, filter, fold, fold_right, foreach: Higher-order functions
 //!   - find, any, all: Searching and predicates
-//!   - length, reverse: Basic operations
+//!   - length, reverse, append: Basic operations
 //!   - concat, flatten: Combining lists
 //!   - take, drop, zip: Slicing and combining
 
@@ -52,6 +52,7 @@ pub fn createModule(allocator: Allocator) !Value {
     // Basic operations
     try fields.put(allocator, "length", root.makeBuiltin("length", &listLength));
     try fields.put(allocator, "reverse", root.makeBuiltin("reverse", &listReverse));
+    try fields.put(allocator, "append", root.makeBuiltin("append", &listAppend));
 
     // Combining lists
     try fields.put(allocator, "concat", root.makeBuiltin("concat", &listConcat));
@@ -715,6 +716,27 @@ fn listReverse(ctx: BuiltinContext, args: []const Value) InterpreterError!Value 
     return result;
 }
 
+/// Append an element to the end of a list: append(list, elem) -> list
+fn listAppend(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 2) return error.ArityMismatch;
+
+    // Collect existing list elements
+    var elements = std.ArrayListUnmanaged(Value){};
+    defer elements.deinit(ctx.allocator);
+
+    var current = args[0];
+    while (current == .cons) {
+        elements.append(ctx.allocator, current.cons.head.*) catch return error.OutOfMemory;
+        current = current.cons.tail.*;
+    }
+    if (current != .nil) return error.TypeMismatch;
+
+    // Add the new element at the end
+    elements.append(ctx.allocator, args[1]) catch return error.OutOfMemory;
+
+    return buildList(ctx.allocator, elements.items);
+}
+
 // ============================================================================
 // Combining Lists
 // ============================================================================
@@ -965,6 +987,38 @@ test "list reverse" {
     try std.testing.expectEqual(@as(i128, 3), reversed.cons.head.integer);
     try std.testing.expectEqual(@as(i128, 2), reversed.cons.tail.cons.head.integer);
     try std.testing.expectEqual(@as(i128, 1), reversed.cons.tail.cons.tail.cons.head.integer);
+}
+
+test "list append" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const ctx = testCtx(allocator);
+
+    // Append to empty list
+    const empty_result = try listAppend(ctx, &.{ Value{ .nil = {} }, Value{ .integer = 1 } });
+    try std.testing.expect(empty_result == .cons);
+    try std.testing.expectEqual(@as(i128, 1), empty_result.cons.head.integer);
+    try std.testing.expect(empty_result.cons.tail.* == .nil);
+
+    // Build [1, 2] and append 3
+    const list = try buildList(allocator, &.{
+        Value{ .integer = 1 },
+        Value{ .integer = 2 },
+    });
+
+    const appended = try listAppend(ctx, &.{ list, Value{ .integer = 3 } });
+
+    // Should be [1, 2, 3]
+    try std.testing.expect(appended == .cons);
+    try std.testing.expectEqual(@as(i128, 1), appended.cons.head.integer);
+    try std.testing.expectEqual(@as(i128, 2), appended.cons.tail.cons.head.integer);
+    try std.testing.expectEqual(@as(i128, 3), appended.cons.tail.cons.tail.cons.head.integer);
+    try std.testing.expect(appended.cons.tail.cons.tail.cons.tail.* == .nil);
+
+    // Verify length
+    const len = try listLength(ctx, &.{appended});
+    try std.testing.expectEqual(@as(i128, 3), len.integer);
 }
 
 test "list take and drop" {
