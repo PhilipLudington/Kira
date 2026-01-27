@@ -33,6 +33,7 @@ pub const time = @import("time.zig");
 pub const assert = @import("assert.zig");
 pub const builder = @import("builder.zig");
 pub const map = @import("map.zig");
+pub const bytes = @import("bytes.zig");
 
 /// Register all standard library modules in the environment.
 /// Each module is registered as a record with its functions as fields.
@@ -56,6 +57,7 @@ pub fn registerStdlib(allocator: Allocator, env: *Environment) !void {
     try std_fields.put(allocator, "assert", try assert.createModule(allocator));
     try std_fields.put(allocator, "builder", try builder.createModule(allocator));
     try std_fields.put(allocator, "map", try map.createModule(allocator));
+    try std_fields.put(allocator, "bytes", try bytes.createModule(allocator));
 
     const std_module = Value{
         .record = .{
@@ -114,4 +116,5 @@ test {
     _ = assert;
     _ = builder;
     _ = map;
+    _ = bytes;
 }

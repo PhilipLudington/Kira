@@ -1,13 +1,20 @@
 //! std.string - String operations for the Kira standard library.
 //!
+//! Kira strings are guaranteed to be valid UTF-8. For untrusted input (e.g., from
+//! files or network), use std.bytes to validate before converting to string.
+//!
 //! Provides operations on strings:
-//!   - length: Get string length (returns Result for UTF-8 validation)
+//!   - length: Get string length in Unicode codepoints
+//!   - char_at: Get character at index (Option for bounds check)
+//!   - substring: Extract substring (Option for bounds check)
 //!   - split: Split by delimiter
 //!   - trim: Remove whitespace
 //!   - concat: Concatenate strings
 //!   - contains: Check for substring
 //!   - starts_with, ends_with: Check prefix/suffix
-//!   - is_valid_utf8: Check if string is valid UTF-8
+//!   - chars: Convert to list of characters
+//!   - index_of: Find substring position
+//!   - is_valid_utf8: Check if string is valid UTF-8 (for validation at boundaries)
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -82,10 +89,11 @@ pub fn createModule(allocator: Allocator) !Value {
     };
 }
 
-/// Get string length: length(str) -> Result[int, string]
+/// Get string length: length(str) -> i64
 /// Returns the number of Unicode codepoints (not bytes).
-/// Returns Err("InvalidUtf8") if the string contains invalid UTF-8 sequences.
+/// Assumes the string is valid UTF-8 (guaranteed by Kira's string type).
 fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
     if (args.len != 1) return error.ArityMismatch;
 
     const str = switch (args[0]) {
@@ -93,19 +101,15 @@ fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
         else => return error.TypeMismatch,
     };
 
-    // Validate UTF-8 before iterating
-    const utf8_view = std.unicode.Utf8View.init(str) catch {
-        return makeError(ctx.allocator, "InvalidUtf8");
-    };
-
-    // Count codepoints, not bytes
+    // String is guaranteed valid UTF-8, count codepoints
+    const utf8_view = std.unicode.Utf8View.initUnchecked(str);
     var iter = utf8_view.iterator();
     var count: i128 = 0;
     while (iter.nextCodepoint()) |_| {
         count += 1;
     }
 
-    return makeOk(ctx.allocator, Value{ .integer = count });
+    return Value{ .integer = count };
 }
 
 /// Split string by delimiter: split(str, delim) -> array of strings
@@ -312,10 +316,10 @@ fn stringReplace(ctx: BuiltinContext, args: []const Value) InterpreterError!Valu
     return Value{ .string = result };
 }
 
-/// Get substring: substring(str, start, end) -> Result[str, string]
+/// Get substring: substring(str, start, end) -> Option[string]
 /// Indices are by Unicode codepoint, not by byte.
-/// Returns Err("InvalidUtf8") if the string contains invalid UTF-8 sequences.
-/// Returns Err("IndexOutOfBounds") if indices are invalid.
+/// Returns None if indices are out of bounds or invalid.
+/// Assumes the string is valid UTF-8 (guaranteed by Kira's string type).
 fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 3) return error.ArityMismatch;
 
@@ -334,22 +338,19 @@ fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Va
         else => return error.TypeMismatch,
     };
 
+    // Invalid indices return None
     if (start_raw < 0 or end_raw < 0) {
-        return makeError(ctx.allocator, "IndexOutOfBounds");
+        return Value{ .none = {} };
     }
     const start_codepoint: usize = @intCast(start_raw);
     const end_codepoint: usize = @intCast(end_raw);
 
     if (start_codepoint > end_codepoint) {
-        return makeError(ctx.allocator, "IndexOutOfBounds");
+        return Value{ .none = {} };
     }
 
-    // Validate UTF-8 before iterating
-    const utf8_view = std.unicode.Utf8View.init(str) catch {
-        return makeError(ctx.allocator, "InvalidUtf8");
-    };
-
-    // Convert codepoint indices to byte offsets using UTF-8 iterator
+    // String is guaranteed valid UTF-8, convert codepoint indices to byte offsets
+    const utf8_view = std.unicode.Utf8View.initUnchecked(str);
     var iter = utf8_view.iterator();
     var current_codepoint: usize = 0;
     var start_byte: usize = 0;
@@ -382,16 +383,20 @@ fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Va
         found_start = true;
     }
 
+    // Out of bounds returns None
     if (!found_start or (!found_end and end_codepoint != current_codepoint + 1)) {
-        return makeError(ctx.allocator, "IndexOutOfBounds");
+        return Value{ .none = {} };
     }
 
-    return makeOk(ctx.allocator, Value{ .string = str[start_byte..end_byte] });
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    inner.* = Value{ .string = str[start_byte..end_byte] };
+    return Value{ .some = inner };
 }
 
-/// Get character at index: char_at(str, index) -> Result[Option[char], string]
+/// Get character at index: char_at(str, index) -> Option[char]
 /// Index is by Unicode codepoint, not by byte.
-/// Returns Err("InvalidUtf8") if the string contains invalid UTF-8 sequences.
+/// Returns None if index is out of bounds.
+/// Assumes the string is valid UTF-8 (guaranteed by Kira's string type).
 fn stringCharAt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
@@ -405,32 +410,29 @@ fn stringCharAt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
         else => return error.TypeMismatch,
     };
 
-    if (index_raw < 0) return makeOk(ctx.allocator, Value{ .none = {} });
+    if (index_raw < 0) return Value{ .none = {} };
     const index: usize = @intCast(index_raw);
 
-    // Validate UTF-8 before iterating
-    const utf8_view = std.unicode.Utf8View.init(str) catch {
-        return makeError(ctx.allocator, "InvalidUtf8");
-    };
-
-    // Use UTF-8 iterator to get the index-th codepoint (not byte)
+    // String is guaranteed valid UTF-8, iterate to find codepoint at index
+    const utf8_view = std.unicode.Utf8View.initUnchecked(str);
     var iter = utf8_view.iterator();
     var current_idx: usize = 0;
     while (iter.nextCodepoint()) |codepoint| {
         if (current_idx == index) {
             const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
             inner.* = Value{ .char = codepoint };
-            return makeOk(ctx.allocator, Value{ .some = inner });
+            return Value{ .some = inner };
         }
         current_idx += 1;
     }
 
-    return makeOk(ctx.allocator, Value{ .none = {} });
+    return Value{ .none = {} };
 }
 
-/// Find index of substring: index_of(str, substr) -> Result[Option[int], string]
+/// Find index of substring: index_of(str, substr) -> Option[i64]
 /// Returns the codepoint index (not byte index) of the first occurrence.
-/// Returns Err("InvalidUtf8") if the string contains invalid UTF-8 sequences.
+/// Returns None if the substring is not found.
+/// Assumes the string is valid UTF-8 (guaranteed by Kira's string type).
 fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
@@ -446,12 +448,8 @@ fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Valu
 
     // Find byte index first
     if (std.mem.indexOf(u8, haystack, needle)) |byte_idx| {
-        // Validate UTF-8 before iterating
-        const utf8_view = std.unicode.Utf8View.init(haystack) catch {
-            return makeError(ctx.allocator, "InvalidUtf8");
-        };
-
-        // Convert byte index to codepoint index
+        // String is guaranteed valid UTF-8, convert byte index to codepoint index
+        const utf8_view = std.unicode.Utf8View.initUnchecked(haystack);
         var iter = utf8_view.iterator();
         var codepoint_idx: i128 = 0;
         var current_byte: usize = 0;
@@ -460,7 +458,7 @@ fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Valu
             if (current_byte == byte_idx) {
                 const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
                 inner.* = Value{ .integer = codepoint_idx };
-                return makeOk(ctx.allocator, Value{ .some = inner });
+                return Value{ .some = inner };
             }
             current_byte += slice.len;
             codepoint_idx += 1;
@@ -470,11 +468,11 @@ fn stringIndexOf(ctx: BuiltinContext, args: []const Value) InterpreterError!Valu
         if (current_byte == byte_idx) {
             const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
             inner.* = Value{ .integer = codepoint_idx };
-            return makeOk(ctx.allocator, Value{ .some = inner });
+            return Value{ .some = inner };
         }
     }
 
-    return makeOk(ctx.allocator, Value{ .none = {} });
+    return Value{ .none = {} };
 }
 
 /// Check if two strings are equal: equals(str1, str2) -> bool
@@ -495,11 +493,11 @@ fn stringEquals(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
     return Value{ .boolean = std.mem.eql(u8, str1, str2) };
 }
 
-/// Convert string to list of characters: chars(str) -> Result[List[Char], string]
+/// Convert string to list of characters: chars(str) -> List[char]
 /// Returns a linked list (cons cells) of Unicode codepoints from the string.
 /// For ASCII strings, each byte becomes one character.
 /// For UTF-8 strings, each Unicode codepoint becomes one character.
-/// Returns Err("InvalidUtf8") if the string contains invalid UTF-8 sequences.
+/// Assumes the string is valid UTF-8 (guaranteed by Kira's string type).
 fn stringChars(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
@@ -508,16 +506,13 @@ fn stringChars(ctx: BuiltinContext, args: []const Value) InterpreterError!Value 
         else => return error.TypeMismatch,
     };
 
-    // Validate UTF-8 before iterating
-    const utf8_view = std.unicode.Utf8View.init(str) catch {
-        return makeError(ctx.allocator, "InvalidUtf8");
-    };
+    // String is guaranteed valid UTF-8, collect codepoints
+    const utf8_view = std.unicode.Utf8View.initUnchecked(str);
 
     // Collect all characters into an array first
     var chars_list = std.ArrayListUnmanaged(Value){};
     defer chars_list.deinit(ctx.allocator);
 
-    // Use UTF-8 view to properly decode Unicode codepoints
     var iter = utf8_view.iterator();
     while (iter.nextCodepoint()) |codepoint| {
         chars_list.append(ctx.allocator, Value{ .char = codepoint }) catch return error.OutOfMemory;
@@ -536,7 +531,7 @@ fn stringChars(ctx: BuiltinContext, args: []const Value) InterpreterError!Value 
         result = Value{ .cons = .{ .head = head, .tail = tail } };
     }
 
-    return makeOk(ctx.allocator, result);
+    return result;
 }
 
 /// Convert integer to string: from_i32(n) -> str, from_i64(n) -> str, from_int(n) -> str
@@ -674,20 +669,14 @@ test "string length" {
 
     // Valid UTF-8
     const result = try stringLength(ctx, &.{Value{ .string = "hello" }});
-    try std.testing.expect(result == .ok);
-    defer allocator.destroy(result.ok);
-    try std.testing.expectEqual(@as(i128, 5), result.ok.*.integer);
+    try std.testing.expectEqual(@as(i128, 5), result.integer);
 
     const empty = try stringLength(ctx, &.{Value{ .string = "" }});
-    try std.testing.expect(empty == .ok);
-    defer allocator.destroy(empty.ok);
-    try std.testing.expectEqual(@as(i128, 0), empty.ok.*.integer);
+    try std.testing.expectEqual(@as(i128, 0), empty.integer);
 
-    // Invalid UTF-8 (0x80 is invalid start byte)
-    const invalid = try stringLength(ctx, &.{Value{ .string = "\x80invalid" }});
-    try std.testing.expect(invalid == .err);
-    defer allocator.destroy(invalid.err);
-    try std.testing.expectEqualStrings("InvalidUtf8", invalid.err.*.string);
+    // UTF-8 string with multi-byte characters
+    const utf8 = try stringLength(ctx, &.{Value{ .string = "héllo" }}); // é is 2 bytes but 1 codepoint
+    try std.testing.expectEqual(@as(i128, 5), utf8.integer);
 }
 
 test "string contains" {
@@ -751,19 +740,25 @@ test "string substring" {
         Value{ .integer = 0 },
         Value{ .integer = 5 },
     });
-    try std.testing.expect(result == .ok);
-    defer allocator.destroy(result.ok);
-    try std.testing.expectEqualStrings("hello", result.ok.*.string);
+    try std.testing.expect(result == .some);
+    defer allocator.destroy(result.some);
+    try std.testing.expectEqualStrings("hello", result.some.*.string);
 
-    // Invalid UTF-8
-    const invalid = try stringSubstring(ctx, &.{
-        Value{ .string = "\x80invalid" },
+    // Out of bounds returns None
+    const oob = try stringSubstring(ctx, &.{
+        Value{ .string = "hello" },
         Value{ .integer = 0 },
-        Value{ .integer = 1 },
+        Value{ .integer = 100 },
     });
-    try std.testing.expect(invalid == .err);
-    defer allocator.destroy(invalid.err);
-    try std.testing.expectEqualStrings("InvalidUtf8", invalid.err.*.string);
+    try std.testing.expect(oob == .none);
+
+    // Negative index returns None
+    const neg = try stringSubstring(ctx, &.{
+        Value{ .string = "hello" },
+        Value{ .integer = -1 },
+        Value{ .integer = 3 },
+    });
+    try std.testing.expect(neg == .none);
 }
 
 test "string equals" {
@@ -824,31 +819,25 @@ test "string chars" {
     const allocator = arena.allocator();
     const ctx = testCtx(allocator);
 
-    // ASCII string "abc" -> Ok(List['a', 'b', 'c'])
+    // ASCII string "abc" -> List['a', 'b', 'c']
     const result = try stringChars(ctx, &.{Value{ .string = "abc" }});
-    try std.testing.expect(result == .ok);
-    const list = result.ok.*.cons;
+    try std.testing.expect(result == .cons);
+    const list = result.cons;
     try std.testing.expectEqual(@as(u21, 'a'), list.head.char);
     try std.testing.expectEqual(@as(u21, 'b'), list.tail.cons.head.char);
     try std.testing.expectEqual(@as(u21, 'c'), list.tail.cons.tail.cons.head.char);
     try std.testing.expect(list.tail.cons.tail.cons.tail.* == .nil);
 
-    // Empty string -> Ok(nil)
+    // Empty string -> nil
     const empty = try stringChars(ctx, &.{Value{ .string = "" }});
-    try std.testing.expect(empty == .ok);
-    try std.testing.expect(empty.ok.* == .nil);
+    try std.testing.expect(empty == .nil);
 
     // UTF-8 string with multi-byte characters
     const utf8_result = try stringChars(ctx, &.{Value{ .string = "\xc3\xa9" }}); // "é" in UTF-8
-    try std.testing.expect(utf8_result == .ok);
-    const utf8_list = utf8_result.ok.*.cons;
+    try std.testing.expect(utf8_result == .cons);
+    const utf8_list = utf8_result.cons;
     try std.testing.expectEqual(@as(u21, 0xe9), utf8_list.head.char); // U+00E9 = é
     try std.testing.expect(utf8_list.tail.* == .nil);
-
-    // Invalid UTF-8 -> Err("InvalidUtf8")
-    const invalid = try stringChars(ctx, &.{Value{ .string = "\x80invalid" }});
-    try std.testing.expect(invalid == .err);
-    try std.testing.expectEqualStrings("InvalidUtf8", invalid.err.*.string);
 }
 
 test "string is_valid_utf8" {
