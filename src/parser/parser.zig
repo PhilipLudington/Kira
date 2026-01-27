@@ -1687,6 +1687,11 @@ pub const Parser = struct {
             return self.parseMatchExpr();
         }
 
+        // If expression
+        if (self.check(.if_keyword)) {
+            return self.parseIfExpr();
+        }
+
         // Tuple or grouped expression
         if (self.match(.left_paren)) {
             // Empty tuple
@@ -1951,6 +1956,77 @@ pub const Parser = struct {
             .body = body,
             .span = self.makeSpan(start.start),
         };
+    }
+
+    /// Parse an if expression (if used as a value)
+    /// Syntax: if condition { expr } else { expr }
+    fn parseIfExpr(self: *Parser) ParseError!Expression {
+        const start = self.peek().span;
+        _ = self.advance(); // consume 'if'
+
+        const condition = try self.allocExpr(try self.parseExpression());
+
+        // Parse then branch
+        try self.consume(.left_brace, "expected '{' after if condition");
+        self.skipNewlines();
+        const then_branch = try self.parseIfExprBody();
+
+        // else is required for expression form
+        self.skipNewlines();
+        try self.consume(.else_keyword, "expected 'else' in if expression");
+
+        // Check for else if
+        if (self.check(.if_keyword)) {
+            // else if - recurse
+            const nested_if = try self.allocExpr(try self.parseIfExpr());
+            return Expression.init(.{ .if_expr = .{
+                .condition = condition,
+                .then_branch = then_branch,
+                .else_branch = .{ .expression = nested_if },
+            } }, self.makeSpan(start.start));
+        }
+
+        // Parse else branch
+        try self.consume(.left_brace, "expected '{' after else");
+        self.skipNewlines();
+        const else_branch = try self.parseIfExprBody();
+
+        return Expression.init(.{ .if_expr = .{
+            .condition = condition,
+            .then_branch = then_branch,
+            .else_branch = else_branch,
+        } }, self.makeSpan(start.start));
+    }
+
+    /// Parse the body of an if expression branch
+    /// Can be a single expression or a block of statements
+    fn parseIfExprBody(self: *Parser) ParseError!Expression.MatchBody {
+        // Check if this is a block or single expression
+        // If it starts with something that looks like a statement, parse as block
+        // Otherwise parse as expression
+
+        // Look for early return/statement indicators
+        if (self.check(.let) or self.check(.const_keyword) or self.check(.return_keyword) or
+            self.check(.while_keyword) or self.check(.for_keyword))
+        {
+            // Parse as block
+            var stmts = std.ArrayListUnmanaged(Statement){};
+            errdefer stmts.deinit(self.allocator);
+
+            while (!self.check(.right_brace) and !self.isAtEnd()) {
+                try stmts.append(self.allocator, try self.parseStatement());
+                self.skipNewlines();
+            }
+
+            try self.consume(.right_brace, "expected '}' after if body");
+            return .{ .block = try stmts.toOwnedSlice(self.allocator) };
+        }
+
+        // Try to parse as expression
+        const expr = try self.allocExpr(try self.parseExpression());
+        self.skipNewlines();
+        try self.consume(.right_brace, "expected '}' after if expression");
+        return .{ .expression = expr };
     }
 
     fn parseRecordLiteral(self: *Parser, type_name: ?*Expression) ParseError!Expression {

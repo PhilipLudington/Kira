@@ -50,6 +50,9 @@ pub const Expression = struct {
         // Match expression (match can be used as expression in some contexts)
         match_expr: MatchExpr,
 
+        // If expression (if used as value)
+        if_expr: IfExpr,
+
         // Composite literals
         tuple_literal: TupleLiteral,
         array_literal: ArrayLiteral,
@@ -255,6 +258,14 @@ pub const Expression = struct {
     pub const MatchBody = union(enum) {
         expression: *Expression,
         block: []Statement,
+    };
+
+    /// If expression (if used as value)
+    /// Both branches are required and must have the same type
+    pub const IfExpr = struct {
+        condition: *Expression,
+        then_branch: MatchBody,
+        else_branch: MatchBody,
     };
 
     /// Tuple literal (e.g., `(1, "hello", true)`)

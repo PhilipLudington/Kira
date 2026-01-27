@@ -417,6 +417,8 @@ pub const TypeChecker = struct {
 
             .match_expr => |me| try self.checkMatchExpr(me, expr.span),
 
+            .if_expr => |ie| try self.checkIfExpr(ie, expr.span),
+
             .tuple_literal => |tl| {
                 const type_alloc = self.typeAllocator();
                 var element_types = std.ArrayListUnmanaged(ResolvedType){};
@@ -984,6 +986,53 @@ pub const TypeChecker = struct {
         try self.checkMatchExhaustiveness(patterns.items, subject_type, span);
 
         return result_type orelse ResolvedType.voidType(span);
+    }
+
+    /// Check if expression
+    fn checkIfExpr(self: *TypeChecker, ie: Expression.IfExpr, span: Span) TypeCheckError!ResolvedType {
+        // Check condition is bool
+        const cond_type = try self.checkExpression(ie.condition);
+        if (!cond_type.isBool()) {
+            try self.addDiagnostic(try errors_mod.simpleError(
+                self.allocator,
+                "if condition must be a boolean expression",
+                ie.condition.span,
+            ));
+        }
+
+        // Check both branches and get their types
+        const then_type = switch (ie.then_branch) {
+            .expression => |e| try self.checkExpression(e),
+            .block => |block| blk: {
+                for (block) |*stmt| {
+                    try self.checkStatement(stmt);
+                }
+                break :blk ResolvedType.voidType(span);
+            },
+        };
+
+        const else_type = switch (ie.else_branch) {
+            .expression => |e| try self.checkExpression(e),
+            .block => |block| blk: {
+                for (block) |*stmt| {
+                    try self.checkStatement(stmt);
+                }
+                break :blk ResolvedType.voidType(span);
+            },
+        };
+
+        // Both branches must have the same type
+        if (!unify.typesEqual(then_type, else_type)) {
+            try self.addDiagnostic(try errors_mod.typeMismatch(
+                self.allocator,
+                then_type,
+                else_type,
+                span,
+            ));
+            return ResolvedType.errorType(span);
+        }
+
+        return then_type;
     }
 
     /// Check record literal

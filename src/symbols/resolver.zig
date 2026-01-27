@@ -939,6 +939,31 @@ pub const Resolver = struct {
                     try self.table.leaveScope();
                 }
             },
+            .if_expr => |if_expr| {
+                try self.resolveExpression(if_expr.condition);
+                // Resolve then branch
+                _ = try self.table.enterScope(.block);
+                switch (if_expr.then_branch) {
+                    .expression => |e| try self.resolveExpression(e),
+                    .block => |block| {
+                        for (block) |*stmt| {
+                            try self.resolveStatement(stmt);
+                        }
+                    },
+                }
+                try self.table.leaveScope();
+                // Resolve else branch
+                _ = try self.table.enterScope(.block);
+                switch (if_expr.else_branch) {
+                    .expression => |e| try self.resolveExpression(e),
+                    .block => |block| {
+                        for (block) |*stmt| {
+                            try self.resolveStatement(stmt);
+                        }
+                    },
+                }
+                try self.table.leaveScope();
+            },
             .tuple_literal => |tl| {
                 for (tl.elements) |elem| {
                     try self.resolveExpression(elem);

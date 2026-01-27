@@ -560,6 +560,9 @@ pub const Interpreter = struct {
             // Match expression
             .match_expr => |m| self.evalMatchExpr(m, env),
 
+            // If expression
+            .if_expr => |ie| self.evalIfExpr(ie, env),
+
             // Composite literals
             .tuple_literal => |t| self.evalTupleLiteral(t, env),
             .array_literal => |a| self.evalArrayLiteral(a, env),
@@ -1257,6 +1260,31 @@ pub const Interpreter = struct {
         }
 
         return error.MatchFailed;
+    }
+
+    /// Evaluate an if expression
+    fn evalIfExpr(self: *Interpreter, if_e: Expression.IfExpr, env: *Environment) InterpreterError!Value {
+        const cond = try self.evalExpression(if_e.condition, env);
+        const branch = if (cond.isTruthy()) if_e.then_branch else if_e.else_branch;
+
+        return switch (branch) {
+            .expression => |e| self.evalExpression(e, env),
+            .block => |stmts| {
+                // Create a new environment for the block
+                const block_env = try self.arenaAlloc().create(Environment);
+                block_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+
+                for (stmts) |stmt| {
+                    self.evalStatement(&stmt, block_env) catch |err| {
+                        if (err == error.ReturnEncountered) {
+                            return self.return_value orelse Value{ .void = {} };
+                        }
+                        return err;
+                    };
+                }
+                return Value{ .void = {} };
+            },
+        };
     }
 
     /// Evaluate a tuple literal
