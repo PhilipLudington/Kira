@@ -1094,7 +1094,7 @@ pub const Interpreter = struct {
                 },
                 .builtin => |builtin_fn| {
                     const ctx = self.makeBuiltinContext();
-                    return builtin_fn(ctx, args);
+                    return builtin_fn(ctx, current_args);
                 },
             }
         }

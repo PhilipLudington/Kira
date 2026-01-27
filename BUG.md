@@ -1,85 +1,128 @@
-# Bug: Kira Runtime Memory Leaks During Module Loading
+# Kira Language Bugs and Limitations
 
-**Status: FIXED**
+Bugs and limitations discovered while implementing a Lisp interpreter in Kira.
 
-## Summary
+---
 
-The Kira runtime reports memory leaks during module loading and symbol resolution. These occur consistently when running any Kira program that imports modules.
+## Fixed Bugs
 
-## Severity
+### ~~1. Import Statement Causes Segfault~~ (RESOLVED)
 
-**Low** - Does not affect program correctness. Memory is leaked but programs run successfully.
+**Status:** Not reproducible - the original report used invalid syntax.
 
-## Reproduction
+**Original claim:** Import statements cause a segmentation fault.
 
-Run any Kira program that imports modules:
+**Finding:** The syntax `import types from "./types.ki"` is not valid Kira syntax. Correct import syntax is `import module.path.{ items }`. With correct syntax and proper kira.toml configuration, imports work correctly.
 
-```bash
-kira run tests/test_json_testsuite.ki
+**Correct import example:**
+```kira
+// kira.toml: [modules] mymod = "mymod"
+import mymod.utils.{ double }
 ```
 
-Or even just check syntax:
+---
 
-```bash
-kira check tests/test_json_testsuite.ki
+### ~~2. `to_string` on Pattern-Extracted Values Shows Variant Name~~ (FIXED)
+
+**Status:** Fixed in commit (tail-call optimization bug)
+
+**Root cause:** In the interpreter's tail-call optimization trampoline, builtin functions were called with `args` (original function parameters) instead of `current_args` (updated tail-call arguments).
+
+**Fix:** Changed `interpreter.zig:1097` from `builtin_fn(ctx, args)` to `builtin_fn(ctx, current_args)`.
+
+---
+
+## Limitations
+
+### 3. Named Variant Fields Not Supported
+
+**Severity:** Low (design limitation)
+
+**Description:** Sum type variants cannot have named fields, only positional fields.
+
+**What doesn't work:**
+```kira
+type LispLambda = | Lambda(params: List[string], body: LispValue, env: Env)
 ```
 
-**Output (truncated):**
-```
-error(gpa): memory address 0x103800040 leaked:
-???:?:?: 0x103025957 in _array_list.Aligned(symbols.symbol.Symbol.GenericParamInfo,null).toOwnedSlice (???)
-???:?:?: 0x103071583 in _modules.loader.ModuleLoader.addTypeSymbol (???)
-???:?:?: 0x10305203b in _modules.loader.ModuleLoader.loadAndResolveFile (???)
-???:?:?: 0x10302928f in _modules.loader.ModuleLoader.loadModule (???)
-???:?:?: 0x102ffed27 in _symbols.resolver.Resolver.resolveImportDecl (???)
-???:?:?: 0x102fcb95f in _symbols.resolver.Resolver.resolveImports (???)
-
-error(gpa): memory address 0x102300000 leaked:
-???:?:?: 0x10106a2c3 in _array_list.Aligned(symbols.symbol.Symbol.RecordFieldInfo,null).toOwnedSlice (???)
-???:?:?: 0x1010b59c7 in _modules.loader.ModuleLoader.addTypeSymbol (???)
-...
+**What works:**
+```kira
+type LispLambda = | Lambda(List[string], LispValue, Env)
 ```
 
-## Root Cause
+**Impact:** Reduces code readability when variants have multiple fields of the same type.
 
-The leaks originate in Kira's module loader (`ModuleLoader`) and symbol resolver (`Resolver`), specifically in:
+---
 
-1. `ModuleLoader.addTypeSymbol` - When adding type symbols to the symbol table
-2. `ModuleLoader.loadAndResolveFile` - When loading and resolving imported files
-3. `Resolver.resolveImportDecl` - When resolving import declarations
+### 4. Semicolons Not Allowed as Statement Separators in Blocks
 
-The leaked memory appears to be from `ArrayList.toOwnedSlice` calls for:
-- `Symbol.GenericParamInfo` - Generic type parameters
-- `Symbol.RecordFieldInfo` - Record/struct field information
-- `Symbol.VariantInfo` - Sum type variant information
+**Severity:** Low (design choice)
 
-## Impact
+**Description:** Cannot use semicolons to separate multiple statements on the same line within blocks.
 
-- Memory usage grows with each module load
-- Does not affect program correctness
-- May cause issues in long-running processes or when loading many modules
+**What doesn't work:**
+```kira
+{ x = 1; y = 2; return x + y }
+```
 
-## Workaround
+**What works:**
+```kira
+{
+    x = 1
+    y = 2
+    return x + y
+}
+```
 
-None required for correctness. The leaks are small and programs complete successfully.
+---
 
-## Notes
+## Standard Library Issues
 
-This is a Kira runtime/compiler issue, not a kira-json library issue. The fix would need to be in:
-- `~/Fun/Kira/src/modules/loader.zig`
-- `~/Fun/Kira/src/symbols/resolver.zig`
+### 5. `std.list.append` Does Not Exist
 
-The issue is likely missing `deinit` or `free` calls when the module loader completes, or arena allocator cleanup not happening properly.
+**Severity:** Medium (missing functionality)
 
-## Fix
+**Description:** There is no function to append an element to the end of a list.
 
-**Fixed in:** `src/symbols/symbol.zig`
+**Workaround:** Use `Cons` to prepend, then reverse:
+```kira
+fn list_append[T](lst: List[T], item: T) -> List[T] {
+    return std.list.reverse(Cons(item, std.list.reverse(lst)))
+}
+```
 
-The root cause was that `Symbol.deinit()` did nothing - it had an incorrect comment claiming all memory was owned by the program arena. In reality, slices created by `toOwnedSlice()` during symbol resolution were allocated with the resolver's allocator and needed to be freed.
+**Impact:** O(n) operation for what should be a common list operation. Consider adding `append` or documenting that lists are head-oriented.
 
-The fix implements proper cleanup in `Symbol.deinit()` that frees:
-- `FunctionSymbol`: generic_params, parameter_types, parameter_names slices
-- `TypeDefSymbol`: generic_params, and for sum_type/product_type the variants/fields slices
-- `TraitDefSymbol`: generic_params, methods slice, and nested allocations in each method
+---
 
-String contents and type pointers are NOT freed as they point to AST data owned by the program arena.
+### 6. `std.string.parse_float` Does Not Exist
+
+**Severity:** Medium (missing functionality)
+
+**Description:** There is no standard library function to parse a string into a floating-point number.
+
+**Available:** `std.string.parse_int` exists and works.
+
+**Impact:** Cannot parse float literals from user input without implementing custom parsing.
+
+---
+
+## Summary Table
+
+| # | Issue | Type | Severity | Status |
+|---|-------|------|----------|--------|
+| 1 | Import segfault | Bug | ~~Critical~~ | RESOLVED (invalid syntax) |
+| 2 | to_string shows variant name | Bug | ~~Medium~~ | FIXED |
+| 3 | No named variant fields | Limitation | Low | Open |
+| 4 | No semicolon separators | Limitation | Low | Open |
+| 5 | No list append | Stdlib | Medium | Open |
+| 6 | No parse_float | Stdlib | Medium | Open |
+
+---
+
+## Environment
+
+- **Kira version:** `/usr/local/bin/kira`
+- **Platform:** macOS (Darwin 24.6.0)
+- **Date discovered:** 2026-01-26
+- **Date updated:** 2026-01-26

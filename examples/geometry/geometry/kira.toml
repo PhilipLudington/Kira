@@ -1,0 +1,7 @@
+# geometry package configuration
+
+[package]
+name = "geometry"
+
+[modules]
+shapes = "shapes.ki"
