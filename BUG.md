@@ -1,55 +1,70 @@
-# Project Bugs
+# Kira Language Bugs Encountered
 
-## [x] Bug 1: MatchFailed runtime error in JSON parsing/serialization
+These are bugs in the Kira programming language that were encountered while implementing the Lisp interpreter and compiler. Workarounds are in place in `src/main.ki`.
 
-**Status:** Not a bug - tuple field access works correctly
+**Last verified:** 2026-01-27
 
-**Original claim:** The interpreter fails when evaluating tuple field access (`.0`, `.1`) on tuples bound in pattern matches, causing `error.MatchFailed`.
+---
 
-**Investigation results:**
-All tested scenarios work correctly:
+## [x] Bug 1: `for` loop crashes on empty `List[RecursiveType]`
 
-1. Basic tuple access after Cons pattern match:
+**Status:** Fixed (2026-01-27)
+
+**Description:** When using a `for` loop to iterate over an empty list where the element type is a recursive sum type (like `LispValue` or `IRExpr`), Kira threw a `TypeMismatch` runtime error.
+
+**Root Cause:** In `evalForLoop()` in `src/interpreter/interpreter.zig`, the switch statement on the iterable value had cases for `.array`, `.tuple`, `.cons`, and `.string`, but no case for `.nil` (empty list). Empty lists fell through to `else => return error.TypeMismatch`.
+
+**Solution:** Added a `.nil` case to handle empty lists (zero iterations, no error).
+
+**Note:** The workarounds in `src/main.ki` can now be simplified to remove the empty list guards before `for` loops.
+
+---
+
+## [x] Bug 2: `if` is a statement, not an expression
+
+**Status:** Fixed (2026-01-27)
+
+**Description:** Kira's `if` construct was a statement and did not return a value.
+
+**Solution:** Implemented `if` as an expression. Both branches must have the same type and `else` is required:
 ```kira
-let list: List[(i32, i32)] = Cons((1, 10), Nil)
-match list {
-    Cons(entry, rest) => { return entry.0 }  // Works: returns 1
-    Nil => { return 0 }
-}
+let x: i32 = if condition { 42 } else { 0 }
+let grade: string = if score >= 90 { "A" } else if score >= 80 { "B" } else { "F" }
 ```
 
-2. Let binding after Cons match:
+**Note:** The workarounds in `src/main.ki` can now be simplified to use if expressions directly.
+
+---
+
+## [ ] Bug 3: No command-line argument support
+
+**Status:** Open (workaround in place)
+
+**Description:** Kira does not provide access to command-line arguments. There is no `std.env.args()` or similar function.
+
+**Expected:** A way to access command-line arguments passed to the program.
+
+**Actual:** `std.env` module does not exist.
+
+**Workaround:** Modify source code to switch between modes (REPL vs compile) by commenting/uncommenting code in `main()`.
+
+---
+
+## [ ] Bug 4: Multi-line string literals not supported
+
+**Status:** Open (workaround in place)
+
+**Description:** Kira does not support multi-line string literals. A string must be on a single line.
+
+**Reproduction:**
 ```kira
-Cons(entry, rest) => {
-    let first: i32 = entry.0   // Works
-    let second: i32 = entry.1  // Works
-    return first + second
-}
+let s: string = "line 1
+line 2"  // Parse error
 ```
 
-3. With `std.map.entries()`:
+**Workaround:** Use `StringBuilder` to construct multi-line strings, or concatenate with `"\n"`:
 ```kira
-let m: Map[string, i32] = std.map.put(std.map.new(), "key", 123)
-let entries: List[(string, i32)] = std.map.entries(m)
-match entries {
-    Cons(entry, rest) => {
-        let key: string = entry.0    // Works
-        let value: i32 = entry.1     // Works
-    }
-    Nil => { ... }
-}
+let s: string = "line 1" + "\n" + "line 2"
 ```
 
-4. Recursive functions with tuple field access - all work correctly.
-
-5. Custom sum types in tuples (similar to Json usage) - all work correctly.
-
-**If kira-json library has issues:**
-The original bug report referenced a "kira-json" library. If that library experiences `MatchFailed` errors, the cause is likely:
-- Incorrect type annotations
-- Array literals `[...]` used where cons lists (`Cons(...)`) are expected
-- Other code issues unrelated to tuple field access
-
-**Tests added:** See `src/interpreter/tests.zig` for comprehensive tuple access tests with Cons pattern matching.
-
-**Verified:** 2026-01-27
+**Affected code:** `generate_runtime()` function uses `StringBuilder` to build the runtime library source code.

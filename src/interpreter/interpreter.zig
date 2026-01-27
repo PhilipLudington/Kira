@@ -1612,6 +1612,9 @@ pub const Interpreter = struct {
                     }
                 }
             },
+            .nil => {
+                // Empty list - nothing to iterate
+            },
             .cons => {
                 var current = iterable;
                 while (current == .cons) {
