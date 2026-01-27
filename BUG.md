@@ -1,14 +1,12 @@
-# Kira Language Bugs and Limitations
+# Kira Language Bugs
 
 Bugs and limitations discovered while implementing a Lisp interpreter in Kira.
 
 ---
 
-## Fixed Bugs
+## [x] Bug 1: Import Statement Causes Segfault
 
-### ~~1. Import Statement Causes Segfault~~ (RESOLVED)
-
-**Status:** Not reproducible - the original report used invalid syntax.
+**Status:** Resolved - not a bug (invalid syntax)
 
 **Original claim:** Import statements cause a segmentation fault.
 
@@ -22,7 +20,7 @@ import mymod.utils.{ double }
 
 ---
 
-### ~~2. `to_string` on Pattern-Extracted Values Shows Variant Name~~ (FIXED)
+## [x] Bug 2: to_string on Pattern-Extracted Values Shows Variant Name
 
 **Status:** Fixed in commit (tail-call optimization bug)
 
@@ -32,9 +30,7 @@ import mymod.utils.{ double }
 
 ---
 
-## Limitations
-
-### 3. Named Variant Fields Not Supported
+## [ ] Bug 3: Named Variant Fields Not Supported
 
 **Severity:** Low (design limitation)
 
@@ -54,7 +50,7 @@ type LispLambda = | Lambda(List[string], LispValue, Env)
 
 ---
 
-### 4. Semicolons Not Allowed as Statement Separators in Blocks
+## [ ] Bug 4: Semicolons Not Allowed as Statement Separators
 
 **Severity:** Low (design choice)
 
@@ -76,9 +72,7 @@ type LispLambda = | Lambda(List[string], LispValue, Env)
 
 ---
 
-## Standard Library Issues
-
-### 5. `std.list.append` Does Not Exist
+## [ ] Bug 5: std.list.append Does Not Exist
 
 **Severity:** Medium (missing functionality)
 
@@ -95,34 +89,20 @@ fn list_append[T](lst: List[T], item: T) -> List[T] {
 
 ---
 
-### 6. `std.string.parse_float` Does Not Exist
+## [x] Bug 6: std.string.parse_float Does Not Exist
 
-**Severity:** Medium (missing functionality)
+**Status:** Fixed - added `std.string.parse_float(str) -> Option[float]`
 
-**Description:** There is no standard library function to parse a string into a floating-point number.
+**Usage:**
+```kira
+match std.string.parse_float("3.14") {
+    Some(x) => { print("Parsed: " + std.string.from_float(x)) }
+    None => { print("Invalid float") }
+}
+```
 
-**Available:** `std.string.parse_int` exists and works.
-
-**Impact:** Cannot parse float literals from user input without implementing custom parsing.
-
----
-
-## Summary Table
-
-| # | Issue | Type | Severity | Status |
-|---|-------|------|----------|--------|
-| 1 | Import segfault | Bug | ~~Critical~~ | RESOLVED (invalid syntax) |
-| 2 | to_string shows variant name | Bug | ~~Medium~~ | FIXED |
-| 3 | No named variant fields | Limitation | Low | Open |
-| 4 | No semicolon separators | Limitation | Low | Open |
-| 5 | No list append | Stdlib | Medium | Open |
-| 6 | No parse_float | Stdlib | Medium | Open |
-
----
-
-## Environment
-
-- **Kira version:** `/usr/local/bin/kira`
-- **Platform:** macOS (Darwin 24.6.0)
-- **Date discovered:** 2026-01-26
-- **Date updated:** 2026-01-26
+**Features:**
+- Trims whitespace before parsing
+- Supports negative numbers (`"-2.5"`)
+- Supports scientific notation (`"1.5e10"`)
+- Returns `None` for invalid input

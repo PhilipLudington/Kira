@@ -74,6 +74,7 @@ pub fn createModule(allocator: Allocator) !Value {
 
     // String-to-numeric parsing functions
     try fields.put(allocator, "parse_int", root.makeBuiltin("parse_int", &stringParseInt));
+    try fields.put(allocator, "parse_float", root.makeBuiltin("parse_float", &stringParseFloat));
 
     // UTF-8 validation
     try fields.put(allocator, "is_valid_utf8", root.makeBuiltin("is_valid_utf8", &stringIsValidUtf8));
@@ -617,6 +618,31 @@ fn stringParseInt(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
     return Value{ .some = inner };
 }
 
+/// Parse string to float: parse_float(str) -> Option[float]
+/// Returns Some(value) if parsing succeeds, None if it fails
+fn stringParseFloat(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const str = switch (args[0]) {
+        .string => |s| s,
+        else => return error.TypeMismatch,
+    };
+
+    // Trim whitespace before parsing
+    const trimmed = std.mem.trim(u8, str, " \t\n\r");
+
+    // Try to parse the float
+    const parsed = std.fmt.parseFloat(f64, trimmed) catch {
+        // Parsing failed, return None
+        return Value{ .none = {} };
+    };
+
+    // Parsing succeeded, return Some(value)
+    const inner = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    inner.* = Value{ .float = parsed };
+    return Value{ .some = inner };
+}
+
 /// Check if string is valid UTF-8: is_valid_utf8(str) -> bool
 /// Returns true if the string contains only valid UTF-8 sequences.
 fn stringIsValidUtf8(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
@@ -810,6 +836,55 @@ test "string parse_int" {
     try std.testing.expect(zero == .some);
     defer allocator.destroy(zero.some);
     try std.testing.expectEqual(@as(i128, 0), zero.some.*.integer);
+}
+
+test "string parse_float" {
+    const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
+
+    // Valid positive float
+    const pos_result = try stringParseFloat(ctx, &.{Value{ .string = "3.14" }});
+    try std.testing.expect(pos_result == .some);
+    defer allocator.destroy(pos_result.some);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.14), pos_result.some.*.float, 0.0001);
+
+    // Valid negative float
+    const neg_result = try stringParseFloat(ctx, &.{Value{ .string = "-2.5" }});
+    try std.testing.expect(neg_result == .some);
+    defer allocator.destroy(neg_result.some);
+    try std.testing.expectApproxEqAbs(@as(f64, -2.5), neg_result.some.*.float, 0.0001);
+
+    // Integer format (should work as float)
+    const int_result = try stringParseFloat(ctx, &.{Value{ .string = "42" }});
+    try std.testing.expect(int_result == .some);
+    defer allocator.destroy(int_result.some);
+    try std.testing.expectApproxEqAbs(@as(f64, 42.0), int_result.some.*.float, 0.0001);
+
+    // Scientific notation
+    const sci_result = try stringParseFloat(ctx, &.{Value{ .string = "1.5e10" }});
+    try std.testing.expect(sci_result == .some);
+    defer allocator.destroy(sci_result.some);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5e10), sci_result.some.*.float, 1e5);
+
+    // With whitespace (should be trimmed)
+    const ws_result = try stringParseFloat(ctx, &.{Value{ .string = "  3.14  " }});
+    try std.testing.expect(ws_result == .some);
+    defer allocator.destroy(ws_result.some);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.14), ws_result.some.*.float, 0.0001);
+
+    // Invalid string - returns None
+    const invalid = try stringParseFloat(ctx, &.{Value{ .string = "not a number" }});
+    try std.testing.expect(invalid == .none);
+
+    // Empty string - returns None
+    const empty = try stringParseFloat(ctx, &.{Value{ .string = "" }});
+    try std.testing.expect(empty == .none);
+
+    // Zero
+    const zero = try stringParseFloat(ctx, &.{Value{ .string = "0.0" }});
+    try std.testing.expect(zero == .some);
+    defer allocator.destroy(zero.some);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), zero.some.*.float, 0.0001);
 }
 
 test "string chars" {
