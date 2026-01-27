@@ -484,24 +484,21 @@ test "interpreter: mutual tail recursion" {
 // Tuple Tests
 // ============================================================================
 
-// Note: Tuple access syntax (t.0, t.1) has a parser issue with literal_value
-// These tests are commented until the lexer is fixed to set literal_value.integer
+test "interpreter: tuple access returns correct value" {
+    const allocator = testing.allocator;
 
-// test "interpreter: tuple access returns correct value" {
-//     const allocator = testing.allocator;
-//
-//     // Test tuple through accessing its first element
-//     const source =
-//         \\fn main() -> i32 {
-//         \\    let t: (i32, i32) = (1, 2)
-//         \\    return t.0
-//         \\}
-//     ;
-//
-//     const result = try evalSource(allocator, source);
-//     try testing.expect(result != null);
-//     try testing.expectEqual(@as(i128, 1), result.?.integer);
-// }
+    // Test tuple through accessing its first element
+    const source =
+        \\fn main() -> i32 {
+        \\    let t: (i32, i32) = (1, 2)
+        \\    return t.0
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i128, 1), result.?.integer);
+}
 
 // ============================================================================
 // Array Tests
@@ -738,4 +735,99 @@ test "parser: file with function and test" {
     // Second should be test
     try testing.expect(program.declarations[1].kind == .test_decl);
     try testing.expectEqualStrings("addition", program.declarations[1].kind.test_decl.name);
+}
+
+// ============================================================================
+// Bug Reproduction: Tuple field access on Cons-bound values
+// ============================================================================
+
+test "interpreter: tuple field access on cons-bound value" {
+    const allocator = testing.allocator;
+
+    // Reproduce the bug: tuple field access (.0, .1) on a tuple bound via Cons pattern
+    const source =
+        \\fn main() -> i32 {
+        \\    let entries: List[(i32, i32)] = Cons((1, 10), Cons((2, 20), Nil))
+        \\    match entries {
+        \\        Cons(entry, rest) => { return entry.0 }
+        \\        Nil => { return 0 }
+        \\    }
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i128, 1), result.?.integer);
+}
+
+test "interpreter: tuple field access with let binding after cons match" {
+    const allocator = testing.allocator;
+
+    // Test the pattern from BUG.md: binding entry, then accessing .0 and .1 with let
+    const source =
+        \\fn main() -> i32 {
+        \\    let entries: List[(i32, i32)] = Cons((42, 100), Nil)
+        \\    match entries {
+        \\        Cons(entry, rest) => {
+        \\            let first: i32 = entry.0
+        \\            let second: i32 = entry.1
+        \\            return first + second
+        \\        }
+        \\        Nil => { return 0 }
+        \\    }
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i128, 142), result.?.integer);
+}
+
+test "interpreter: tuple field access on std.map.entries result" {
+    const allocator = testing.allocator;
+
+    // Test std.map.entries which returns List[(string, T)] - similar to kira-json usage
+    const source =
+        \\fn main() -> string {
+        \\    let m: Map[string, i32] = std.map.put(std.map.new(), "hello", 42)
+        \\    let entries: List[(string, i32)] = std.map.entries(m)
+        \\    match entries {
+        \\        Cons(entry, rest) => {
+        \\            let key: string = entry.0
+        \\            return key
+        \\        }
+        \\        Nil => { return "empty" }
+        \\    }
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("hello", result.?.string);
+}
+
+test "interpreter: tuple access in recursive function processing list" {
+    const allocator = testing.allocator;
+
+    // Test recursive list processing with tuple access - closer to kira-json patterns
+    const source =
+        \\fn sum_first(entries: List[(i32, i32)]) -> i32 {
+        \\    match entries {
+        \\        Cons(entry, rest) => {
+        \\            let first: i32 = entry.0
+        \\            return first + sum_first(rest)
+        \\        }
+        \\        Nil => { return 0 }
+        \\    }
+        \\}
+        \\
+        \\fn main() -> i32 {
+        \\    let list: List[(i32, i32)] = Cons((10, 1), Cons((20, 2), Cons((30, 3), Nil)))
+        \\    return sum_first(list)
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i128, 60), result.?.integer);
 }

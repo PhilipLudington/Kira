@@ -1,106 +1,55 @@
-# Kira Language Bugs
+# Project Bugs
 
-Bugs and limitations discovered while implementing a Lisp interpreter in Kira.
+## [x] Bug 1: MatchFailed runtime error in JSON parsing/serialization
 
----
+**Status:** Not a bug - tuple field access works correctly
 
-## [x] Bug 1: Import Statement Causes Segfault
+**Original claim:** The interpreter fails when evaluating tuple field access (`.0`, `.1`) on tuples bound in pattern matches, causing `error.MatchFailed`.
 
-**Status:** Resolved - not a bug (invalid syntax)
+**Investigation results:**
+All tested scenarios work correctly:
 
-**Original claim:** Import statements cause a segmentation fault.
-
-**Finding:** The syntax `import types from "./types.ki"` is not valid Kira syntax. Correct import syntax is `import module.path.{ items }`. With correct syntax and proper kira.toml configuration, imports work correctly.
-
-**Correct import example:**
+1. Basic tuple access after Cons pattern match:
 ```kira
-// kira.toml: [modules] mymod = "mymod"
-import mymod.utils.{ double }
-```
-
----
-
-## [x] Bug 2: to_string on Pattern-Extracted Values Shows Variant Name
-
-**Status:** Fixed in commit (tail-call optimization bug)
-
-**Root cause:** In the interpreter's tail-call optimization trampoline, builtin functions were called with `args` (original function parameters) instead of `current_args` (updated tail-call arguments).
-
-**Fix:** Changed `interpreter.zig:1097` from `builtin_fn(ctx, args)` to `builtin_fn(ctx, current_args)`.
-
----
-
-## [ ] Bug 3: Named Variant Fields Not Supported
-
-**Severity:** Low (design limitation)
-
-**Description:** Sum type variants cannot have named fields, only positional fields.
-
-**What doesn't work:**
-```kira
-type LispLambda = | Lambda(params: List[string], body: LispValue, env: Env)
-```
-
-**What works:**
-```kira
-type LispLambda = | Lambda(List[string], LispValue, Env)
-```
-
-**Impact:** Reduces code readability when variants have multiple fields of the same type.
-
----
-
-## [ ] Bug 4: Semicolons Not Allowed as Statement Separators
-
-**Severity:** Low (design choice)
-
-**Description:** Cannot use semicolons to separate multiple statements on the same line within blocks.
-
-**What doesn't work:**
-```kira
-{ x = 1; y = 2; return x + y }
-```
-
-**What works:**
-```kira
-{
-    x = 1
-    y = 2
-    return x + y
+let list: List[(i32, i32)] = Cons((1, 10), Nil)
+match list {
+    Cons(entry, rest) => { return entry.0 }  // Works: returns 1
+    Nil => { return 0 }
 }
 ```
 
----
-
-## [x] Bug 5: std.list.append Does Not Exist
-
-**Status:** Fixed - added `std.list.append(list, elem) -> list`
-
-**Usage:**
+2. Let binding after Cons match:
 ```kira
-let lst: List[i32] = Cons(1, Cons(2, Nil))
-let result: List[i32] = std.list.append(lst, 3)
-// result is [1, 2, 3]
-```
-
-**Note:** This is an O(n) operation since it must traverse the entire list. For frequent appends, consider building lists with `Cons` (prepend) and reversing at the end.
-
----
-
-## [x] Bug 6: std.string.parse_float Does Not Exist
-
-**Status:** Fixed - added `std.string.parse_float(str) -> Option[float]`
-
-**Usage:**
-```kira
-match std.string.parse_float("3.14") {
-    Some(x) => { print("Parsed: " + std.string.from_float(x)) }
-    None => { print("Invalid float") }
+Cons(entry, rest) => {
+    let first: i32 = entry.0   // Works
+    let second: i32 = entry.1  // Works
+    return first + second
 }
 ```
 
-**Features:**
-- Trims whitespace before parsing
-- Supports negative numbers (`"-2.5"`)
-- Supports scientific notation (`"1.5e10"`)
-- Returns `None` for invalid input
+3. With `std.map.entries()`:
+```kira
+let m: Map[string, i32] = std.map.put(std.map.new(), "key", 123)
+let entries: List[(string, i32)] = std.map.entries(m)
+match entries {
+    Cons(entry, rest) => {
+        let key: string = entry.0    // Works
+        let value: i32 = entry.1     // Works
+    }
+    Nil => { ... }
+}
+```
+
+4. Recursive functions with tuple field access - all work correctly.
+
+5. Custom sum types in tuples (similar to Json usage) - all work correctly.
+
+**If kira-json library has issues:**
+The original bug report referenced a "kira-json" library. If that library experiences `MatchFailed` errors, the cause is likely:
+- Incorrect type annotations
+- Array literals `[...]` used where cons lists (`Cons(...)`) are expected
+- Other code issues unrelated to tuple field access
+
+**Tests added:** See `src/interpreter/tests.zig` for comprehensive tuple access tests with Cons pattern matching.
+
+**Verified:** 2026-01-27
