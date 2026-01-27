@@ -65,22 +65,36 @@ pub fn createModule(allocator: Allocator) !Value {
     };
 }
 
-/// Get command-line arguments: args() -> [string]
+/// Get command-line arguments: args() -> List[string]
 fn envArgs(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 0) return error.ArityMismatch;
 
-    // Return stored args or empty array
+    // Return stored args as a proper Cons/Nil list for pattern matching support
     if (stored_args) |program_args| {
-        // Create a copy for the caller
-        const result = ctx.allocator.alloc(Value, program_args.len) catch return error.OutOfMemory;
-        for (program_args, 0..) |arg, i| {
-            result[i] = arg;
-        }
-        return Value{ .array = result };
+        return buildList(ctx.allocator, program_args);
     }
 
-    // No args stored - return empty array
-    return Value{ .array = &.{} };
+    // No args stored - return empty list (Nil)
+    return Value{ .nil = {} };
+}
+
+/// Build a proper linked list from an array of values.
+/// Returns Nil for empty, or Cons(head, tail) chain for non-empty.
+fn buildList(allocator: Allocator, items: []const Value) InterpreterError!Value {
+    var result: Value = Value{ .nil = {} };
+
+    // Build in reverse to get correct order
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        const head = allocator.create(Value) catch return error.OutOfMemory;
+        const tail = allocator.create(Value) catch return error.OutOfMemory;
+        head.* = items[i];
+        tail.* = result;
+        result = Value{ .cons = .{ .head = head, .tail = tail } };
+    }
+
+    return result;
 }
 
 test "env module creation" {
@@ -109,11 +123,11 @@ test "args returns empty when not set" {
     };
 
     const result = try envArgs(ctx, &.{});
-    try std.testing.expect(result == .array);
-    try std.testing.expectEqual(@as(usize, 0), result.array.len);
+    // Should return Nil for empty args
+    try std.testing.expect(result == .nil);
 }
 
-test "args returns stored values" {
+test "args returns stored values as Cons/Nil list" {
     const allocator = std.testing.allocator;
 
     // Set some test args
@@ -128,11 +142,38 @@ test "args returns stored values" {
     };
 
     const result = try envArgs(ctx, &.{});
-    try std.testing.expect(result == .array);
-    try std.testing.expectEqual(@as(usize, 3), result.array.len);
-    try std.testing.expectEqualStrings("arg1", result.array[0].string);
-    try std.testing.expectEqualStrings("arg2", result.array[1].string);
-    try std.testing.expectEqualStrings("arg3", result.array[2].string);
+    defer freeList(allocator, result);
 
-    allocator.free(result.array);
+    // Should return Cons("arg1", Cons("arg2", Cons("arg3", Nil)))
+    try std.testing.expect(result == .cons);
+
+    // First element
+    const first = result.cons;
+    try std.testing.expectEqualStrings("arg1", first.head.string);
+
+    // Second element
+    try std.testing.expect(first.tail.* == .cons);
+    const second = first.tail.cons;
+    try std.testing.expectEqualStrings("arg2", second.head.string);
+
+    // Third element
+    try std.testing.expect(second.tail.* == .cons);
+    const third = second.tail.cons;
+    try std.testing.expectEqualStrings("arg3", third.head.string);
+
+    // End of list
+    try std.testing.expect(third.tail.* == .nil);
+}
+
+/// Helper to free a Cons/Nil list (for testing only)
+fn freeList(allocator: Allocator, val: Value) void {
+    switch (val) {
+        .cons => |c| {
+            freeList(allocator, c.tail.*);
+            allocator.destroy(c.head);
+            allocator.destroy(c.tail);
+        },
+        .nil => {},
+        else => {},
+    }
 }
