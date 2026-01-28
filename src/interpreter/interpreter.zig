@@ -127,7 +127,7 @@ pub const Interpreter = struct {
                             .name = f.name,
                             .parameters = self.extractParamNames(f.parameters) catch continue,
                             .body = if (f.body) |body| .{ .ast_body = body } else continue,
-                            .captured_env = null,
+                            .captured_env = &self.global_env,
                             .is_effect = f.is_effect,
                         },
                     };
@@ -283,7 +283,7 @@ pub const Interpreter = struct {
                                 .name = f.name,
                                 .parameters = self.extractParamNames(f.parameters) catch continue,
                                 .body = if (f.body) |body| .{ .ast_body = body } else continue,
-                                .captured_env = null,
+                                .captured_env = env,
                                 .is_effect = f.is_effect,
                             },
                         };
@@ -489,7 +489,7 @@ pub const Interpreter = struct {
                         .name = f.name,
                         .parameters = try self.extractParamNames(f.parameters),
                         .body = if (f.body) |body| .{ .ast_body = body } else return,
-                        .captured_env = null,
+                        .captured_env = env,
                         .is_effect = f.is_effect,
                     },
                 };
