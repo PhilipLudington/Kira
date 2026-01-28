@@ -21,42 +21,37 @@ Bugs encountered in the Kira language while developing the Lisp interpreter.
 
 ---
 
-## [ ] Bug 2: Nested pattern match with sum type extraction causes TypeMismatch
+## [x] Bug 2: Nested pattern match with sum type extraction causes TypeMismatch
 
-**Status:** Open (workaround in place)
+**Status:** Cannot Reproduce
 
-**Description:** When pattern matching on a `List[LispValue]` with a nested sum type extraction like `Cons(LispString(s), Nil)`, Kira throws a runtime `TypeMismatch` error even when the pattern should match.
+**Original Description:** When pattern matching on a `List[LispValue]` with a nested sum type extraction like `Cons(LispString(s), Nil)`, Kira was reported to throw a runtime `TypeMismatch` error.
 
-**Steps to reproduce:**
+**Investigation (2026-01-27):**
+
+This bug cannot be reproduced. The referenced code does not exist:
+- `src/main.ki` - file does not exist
+- `LispValue`, `LispString` - types do not exist in the codebase
+- "Lisp interpreter" - no such code found in the repository
+
+Testing confirms nested pattern matching works correctly:
 ```kira
-match args {
-    Cons(LispString(s), Nil) => {
-        // Use s - causes TypeMismatch at runtime
+type Value = | VString(string) | VInt(i32)
+
+fn extract_nested(lst: List[Value]) -> string {
+    match lst {
+        Cons(VString(s), Nil) => { return s }  // Works correctly
+        _ => { return "no match" }
     }
-    _ => { }
 }
 ```
 
-**Expected:** Pattern matches and `s` is bound to the string value.
+All test variations pass, including:
+- Basic nested patterns: `Cons(VString(s), Nil)`
+- Multi-element lists: `Cons(VString(a), Cons(VString(b), Nil))`
+- Deep nesting: `Cons(Wrapped(VString(s)), Nil)`
 
-**Actual:** Runtime error: `error.TypeMismatch`
-
-**Workaround:** Use two-level matching:
-```kira
-match args {
-    Cons(first, Nil) => {
-        match first {
-            LispString(s) => {
-                // Use s - works
-            }
-            _ => { }
-        }
-    }
-    _ => { }
-}
-```
-
-**Affected code:** `src/main.ki` - test framework builtins (`assert-eq`, `assert-true`, `assert-false`, `assert-throws`, `test-begin`) all use two-level matching.
+**Note:** The interpreter has a TODO at line 2080 for handling `.record` variant fields, but Kira syntax only supports tuple-style variant fields, so this code path is unreachable from user code.
 
 ---
 
