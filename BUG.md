@@ -6,52 +6,20 @@ Bugs encountered in the Kira language while developing the Lisp interpreter.
 
 ## [x] Bug 1: Imported recursive functions fail after builtin+lambda call sequence
 
-**Status:** Fixed
+**Status:** Fixed (commit 89f2b5c)
 
 **Description:** When a recursive function is imported from a module, calling it with a builtin function (like `+`) followed by calling it with an inline lambda causes the second call to fail with "cdr: requires non-empty list" error, even though the list is not empty.
 
-**Root Cause:** Module-level and imported functions were registered with `captured_env = null`. When called via builtins like `std.list.fold`, the `builtinCallFunction` passed `&self.global_env` as the caller environment. The fallback in `callFunction` became `current_func.captured_env orelse current_caller_env`, which resolved to the global env instead of the defining scope. Recursive calls couldn't find the function name in this incorrect scope.
+**Root cause:** Module-level and imported functions were registered with `captured_env = null`. When called via builtins, recursive calls couldn't find the function name because the fallback used the caller's environment instead of the defining scope.
 
-**Fix:** Changed three locations in `src/interpreter/interpreter.zig` to capture the appropriate environment instead of `null`:
-- Line 130 (`registerModuleExports`): `captured_env = &self.global_env`
-- Line 286 (`registerModuleNamespace`): `captured_env = env`
-- Line 492 (`registerDeclaration`): `captured_env = env`
+**Fix:** Capture the appropriate environment at registration time:
+- `registerModuleExports`: capture `&self.global_env`
+- `registerModuleNamespace`: capture `env` parameter
+- `registerDeclaration`: capture `env` parameter
 
-**Verification:** All 256 tests pass, plus manual verification with `std.list.fold` and recursive functions.
+See `src/interpreter/interpreter.zig` lines 130, 286, 492.
 
----
-
-## [x] Bug 2: Nested pattern match with sum type extraction causes TypeMismatch
-
-**Status:** Cannot Reproduce
-
-**Original Description:** When pattern matching on a `List[LispValue]` with a nested sum type extraction like `Cons(LispString(s), Nil)`, Kira was reported to throw a runtime `TypeMismatch` error.
-
-**Investigation (2026-01-27):**
-
-This bug cannot be reproduced. The referenced code does not exist:
-- `src/main.ki` - file does not exist
-- `LispValue`, `LispString` - types do not exist in the codebase
-- "Lisp interpreter" - no such code found in the repository
-
-Testing confirms nested pattern matching works correctly:
-```kira
-type Value = | VString(string) | VInt(i32)
-
-fn extract_nested(lst: List[Value]) -> string {
-    match lst {
-        Cons(VString(s), Nil) => { return s }  // Works correctly
-        _ => { return "no match" }
-    }
-}
-```
-
-All test variations pass, including:
-- Basic nested patterns: `Cons(VString(s), Nil)`
-- Multi-element lists: `Cons(VString(a), Cons(VString(b), Nil))`
-- Deep nesting: `Cons(Wrapped(VString(s)), Nil)`
-
-**Note:** The interpreter has a TODO at line 2080 for handling `.record` variant fields, but Kira syntax only supports tuple-style variant fields, so this code path is unreachable from user code.
+**Verified:** Test case `examples/bug1_test.ki` demonstrates the fix works correctly with interleaved named function and lambda calls.
 
 ---
 

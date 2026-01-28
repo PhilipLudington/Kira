@@ -1,0 +1,97 @@
+// Bug 1 Test: Recursive functions with different callback types
+//
+// This tests that calling a recursive function with a named function
+// followed by calling it with an inline lambda works correctly.
+// The bug was that environment/closure handling was corrupted after
+// the first call with a named function.
+
+// Define a recursive fold function
+fn my_fold(list: List[i32], init: i32, f: fn(i32, i32) -> i32) -> i32 {
+    let len: i32 = std.list.length(list)
+    if len == 0 {
+        return init
+    }
+    match std.list.head(list) {
+        Some(head) => {
+            match std.list.tail(list) {
+                Some(tail) => {
+                    let new_acc: i32 = f(init, head)
+                    return my_fold(tail, new_acc, f)
+                }
+                None => { return f(init, head) }
+            }
+        }
+        None => { return init }
+    }
+}
+
+// Helper functions for testing
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+    return a * b
+}
+
+effect fn main() -> void {
+    std.io.println("Bug 1 Test: Recursive function with different callback types")
+    std.io.println("==============================================================")
+
+    // Build test list [1, 2, 3, 4, 5]
+    let empty: List[i32] = std.list.empty()
+    let l1: List[i32] = std.list.cons(5, empty)
+    let l2: List[i32] = std.list.cons(4, l1)
+    let l3: List[i32] = std.list.cons(3, l2)
+    let l4: List[i32] = std.list.cons(2, l3)
+    let list: List[i32] = std.list.cons(1, l4)
+
+    std.io.println("Test list: [1, 2, 3, 4, 5]")
+    std.io.println("")
+
+    // Test 1: Call with named function (add)
+    std.io.println("Test 1: my_fold with named function 'add'")
+    let sum: i32 = my_fold(list, 0, add)
+    std.io.println("  sum = " + to_string(sum) + " (expected: 15)")
+
+    // Test 2: Call with different named function (multiply)
+    std.io.println("Test 2: my_fold with named function 'multiply'")
+    let product: i32 = my_fold(list, 1, multiply)
+    std.io.println("  product = " + to_string(product) + " (expected: 120)")
+
+    // Test 3: Call with lambda (this was the problematic case in Bug 1)
+    std.io.println("Test 3: my_fold with inline lambda (Bug 1 scenario)")
+    let sum2: i32 = my_fold(list, 0, fn(acc: i32, x: i32) -> i32 { return acc + x })
+    std.io.println("  sum2 = " + to_string(sum2) + " (expected: 15)")
+
+    // Test 4: Call with another lambda after previous lambda
+    std.io.println("Test 4: my_fold with another lambda")
+    let doubled_sum: i32 = my_fold(list, 0, fn(acc: i32, x: i32) -> i32 { return acc + x * 2 })
+    std.io.println("  doubled_sum = " + to_string(doubled_sum) + " (expected: 30)")
+
+    // Test 5: Interleave named and lambda calls (the original bug scenario)
+    std.io.println("Test 5: Interleaved named and lambda calls")
+    let r1: i32 = my_fold(list, 0, add)
+    let r2: i32 = my_fold(list, 0, fn(a: i32, b: i32) -> i32 { return a + b })
+    let r3: i32 = my_fold(list, 1, multiply)
+    let r4: i32 = my_fold(list, 1, fn(a: i32, b: i32) -> i32 { return a * b })
+    std.io.println("  r1 (add) = " + to_string(r1))
+    std.io.println("  r2 (lambda +) = " + to_string(r2))
+    std.io.println("  r3 (multiply) = " + to_string(r3))
+    std.io.println("  r4 (lambda *) = " + to_string(r4))
+
+    std.io.println("")
+    if sum == 15 {
+        if sum2 == 15 {
+            if product == 120 {
+                std.io.println("SUCCESS: All tests passed! Bug 1 is fixed.")
+            } else {
+                std.io.println("FAIL: Product test failed")
+            }
+        } else {
+            std.io.println("FAIL: Lambda test failed (Bug 1 not fixed)")
+        }
+    } else {
+        std.io.println("FAIL: Basic sum test failed")
+    }
+}
