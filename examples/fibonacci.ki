@@ -33,7 +33,7 @@ fn fibonacci_fast(n: i32) -> i32 {
 // Print first n fibonacci numbers
 effect fn print_fibonacci_sequence(n: i32) -> void {
     var i: i32 = 0
-    for _ in 0..n {
+    while i < n {
         let fib: i32 = fibonacci_fast(i)
         std.io.println("fib(" + to_string(i) + ") = " + to_string(fib))
         i = i + 1

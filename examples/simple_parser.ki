@@ -129,20 +129,18 @@ fn parse_number(input: string) -> ParseResult {
                     var done: bool = false
 
                     // Parse all consecutive digits
-                    for _ in 0..std.string.length(cleaned) {
-                        if not done {
-                            match std.string.char_at(cleaned, idx) {
-                                Some(ch) => {
-                                    if is_digit(ch) {
-                                        num = num * 10 + digit_to_int(ch)
-                                        idx = idx + 1
-                                    } else {
-                                        done = true
-                                    }
-                                }
-                                None => {
+                    while idx < std.string.length(cleaned) and not done {
+                        match std.string.char_at(cleaned, idx) {
+                            Some(ch) => {
+                                if is_digit(ch) {
+                                    num = num * 10 + digit_to_int(ch)
+                                    idx = idx + 1
+                                } else {
                                     done = true
                                 }
+                            }
+                            None => {
+                                done = true
                             }
                         }
                     }
