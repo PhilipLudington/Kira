@@ -46,6 +46,7 @@ pub const ResolveError = error{
     EffectViolation,
     ImportNotFound,
     CircularDependency,
+    ResolutionFailed, // Generic error when diagnostics contain errors
     OutOfMemory,
 };
 
@@ -176,7 +177,7 @@ pub const Resolver = struct {
 
         // Fail resolution if any errors were collected
         if (self.hasErrors()) {
-            return error.UndefinedSymbol;
+            return error.ResolutionFailed;
         }
     }
 
@@ -1283,9 +1284,9 @@ test "resolver catches undefined in full program" {
         .arena = null,
     };
 
-    // Resolve the program - should fail with UndefinedSymbol
+    // Resolve the program - should fail with ResolutionFailed
     const result = resolver.resolve(&program);
-    try std.testing.expectError(error.UndefinedSymbol, result);
+    try std.testing.expectError(error.ResolutionFailed, result);
     try std.testing.expect(resolver.hasErrors());
 }
 

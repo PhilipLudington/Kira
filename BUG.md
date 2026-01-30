@@ -1,4 +1,8 @@
-# Project Bugs
+# Kira Language Bugs
+
+Bugs encountered in the Kira language compiler and type system.
+
+---
 
 ## [x] Bug 1: Type check errors don't fail compilation (CRITICAL)
 

@@ -852,7 +852,7 @@ test "resolver should catch undefined identifier in parsed code" {
 
     // Resolve - should fail with undefined identifier
     const result = Kira.resolve(allocator, &program, &table);
-    try testing.expectError(error.UndefinedSymbol, result);
+    try testing.expectError(error.ResolutionFailed, result);
 }
 
 test "resolver should catch undefined identifier with module declaration" {
@@ -877,7 +877,7 @@ test "resolver should catch undefined identifier with module declaration" {
 
     // Resolve - should fail with undefined identifier
     const result = Kira.resolve(allocator, &program, &table);
-    try testing.expectError(error.UndefinedSymbol, result);
+    try testing.expectError(error.ResolutionFailed, result);
 }
 
 test "resolver with module loader should catch undefined identifier" {
@@ -910,5 +910,5 @@ test "resolver with module loader should catch undefined identifier" {
 
     // Resolve - should fail with undefined identifier
     const result = resolver.resolve(&program);
-    try testing.expectError(error.UndefinedSymbol, result);
+    try testing.expectError(error.ResolutionFailed, result);
 }
