@@ -41,6 +41,7 @@ pub const ScopeKind = symbols.ScopeKind;
 pub const SymbolTable = symbols.SymbolTable;
 pub const Resolver = symbols.Resolver;
 pub const ResolveError = symbols.ResolveError;
+pub const ResolverDiagnostic = symbols.Diagnostic;
 
 // Module system exports
 pub const ModuleLoader = modules.ModuleLoader;

@@ -362,13 +362,17 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     }
 
     // Resolve symbols (using loader for cross-file imports)
-    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
         // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        if (!loader.hasErrors()) {
-            try formatResolveError(stderr, path, source, err);
+        // Print resolver diagnostics
+        for (resolver.getDiagnostics()) |diag| {
+            try formatResolverDiagnostic(stderr, path, source, diag);
         }
         return error.ResolveError;
     };
@@ -639,13 +643,17 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     }
 
     // Resolve symbols (using loader for cross-file imports)
-    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
         // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        if (!loader.hasErrors()) {
-            try formatResolveError(stderr, path, source, err);
+        // Print resolver diagnostics
+        for (resolver.getDiagnostics()) |diag| {
+            try formatResolverDiagnostic(stderr, path, source, diag);
         }
         return error.ResolveError;
     };
@@ -750,12 +758,15 @@ fn testFile(allocator: Allocator, path: []const u8) !void {
         loader.addSearchPath(root) catch {};
     }
 
-    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        if (!loader.hasErrors()) {
-            try formatResolveError(stderr, path, source, err);
+        for (resolver.getDiagnostics()) |diag| {
+            try formatResolverDiagnostic(stderr, path, source, diag);
         }
         return error.ResolveError;
     };
@@ -1446,6 +1457,60 @@ fn formatDiagnostic(writer: anytype, path: []const u8, source: []const u8, diag:
 
     // Header line
     const header = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ diag.kind.toString(), diag.message }) catch "error\n";
+    try writer.writeAll(header);
+
+    // Location
+    const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
+        path,
+        diag.span.start.line,
+        diag.span.start.column,
+    }) catch "";
+    try writer.writeAll(loc);
+
+    // Source line (if available)
+    if (getSourceLine(source, diag.span.start.line)) |line| {
+        // Line number gutter
+        const gutter = std.fmt.bufPrint(&buf, "   {d} | ", .{diag.span.start.line}) catch "     | ";
+        try writer.writeAll(gutter);
+        try writer.writeAll(line);
+        try writer.writeAll("\n");
+
+        // Pointer line
+        const pointer_offset = diag.span.start.column;
+        try writer.writeAll("     | ");
+        var i: usize = 1;
+        while (i < pointer_offset) : (i += 1) {
+            try writer.writeAll(" ");
+        }
+        try writer.writeAll("^\n");
+    }
+
+    // Related info
+    if (diag.related) |related| {
+        for (related) |info| {
+            const rel = std.fmt.bufPrint(&buf, "  note: {s} at {d}:{d}\n", .{
+                info.message,
+                info.span.start.line,
+                info.span.start.column,
+            }) catch "";
+            try writer.writeAll(rel);
+        }
+    }
+
+    try writer.writeAll("\n");
+}
+
+/// Format a resolver diagnostic with source context
+fn formatResolverDiagnostic(writer: anytype, path: []const u8, source: []const u8, diag: Kira.ResolverDiagnostic) !void {
+    var buf: [1024]u8 = undefined;
+
+    // Header line
+    const kind_str = switch (diag.kind) {
+        .err => "error",
+        .warning => "warning",
+        .hint => "hint",
+    };
+    const header = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ kind_str, diag.message }) catch "error\n";
     try writer.writeAll(header);
 
     // Location

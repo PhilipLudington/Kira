@@ -173,6 +173,11 @@ pub const Resolver = struct {
         for (program.declarations) |*decl| {
             try self.resolveDeclarationBodies(decl);
         }
+
+        // Fail resolution if any errors were collected
+        if (self.hasErrors()) {
+            return error.UndefinedSymbol;
+        }
     }
 
     /// Resolve a single declaration (first pass - signatures only)
@@ -873,7 +878,8 @@ pub const Resolver = struct {
     fn resolveExpression(self: *Resolver, expr: *const Expression) ResolveError!void {
         switch (expr.kind) {
             .identifier => |ident| {
-                if (self.table.lookup(ident.name) == null) {
+                // Skip error for 'std' - it's a built-in namespace injected at runtime
+                if (self.table.lookup(ident.name) == null and !std.mem.eql(u8, ident.name, "std")) {
                     try self.addError("Undefined identifier '{s}'", .{ident.name}, expr.span);
                 }
             },
@@ -1187,4 +1193,139 @@ test "resolver basic function" {
 
     // The resolver is ready to use
     try std.testing.expect(!resolver.hasErrors());
+}
+
+test "resolver undefined identifier in expression" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    // Create a simple expression with an undefined identifier
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+    const ident_expr = Expression.init(.{ .identifier = .{
+        .name = "undefined_var",
+        .generic_args = null,
+    } }, span);
+
+    // This should add an error diagnostic
+    try resolver.resolveExpression(&ident_expr);
+
+    // Should have an error now
+    try std.testing.expect(resolver.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), resolver.diagnostics.items.len);
+}
+
+test "resolver catches undefined in full program" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    // Create undefined identifier expression
+    var ident_expr = Expression.init(.{ .identifier = .{
+        .name = "undefined_var",
+        .generic_args = null,
+    } }, span);
+
+    // Create a simple pattern
+    var pattern = ast.Pattern.init(.{ .identifier = .{ .name = "x", .is_mutable = false } }, span);
+
+    // Create a simple i64 type
+    var i64_type = ast.Type.init(.{ .primitive = .i64 }, span);
+    var return_type = ast.Type.init(.{ .primitive = .i64 }, span);
+
+    // Create let binding statement
+    const let_stmt = Statement.init(.{ .let_binding = .{
+        .pattern = &pattern,
+        .explicit_type = &i64_type,
+        .initializer = &ident_expr,
+        .is_public = false,
+    } }, span);
+
+    // Create function declaration with body
+    var body = [_]Statement{let_stmt};
+    const func_decl = Declaration.FunctionDecl{
+        .name = "main",
+        .generic_params = null,
+        .parameters = &[_]Declaration.Parameter{},
+        .return_type = &return_type,
+        .is_effect = false,
+        .is_public = false,
+        .body = &body,
+        .where_clause = null,
+    };
+
+    const decl = Declaration.init(.{ .function_decl = func_decl }, span);
+    var declarations = [_]Declaration{decl};
+
+    // Create the program
+    const program = ast.Program{
+        .module_decl = null,
+        .imports = &[_]Declaration.ImportDecl{},
+        .declarations = &declarations,
+        .module_doc = null,
+        .source_path = null,
+        .arena = null,
+    };
+
+    // Resolve the program - should fail with UndefinedSymbol
+    const result = resolver.resolve(&program);
+    try std.testing.expectError(error.UndefinedSymbol, result);
+    try std.testing.expect(resolver.hasErrors());
+}
+
+test "resolver catches undefined identifier in let binding" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    // Create undefined identifier expression
+    var ident_expr = Expression.init(.{ .identifier = .{
+        .name = "undefined_var",
+        .generic_args = null,
+    } }, span);
+
+    // Create a simple pattern
+    var pattern = ast.Pattern.init(.{ .identifier = .{ .name = "x", .is_mutable = false } }, span);
+
+    // Create a simple i64 type
+    var i64_type = ast.Type.init(.{ .primitive = .i64 }, span);
+
+    // Create let binding statement
+    var let_stmt = Statement.init(.{ .let_binding = .{
+        .pattern = &pattern,
+        .explicit_type = &i64_type,
+        .initializer = &ident_expr,
+        .is_public = false,
+    } }, span);
+
+    // Resolve the statement
+    try resolver.resolveStatement(&let_stmt);
+
+    // Should have an error for undefined_var
+    try std.testing.expect(resolver.hasErrors());
 }
