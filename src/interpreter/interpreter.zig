@@ -38,9 +38,9 @@ const TailCallSignal = struct {
     caller_env: *Environment,
 };
 
-/// Maximum recursion depth before stack overflow error.
+/// Default maximum recursion depth before stack overflow error.
 /// Set conservatively to prevent stack overflow in the Zig runtime.
-const max_recursion_depth: usize = 1000;
+pub const default_max_recursion_depth: usize = 1000;
 
 /// The Kira interpreter.
 pub const Interpreter = struct {
@@ -65,6 +65,12 @@ pub const Interpreter = struct {
     /// Current recursion depth for stack overflow detection
     recursion_depth: usize,
 
+    /// Maximum recursion depth (configurable)
+    max_recursion_depth: usize,
+
+    /// Environment arguments (command-line args for std.env.args())
+    env_args: ?[]const Value,
+
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
             .allocator = allocator,
@@ -77,7 +83,19 @@ pub const Interpreter = struct {
             .module_exports = .{},
             .error_context = null,
             .recursion_depth = 0,
+            .max_recursion_depth = default_max_recursion_depth,
+            .env_args = null,
         };
+    }
+
+    /// Set environment arguments (command-line args for std.env.args())
+    pub fn setEnvArgs(self: *Interpreter, args: []const Value) void {
+        self.env_args = args;
+    }
+
+    /// Clear environment arguments
+    pub fn clearEnvArgs(self: *Interpreter) void {
+        self.env_args = null;
     }
 
     /// Get the error context message, if any
@@ -1039,8 +1057,8 @@ pub const Interpreter = struct {
     /// Call a function with given arguments (with tail-call optimization via trampoline)
     fn callFunction(self: *Interpreter, func: Value.FunctionValue, args: []const Value, caller_env: *Environment) InterpreterError!Value {
         // Check recursion depth to prevent stack overflow (only on initial call, TCO doesn't increment)
-        if (self.recursion_depth >= max_recursion_depth) {
-            self.setErrorContext("maximum recursion depth ({d}) exceeded", .{max_recursion_depth});
+        if (self.recursion_depth >= self.max_recursion_depth) {
+            self.setErrorContext("maximum recursion depth ({d}) exceeded", .{self.max_recursion_depth});
             return error.StackOverflow;
         }
 
@@ -1109,6 +1127,7 @@ pub const Interpreter = struct {
             .allocator = self.arenaAlloc(),
             .interpreter = self,
             .call_fn = &builtinCallFunction,
+            .env_args = self.env_args,
         };
     }
 

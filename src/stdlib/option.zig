@@ -138,6 +138,7 @@ test "option is_some and is_none" {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 
     // is_some
@@ -165,6 +166,7 @@ test "option unwrap_or" {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 
     // Some(42) unwrap_or 0 = 42

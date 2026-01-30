@@ -146,6 +146,8 @@ pub const Value = union(enum) {
         interpreter: ?*anyopaque,
         /// Function pointer to call a function value with arguments
         call_fn: ?*const fn (interp: *anyopaque, func: FunctionValue, args: []const Value) InterpreterError!Value,
+        /// Environment arguments (command-line args passed to the program)
+        env_args: ?[]const Value,
 
         /// Call a function value (works for both builtins and AST-based functions)
         pub fn callFunction(self: BuiltinContext, func: FunctionValue, args: []const Value) InterpreterError!Value {

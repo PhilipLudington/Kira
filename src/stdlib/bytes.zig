@@ -213,7 +213,7 @@ fn bytesGet(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
         else => return error.TypeMismatch,
     };
 
-    if (index_raw < 0) return Value{ .none = {} };
+    if (index_raw < 0 or index_raw > std.math.maxInt(usize)) return Value{ .none = {} };
     const index: usize = @intCast(index_raw);
 
     if (index >= data.len) return Value{ .none = {} };
@@ -240,6 +240,7 @@ fn bytesSlice(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
 
     // Bounds checking
     if (start_raw < 0 or end_raw < 0) return Value{ .none = {} };
+    if (start_raw > std.math.maxInt(usize) or end_raw > std.math.maxInt(usize)) return Value{ .none = {} };
     const start: usize = @intCast(start_raw);
     const end: usize = @intCast(end_raw);
 
@@ -326,6 +327,7 @@ fn testCtx(allocator: Allocator) BuiltinContext {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 }
 

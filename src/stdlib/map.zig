@@ -334,6 +334,7 @@ fn testCtx(allocator: Allocator) BuiltinContext {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 }
 
