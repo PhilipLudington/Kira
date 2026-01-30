@@ -2,7 +2,7 @@ const std = @import("std");
 const Kira = @import("Kira");
 const Allocator = std.mem.Allocator;
 
-const version = "0.1.0";
+const version = "0.11.0";
 
 /// Command-line interface modes
 const Mode = enum {
@@ -44,11 +44,7 @@ pub fn main() !void {
         .version_info => printVersion(),
         .run => {
             if (args.file_path) |path| {
-                // Set program arguments for std.env.args()
-                Kira.interpreter_mod.stdlib.env_mod.setArgs(allocator, args.user_args) catch {};
-                defer Kira.interpreter_mod.stdlib.env_mod.clearArgs();
-
-                runFile(allocator, path, false) catch |err| {
+                runFile(allocator, path, false, args.user_args) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
@@ -78,11 +74,7 @@ pub fn main() !void {
         },
         .test_cmd => {
             if (args.file_path) |path| {
-                // Set program arguments for std.env.args()
-                Kira.interpreter_mod.stdlib.env_mod.setArgs(allocator, args.user_args) catch {};
-                defer Kira.interpreter_mod.stdlib.env_mod.clearArgs();
-
-                testFile(allocator, path) catch |err| {
+                testFile(allocator, path, args.user_args) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
@@ -221,7 +213,7 @@ fn printVersion() void {
 }
 
 /// Run a Kira source file
-fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
+fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []const []const u8) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
@@ -362,13 +354,17 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     }
 
     // Resolve symbols (using loader for cross-file imports)
-    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
         // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        if (!loader.hasErrors()) {
-            try formatResolveError(stderr, path, source, err);
+        // Print resolver diagnostics
+        for (resolver.getDiagnostics()) |diag| {
+            try formatResolverDiagnostic(stderr, path, source, diag);
         }
         return error.ResolveError;
     };
@@ -402,6 +398,14 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool) !void {
     const arena_alloc = interp.arenaAlloc();
     try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+
+    // Set environment arguments for std.env.args()
+    if (user_args.len > 0) {
+        const env_args = Kira.interpreter_mod.stdlib.env_mod.convertArgsToValues(arena_alloc, user_args) catch null;
+        if (env_args) |args_values| {
+            interp.setEnvArgs(args_values);
+        }
+    }
 
     // Register declarations from loaded modules first
     // Create module namespace structures so qualified names like `src.json.X` work
@@ -639,13 +643,17 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     }
 
     // Resolve symbols (using loader for cross-file imports)
-    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
         // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        if (!loader.hasErrors()) {
-            try formatResolveError(stderr, path, source, err);
+        // Print resolver diagnostics
+        for (resolver.getDiagnostics()) |diag| {
+            try formatResolverDiagnostic(stderr, path, source, diag);
         }
         return error.ResolveError;
     };
@@ -683,7 +691,7 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
 }
 
 /// Run tests in a Kira source file
-fn testFile(allocator: Allocator, path: []const u8) !void {
+fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
@@ -750,12 +758,15 @@ fn testFile(allocator: Allocator, path: []const u8) !void {
         loader.addSearchPath(root) catch {};
     }
 
-    Kira.resolveWithLoader(allocator, &program, &table, &loader) catch |err| {
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        if (!loader.hasErrors()) {
-            try formatResolveError(stderr, path, source, err);
+        for (resolver.getDiagnostics()) |diag| {
+            try formatResolverDiagnostic(stderr, path, source, diag);
         }
         return error.ResolveError;
     };
@@ -777,6 +788,14 @@ fn testFile(allocator: Allocator, path: []const u8) !void {
     const arena_alloc = interp.arenaAlloc();
     try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+
+    // Set environment arguments for std.env.args()
+    if (user_args.len > 0) {
+        const env_args = Kira.interpreter_mod.stdlib.env_mod.convertArgsToValues(arena_alloc, user_args) catch null;
+        if (env_args) |args_values| {
+            interp.setEnvArgs(args_values);
+        }
+    }
 
     // Register declarations from loaded modules
     var modules_iter = loader.loadedModulesIterator();
@@ -1276,82 +1295,100 @@ fn loadFile(
     try writer.writeAll(msg);
 }
 
-/// Format a runtime value for display
-fn formatValue(val: Kira.Value, buf: []u8) []const u8 {
-    return switch (val) {
-        .integer => |i| std.fmt.bufPrint(buf, "{d}", .{i}) catch "<integer>",
-        .float => |f| std.fmt.bufPrint(buf, "{d}", .{f}) catch "<float>",
-        .string => |s| std.fmt.bufPrint(buf, "\"{s}\"", .{s}) catch "<string>",
-        .char => |c| std.fmt.bufPrint(buf, "'{u}'", .{c}) catch "<char>",
-        .boolean => |b| if (b) "true" else "false",
-        .void => "()",
-        .none => "None",
-        .nil => "[]",
-        .some => |inner| blk: {
-            var inner_buf: [256]u8 = undefined;
-            const inner_str = formatValue(inner.*, &inner_buf);
-            break :blk std.fmt.bufPrint(buf, "Some({s})", .{inner_str}) catch "Some(...)";
+/// Maximum depth for value formatting to prevent stack overflow on deeply nested structures.
+/// Conservative limit (50) to avoid excessive stack usage (~200KB worst case).
+const max_format_depth: usize = 50;
+
+/// Stream a runtime value to a writer (avoids buffer overflow on large/deep structures)
+fn formatValueWriter(val: Kira.Value, writer: anytype, depth: usize) !void {
+    if (depth >= max_format_depth) {
+        try writer.writeAll("...");
+        return;
+    }
+
+    switch (val) {
+        .integer => |i| try writer.print("{d}", .{i}),
+        .float => |f| try writer.print("{d}", .{f}),
+        .string => |s| try writer.print("\"{s}\"", .{s}),
+        .char => |c| try writer.print("'{u}'", .{c}),
+        .boolean => |b| try writer.writeAll(if (b) "true" else "false"),
+        .void => try writer.writeAll("()"),
+        .none => try writer.writeAll("None"),
+        .nil => try writer.writeAll("[]"),
+        .some => |inner| {
+            try writer.writeAll("Some(");
+            try formatValueWriter(inner.*, writer, depth + 1);
+            try writer.writeAll(")");
         },
-        .ok => |inner| blk: {
-            var inner_buf: [256]u8 = undefined;
-            const inner_str = formatValue(inner.*, &inner_buf);
-            break :blk std.fmt.bufPrint(buf, "Ok({s})", .{inner_str}) catch "Ok(...)";
+        .ok => |inner| {
+            try writer.writeAll("Ok(");
+            try formatValueWriter(inner.*, writer, depth + 1);
+            try writer.writeAll(")");
         },
-        .err => |inner| blk: {
-            var inner_buf: [256]u8 = undefined;
-            const inner_str = formatValue(inner.*, &inner_buf);
-            break :blk std.fmt.bufPrint(buf, "Err({s})", .{inner_str}) catch "Err(...)";
+        .err => |inner| {
+            try writer.writeAll("Err(");
+            try formatValueWriter(inner.*, writer, depth + 1);
+            try writer.writeAll(")");
         },
-        .tuple => |items| blk: {
-            if (items.len == 0) break :blk "()";
-            var result: []const u8 = "(";
-            for (items, 0..) |item, i| {
-                var item_buf: [128]u8 = undefined;
-                const item_str = formatValue(item, &item_buf);
-                if (i > 0) {
-                    result = std.fmt.bufPrint(buf, "{s}, {s}", .{ result, item_str }) catch "...";
-                } else {
-                    result = std.fmt.bufPrint(buf, "{s}{s}", .{ result, item_str }) catch "...";
+        .tuple => |items| {
+            if (items.len == 0) {
+                try writer.writeAll("()");
+            } else {
+                try writer.writeAll("(");
+                for (items, 0..) |item, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try formatValueWriter(item, writer, depth + 1);
                 }
+                try writer.writeAll(")");
             }
-            break :blk std.fmt.bufPrint(buf, "{s})", .{result}) catch "(...)";
         },
-        .array => |items| blk: {
-            if (items.len == 0) break :blk "[]";
-            break :blk std.fmt.bufPrint(buf, "[{d} items]", .{items.len}) catch "[...]";
+        .array => |items| {
+            if (items.len == 0) {
+                try writer.writeAll("[]");
+            } else {
+                try writer.print("[{d} items]", .{items.len});
+            }
         },
-        .record => "<record>",
-        .function => |f| std.fmt.bufPrint(buf, "<fn {s}>", .{f.name orelse "anonymous"}) catch "<function>",
-        .variant => |v| blk: {
+        .record => try writer.writeAll("<record>"),
+        .function => |f| try writer.print("<fn {s}>", .{f.name orelse "anonymous"}),
+        .variant => |v| {
             if (v.fields) |fields| {
                 switch (fields) {
                     .tuple => |tuple_vals| {
                         if (tuple_vals.len == 1) {
-                            var payload_buf: [256]u8 = undefined;
-                            const payload_str = formatValue(tuple_vals[0], &payload_buf);
-                            break :blk std.fmt.bufPrint(buf, "{s}({s})", .{ v.name, payload_str }) catch v.name;
+                            try writer.print("{s}(", .{v.name});
+                            try formatValueWriter(tuple_vals[0], writer, depth + 1);
+                            try writer.writeAll(")");
                         } else {
-                            break :blk std.fmt.bufPrint(buf, "{s}(...)", .{v.name}) catch v.name;
+                            try writer.print("{s}(...)", .{v.name});
                         }
                     },
-                    .record => break :blk std.fmt.bufPrint(buf, "{s}{{...}}", .{v.name}) catch v.name,
+                    .record => try writer.print("{s}{{...}}", .{v.name}),
                 }
             } else {
-                break :blk v.name;
+                try writer.writeAll(v.name);
             }
         },
-        .cons => "<list>",
-        .io => |inner| blk: {
-            var inner_buf: [256]u8 = undefined;
-            const inner_str = formatValue(inner.*, &inner_buf);
-            break :blk std.fmt.bufPrint(buf, "IO({s})", .{inner_str}) catch "IO(...)";
+        .cons => try writer.writeAll("<list>"),
+        .io => |inner| {
+            try writer.writeAll("IO(");
+            try formatValueWriter(inner.*, writer, depth + 1);
+            try writer.writeAll(")");
         },
-        .reference => |ref| blk: {
-            var inner_buf: [256]u8 = undefined;
-            const inner_str = formatValue(ref.*, &inner_buf);
-            break :blk std.fmt.bufPrint(buf, "ref {s}", .{inner_str}) catch "<ref>";
+        .reference => |ref| {
+            try writer.writeAll("ref ");
+            try formatValueWriter(ref.*, writer, depth + 1);
         },
+    }
+}
+
+/// Format a runtime value to a buffer (wrapper for backward compatibility)
+fn formatValue(val: Kira.Value, buf: []u8) []const u8 {
+    var stream = std.io.fixedBufferStream(buf);
+    formatValueWriter(val, stream.writer(), 0) catch {
+        return "<value>";
     };
+    return stream.getWritten();
 }
 
 /// Format a parse error with source context
@@ -1446,6 +1483,60 @@ fn formatDiagnostic(writer: anytype, path: []const u8, source: []const u8, diag:
 
     // Header line
     const header = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ diag.kind.toString(), diag.message }) catch "error\n";
+    try writer.writeAll(header);
+
+    // Location
+    const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
+        path,
+        diag.span.start.line,
+        diag.span.start.column,
+    }) catch "";
+    try writer.writeAll(loc);
+
+    // Source line (if available)
+    if (getSourceLine(source, diag.span.start.line)) |line| {
+        // Line number gutter
+        const gutter = std.fmt.bufPrint(&buf, "   {d} | ", .{diag.span.start.line}) catch "     | ";
+        try writer.writeAll(gutter);
+        try writer.writeAll(line);
+        try writer.writeAll("\n");
+
+        // Pointer line
+        const pointer_offset = diag.span.start.column;
+        try writer.writeAll("     | ");
+        var i: usize = 1;
+        while (i < pointer_offset) : (i += 1) {
+            try writer.writeAll(" ");
+        }
+        try writer.writeAll("^\n");
+    }
+
+    // Related info
+    if (diag.related) |related| {
+        for (related) |info| {
+            const rel = std.fmt.bufPrint(&buf, "  note: {s} at {d}:{d}\n", .{
+                info.message,
+                info.span.start.line,
+                info.span.start.column,
+            }) catch "";
+            try writer.writeAll(rel);
+        }
+    }
+
+    try writer.writeAll("\n");
+}
+
+/// Format a resolver diagnostic with source context
+fn formatResolverDiagnostic(writer: anytype, path: []const u8, source: []const u8, diag: Kira.ResolverDiagnostic) !void {
+    var buf: [1024]u8 = undefined;
+
+    // Header line
+    const kind_str = switch (diag.kind) {
+        .err => "error",
+        .warning => "warning",
+        .hint => "hint",
+    };
+    const header = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ kind_str, diag.message }) catch "error\n";
     try writer.writeAll(header);
 
     // Location

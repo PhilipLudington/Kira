@@ -33,6 +33,8 @@ pub const LoadError = error{
     FileReadError,
     OutOfMemory,
     InvalidPath,
+    TotalBytesExceeded,
+    MaxImportDepthExceeded,
 };
 
 /// Information about a loaded module
@@ -46,6 +48,12 @@ pub const LoadedModule = struct {
     /// The source code (kept for error reporting)
     source: ?[]const u8,
 };
+
+/// Default maximum total bytes that can be loaded across all modules
+pub const default_max_total_bytes: usize = 100 * 1024 * 1024; // 100MB
+
+/// Default maximum import depth (to prevent infinite recursion via imports)
+pub const default_max_import_depth: usize = 64;
 
 /// The module loader handles cross-file module loading
 pub const ModuleLoader = struct {
@@ -62,6 +70,14 @@ pub const ModuleLoader = struct {
     errors: std.ArrayListUnmanaged(LoadErrorInfo),
     /// Optional project configuration for module path resolution
     config: ?*const config_mod.ProjectConfig,
+    /// Total bytes loaded so far (for resource exhaustion protection)
+    total_bytes_loaded: usize,
+    /// Maximum total bytes allowed (configurable)
+    max_total_bytes: usize,
+    /// Current import depth (for deeply nested import protection)
+    current_import_depth: usize,
+    /// Maximum import depth allowed (configurable)
+    max_import_depth: usize,
 
     /// Information about a load error
     pub const LoadErrorInfo = struct {
@@ -83,6 +99,10 @@ pub const ModuleLoader = struct {
             .loaded_modules = .{},
             .errors = .{},
             .config = null,
+            .total_bytes_loaded = 0,
+            .max_total_bytes = default_max_total_bytes,
+            .current_import_depth = 0,
+            .max_import_depth = default_max_import_depth,
         };
     }
 
@@ -96,6 +116,10 @@ pub const ModuleLoader = struct {
             .loaded_modules = .{},
             .errors = .{},
             .config = cfg,
+            .total_bytes_loaded = 0,
+            .max_total_bytes = default_max_total_bytes,
+            .current_import_depth = 0,
+            .max_import_depth = default_max_import_depth,
         };
     }
 
@@ -155,6 +179,18 @@ pub const ModuleLoader = struct {
     /// Load a module by its module path (e.g., "geometry.shapes")
     /// Returns the scope ID of the loaded module, or null if not found
     pub fn loadModule(self: *ModuleLoader, module_path: []const u8) LoadError!?ScopeId {
+        // Check import depth limit to prevent deeply nested imports
+        if (self.current_import_depth >= self.max_import_depth) {
+            try self.addLoadError(module_path, "Maximum import depth exceeded", null, null, null);
+            return error.MaxImportDepthExceeded;
+        }
+
+        // Validate module path to prevent path traversal
+        if (!validateModulePath(module_path)) {
+            try self.addLoadError(module_path, "Invalid module path (contains path traversal or invalid characters)", null, null, null);
+            return error.InvalidPath;
+        }
+
         // Check if already loaded
         if (self.loaded_modules.get(module_path)) |loaded| {
             return loaded.scope_id;
@@ -165,6 +201,10 @@ pub const ModuleLoader = struct {
             try self.addLoadError(module_path, "Circular dependency detected", null, null, null);
             return error.CircularDependency;
         }
+
+        // Increment depth for this load operation
+        self.current_import_depth += 1;
+        defer self.current_import_depth -= 1;
 
         // Extract the root module name (first segment before any '.')
         const root_module_name = blk: {
@@ -320,8 +360,38 @@ pub const ModuleLoader = struct {
         return result.scope_id;
     }
 
+    /// Validate a module path to prevent path traversal attacks.
+    /// Module paths must not contain:
+    /// - ".." segments (directory traversal)
+    /// - "." segments (current directory, ambiguous)
+    /// - Path separators (/ or \)
+    /// - Empty segments (e.g., "foo..bar" or leading/trailing dots)
+    fn validateModulePath(module_path: []const u8) bool {
+        if (module_path.len == 0) return false;
+
+        var iter = std.mem.splitScalar(u8, module_path, '.');
+        while (iter.next()) |segment| {
+            // Empty segment (e.g., from ".." or leading/trailing dots)
+            if (segment.len == 0) return false;
+            // Directory traversal
+            if (std.mem.eql(u8, segment, "..")) return false;
+            // Current directory (shouldn't appear as a segment)
+            // Note: single "." would create empty segment anyway via split
+            // Check for path separators in segment
+            for (segment) |c| {
+                if (c == '/' or c == '\\') return false;
+            }
+        }
+        return true;
+    }
+
     /// Convert a module path like "geometry.shapes" to a file path like "geometry/shapes.ki"
     pub fn modulePathToFilePath(self: *ModuleLoader, module_path: []const u8) ![]u8 {
+        // Validate module path before conversion
+        if (!validateModulePath(module_path)) {
+            return error.InvalidPath;
+        }
+
         var result = std.ArrayListUnmanaged(u8){};
         errdefer result.deinit(self.allocator);
 
@@ -439,11 +509,28 @@ pub const ModuleLoader = struct {
         };
         defer file.close();
 
+        // Check file size before reading to enforce total bytes limit
+        const stat = file.stat() catch {
+            try self.addLoadError(expected_module, "Cannot stat file", file_path, null, null);
+            return error.FileReadError;
+        };
+        const file_size = stat.size;
+
+        // Check if this file would exceed total bytes limit
+        if (self.total_bytes_loaded + file_size > self.max_total_bytes) {
+            try self.addLoadError(expected_module, "Total bytes limit exceeded", file_path, null, null);
+            return error.TotalBytesExceeded;
+        }
+
         const source = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch {
             try self.addLoadError(expected_module, "Cannot read file", file_path, null, null);
             return error.FileReadError;
         };
         errdefer self.allocator.free(source);
+
+        // Track loaded bytes (rollback on error to prevent limit bypass via parse errors)
+        self.total_bytes_loaded += source.len;
+        errdefer self.total_bytes_loaded -= source.len;
 
         // Create arena for AST allocations
         var arena = std.heap.ArenaAllocator.init(self.allocator);

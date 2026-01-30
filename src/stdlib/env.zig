@@ -2,6 +2,9 @@
 //!
 //! Provides access to environment information:
 //!   - args: Get command-line arguments passed to the program
+//!
+//! Note: Arguments are passed through BuiltinContext.env_args, which is set
+//! by the Interpreter. This avoids global state and enables proper testing.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,16 +15,8 @@ const Value = value_mod.Value;
 const InterpreterError = value_mod.InterpreterError;
 const BuiltinContext = root.BuiltinContext;
 
-/// Stored command-line arguments (set before program execution)
-var stored_args: ?[]const Value = null;
-var stored_allocator: ?Allocator = null;
-
-/// Set the program arguments (called from main.zig before interpretation)
-pub fn setArgs(allocator: Allocator, args: []const []const u8) !void {
-    // Free previous args if any
-    clearArgs();
-
-    // Convert string slices to Value array
+/// Convert string slices to Value array (for use by main.zig)
+pub fn convertArgsToValues(allocator: Allocator, args: []const []const u8) ![]Value {
     const values = try allocator.alloc(Value, args.len);
     errdefer allocator.free(values);
 
@@ -29,24 +24,17 @@ pub fn setArgs(allocator: Allocator, args: []const []const u8) !void {
         values[i] = Value{ .string = try allocator.dupe(u8, arg) };
     }
 
-    stored_args = values;
-    stored_allocator = allocator;
+    return values;
 }
 
-/// Clear stored arguments (for cleanup)
-pub fn clearArgs() void {
-    if (stored_args) |args| {
-        if (stored_allocator) |alloc| {
-            for (args) |arg| {
-                if (arg == .string) {
-                    alloc.free(arg.string);
-                }
-            }
-            alloc.free(args);
+/// Free a Values array created by convertArgsToValues
+pub fn freeArgsValues(allocator: Allocator, values: []const Value) void {
+    for (values) |val| {
+        if (val == .string) {
+            allocator.free(val.string);
         }
     }
-    stored_args = null;
-    stored_allocator = null;
+    allocator.free(values);
 }
 
 /// Create the std.env module as a record value
@@ -69,8 +57,8 @@ pub fn createModule(allocator: Allocator) !Value {
 fn envArgs(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 0) return error.ArityMismatch;
 
-    // Return stored args as a proper Cons/Nil list for pattern matching support
-    if (stored_args) |program_args| {
+    // Return args from context as a proper Cons/Nil list for pattern matching support
+    if (ctx.env_args) |program_args| {
         return buildList(ctx.allocator, program_args);
     }
 
@@ -113,13 +101,11 @@ test "env module creation" {
 test "args returns empty when not set" {
     const allocator = std.testing.allocator;
 
-    // Ensure no args are stored
-    clearArgs();
-
     const ctx = BuiltinContext{
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 
     const result = try envArgs(ctx, &.{});
@@ -127,18 +113,19 @@ test "args returns empty when not set" {
     try std.testing.expect(result == .nil);
 }
 
-test "args returns stored values as Cons/Nil list" {
+test "args returns context values as Cons/Nil list" {
     const allocator = std.testing.allocator;
 
-    // Set some test args
+    // Create test args via context
     const test_args = [_][]const u8{ "arg1", "arg2", "arg3" };
-    try setArgs(allocator, &test_args);
-    defer clearArgs();
+    const values = try convertArgsToValues(allocator, &test_args);
+    defer freeArgsValues(allocator, values);
 
     const ctx = BuiltinContext{
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = values,
     };
 
     const result = try envArgs(ctx, &.{});

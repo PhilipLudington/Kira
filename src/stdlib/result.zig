@@ -158,6 +158,7 @@ test "result is_ok and is_err" {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 
     // Create Ok(42)
@@ -197,6 +198,7 @@ test "result unwrap_or" {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 
     // Ok(42) unwrap_or 0 = 42

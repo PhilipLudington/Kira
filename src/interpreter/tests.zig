@@ -831,3 +831,84 @@ test "interpreter: tuple access in recursive function processing list" {
     try testing.expect(result != null);
     try testing.expectEqual(@as(i128, 60), result.?.integer);
 }
+
+test "resolver should catch undefined identifier in parsed code" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> i64 {
+        \\    let x: i64 = undefined_var
+        \\    return x
+        \\}
+    ;
+
+    // Parse
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    // Create symbol table
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Resolve - should fail with undefined identifier
+    const result = Kira.resolve(allocator, &program, &table);
+    try testing.expectError(error.ResolutionFailed, result);
+}
+
+test "resolver should catch undefined identifier with module declaration" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\module testmod
+        \\
+        \\fn main() -> i64 {
+        \\    let x: i64 = undefined_var
+        \\    return x
+        \\}
+    ;
+
+    // Parse
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    // Create symbol table
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Resolve - should fail with undefined identifier
+    const result = Kira.resolve(allocator, &program, &table);
+    try testing.expectError(error.ResolutionFailed, result);
+}
+
+test "resolver with module loader should catch undefined identifier" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\module testmod
+        \\
+        \\fn main() -> i64 {
+        \\    let x: i64 = undefined_var
+        \\    return x
+        \\}
+    ;
+
+    // Parse
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    // Create symbol table
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Create module loader like checkFile does
+    var loader = Kira.ModuleLoader.init(allocator, &table);
+    defer loader.deinit();
+
+    // Create resolver with loader like checkFile does
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    // Resolve - should fail with undefined identifier
+    const result = resolver.resolve(&program);
+    try testing.expectError(error.ResolutionFailed, result);
+}

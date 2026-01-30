@@ -343,6 +343,9 @@ fn stringSubstring(ctx: BuiltinContext, args: []const Value) InterpreterError!Va
     if (start_raw < 0 or end_raw < 0) {
         return Value{ .none = {} };
     }
+    if (start_raw > std.math.maxInt(usize) or end_raw > std.math.maxInt(usize)) {
+        return Value{ .none = {} };
+    }
     const start_codepoint: usize = @intCast(start_raw);
     const end_codepoint: usize = @intCast(end_raw);
 
@@ -411,7 +414,7 @@ fn stringCharAt(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
         else => return error.TypeMismatch,
     };
 
-    if (index_raw < 0) return Value{ .none = {} };
+    if (index_raw < 0 or index_raw > std.math.maxInt(usize)) return Value{ .none = {} };
     const index: usize = @intCast(index_raw);
 
     // String is guaranteed valid UTF-8, iterate to find codepoint at index
@@ -686,6 +689,7 @@ fn testCtx(allocator: Allocator) BuiltinContext {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 }
 

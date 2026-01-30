@@ -119,6 +119,11 @@ pub const TypeChecker = struct {
                 ));
             }
         }
+
+        // Fail compilation if any type errors were collected
+        if (self.hasErrors()) {
+            return error.TypeError;
+        }
     }
 
     /// Check if there were any errors
@@ -2203,8 +2208,9 @@ test "effect: main function must have IO effect" {
         .arena = null,
     };
 
-    // Check the program
-    try checker.check(&program);
+    // Check the program - should fail with TypeError
+    const result = checker.check(&program);
+    try std.testing.expectError(error.TypeError, result);
 
     // Should have an error about main needing effect
     try std.testing.expect(checker.hasErrors());

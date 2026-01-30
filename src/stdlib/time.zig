@@ -58,7 +58,10 @@ fn timeSleep(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (ms < 0) return error.InvalidOperation;
 
     // Convert milliseconds to nanoseconds for std.Thread.sleep
-    const ns: u64 = @intCast(ms * std.time.ns_per_ms);
+    // Use checked multiplication to prevent overflow before cast
+    const product = std.math.mul(i128, ms, std.time.ns_per_ms) catch return error.InvalidOperation;
+    if (product < 0 or product > std.math.maxInt(u64)) return error.InvalidOperation;
+    const ns: u64 = @intCast(product);
     std.Thread.sleep(ns);
 
     return Value{ .void = {} };
@@ -103,6 +106,7 @@ fn testCtx(allocator: Allocator) BuiltinContext {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 }
 

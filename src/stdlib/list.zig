@@ -798,7 +798,7 @@ fn listTake(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const n = switch (args[0]) {
-        .integer => |i| if (i < 0) return error.InvalidOperation else @as(usize, @intCast(i)),
+        .integer => |i| if (i < 0 or i > std.math.maxInt(usize)) return error.InvalidOperation else @as(usize, @intCast(i)),
         else => return error.TypeMismatch,
     };
 
@@ -823,7 +823,7 @@ fn listDrop(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
     const n = switch (args[0]) {
-        .integer => |i| if (i < 0) return error.InvalidOperation else @as(usize, @intCast(i)),
+        .integer => |i| if (i < 0 or i > std.math.maxInt(usize)) return error.InvalidOperation else @as(usize, @intCast(i)),
         else => return error.TypeMismatch,
     };
 
@@ -908,6 +908,7 @@ fn testCtx(allocator: Allocator) BuiltinContext {
         .allocator = allocator,
         .interpreter = null,
         .call_fn = null,
+        .env_args = null,
     };
 }
 
