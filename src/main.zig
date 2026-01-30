@@ -1295,8 +1295,9 @@ fn loadFile(
     try writer.writeAll(msg);
 }
 
-/// Maximum depth for value formatting to prevent stack overflow on deeply nested structures
-const max_format_depth: usize = 100;
+/// Maximum depth for value formatting to prevent stack overflow on deeply nested structures.
+/// Conservative limit (50) to avoid excessive stack usage (~200KB worst case).
+const max_format_depth: usize = 50;
 
 /// Stream a runtime value to a writer (avoids buffer overflow on large/deep structures)
 fn formatValueWriter(val: Kira.Value, writer: anytype, depth: usize) !void {

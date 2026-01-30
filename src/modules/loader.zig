@@ -528,8 +528,9 @@ pub const ModuleLoader = struct {
         };
         errdefer self.allocator.free(source);
 
-        // Track loaded bytes
+        // Track loaded bytes (rollback on error to prevent limit bypass via parse errors)
         self.total_bytes_loaded += source.len;
+        errdefer self.total_bytes_loaded -= source.len;
 
         // Create arena for AST allocations
         var arena = std.heap.ArenaAllocator.init(self.allocator);
