@@ -192,3 +192,113 @@ pub type Rectangle = { origin: Vec2, ... }  // Has 'pub'
 The error recovery mechanism (`error types unify with anything`) combined with diagnostics never failing compilation creates a situation where **any type error is silently swallowed**. This is the root cause of the perceived "cross-module import" bug.
 
 ---
+
+## [ ] Bug 4: Local variable bindings not added to scope (CRITICAL REGRESSION)
+
+**Status:** Open
+
+**Severity:** CRITICAL - Blocks all Kira programs using local variables
+
+**Introduced in:** Commits after `b340a97` (v0.11.0), likely in `2b45083` or `02535bb`
+
+**Description:** After the recent changes to make type check and resolve errors fail compilation, local variable bindings (`let` and `var`) are no longer being added to the resolver's scope. Any reference to a locally-bound variable results in "undefined symbol" errors.
+
+**Minimal reproduction:**
+
+```kira
+fn my_func() -> i32 {
+    let x: i32 = 5
+    return x
+}
+
+effect fn main() -> void {
+    return
+}
+```
+
+```bash
+$ kira check /tmp/test.ki
+error: undefined symbol 'x'
+  --> /tmp/test.ki:3:12
+   3 |     return x
+     |            ^
+
+Error: error.TypeCheckError
+```
+
+**Expected:** Code compiles successfully - `x` should be in scope after `let x: i32 = 5`
+
+**Actual:** "undefined symbol 'x'" error
+
+---
+
+### Additional Test Cases
+
+| Test | Code | Result |
+|------|------|--------|
+| let binding | `let x: i32 = 5; return x` | ❌ undefined symbol 'x' |
+| var binding | `var x: i32 = 5; return x` | ❌ undefined symbol 'x' |
+| var in effect fn | `effect fn f() { var x: i32 = 5; return x }` | ❌ undefined symbol 'x' |
+| no local vars | `fn f() -> i32 { return 5 }` | ✅ works |
+| function params | `fn f(x: i32) -> i32 { return x }` | ✅ works |
+
+**Key finding:** Function parameters work correctly, but `let` and `var` bindings inside function bodies do not.
+
+---
+
+### Impact
+
+This regression breaks:
+- ALL Kira programs using local variables
+- The Kira examples (e.g., `examples/fibonacci.ki`)
+- The Kira-Lisp interpreter project (16+ functions affected)
+- Any code using `var` for mutable state
+- Any code using `let` for local bindings
+
+---
+
+### Root Cause Analysis
+
+The bug was introduced when fixing Bug 1 (type check errors not failing compilation). The changes to `src/symbols/resolver.zig` likely broke the logic that adds local bindings to the current scope.
+
+**Suspected location:** `src/symbols/resolver.zig` - the resolver's handling of `let` and `var` statements
+
+**Investigation steps:**
+
+1. Check `resolve()` method for `Statement.let_binding` and `Statement.var_binding` cases
+2. Verify bindings are being added to the current scope via `defineLocal()` or equivalent
+3. Check if the `hasErrors()` check at the end of `resolve()` is short-circuiting before bindings are processed
+4. Compare resolver behavior between `b340a97` (working) and `02535bb` (broken)
+
+---
+
+### Workaround
+
+**None** - This bug blocks all meaningful Kira development.
+
+Temporary option: Use commit `b340a97` (Kira v0.11.0 before the fix) which still has the silent type error bug but at least allows code to run.
+
+```bash
+cd ~/Fun/Kira
+git checkout b340a97
+zig build
+# Use ./zig-out/bin/kira instead of /usr/local/bin/kira
+```
+
+---
+
+### Files to Investigate
+
+- `src/symbols/resolver.zig` - Local binding resolution
+- `src/typechecker/checker.zig` - Type checking of let/var statements
+- `src/main.zig` - Error handling flow changes
+
+---
+
+### Related
+
+- Bug 1: Type check errors don't fail compilation (the fix for this introduced Bug 4)
+- Commit `2b45083`: "Fix Bug 1: Type check and resolve errors now fail compilation"
+- Commit `02535bb`: Merge PR for cross-module imports
+
+---

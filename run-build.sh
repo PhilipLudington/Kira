@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat build wrapper for Kira
+# AirTower build wrapper for Kira
 # Runs Zig build and writes results to .build-results.json
 
 RESULTS_FILE=".build-results.json"
