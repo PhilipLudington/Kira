@@ -943,6 +943,8 @@ pub const TypeChecker = struct {
         defer patterns.deinit(self.allocator);
 
         for (me.arms) |arm| {
+            _ = try self.symbol_table.enterScope(.block);
+
             // Check pattern against subject type
             try self.checkPattern(arm.pattern, subject_type);
 
@@ -972,6 +974,8 @@ pub const TypeChecker = struct {
                     break :blk ResolvedType.voidType(span);
                 },
             };
+
+            self.symbol_table.leaveScope() catch {};
 
             if (result_type) |rt| {
                 if (!unify.typesEqual(rt, arm_type)) {
@@ -1006,6 +1010,7 @@ pub const TypeChecker = struct {
         }
 
         // Check both branches and get their types
+        _ = try self.symbol_table.enterScope(.block);
         const then_type = switch (ie.then_branch) {
             .expression => |e| try self.checkExpression(e),
             .block => |block| blk: {
@@ -1015,7 +1020,9 @@ pub const TypeChecker = struct {
                 break :blk ResolvedType.voidType(span);
             },
         };
+        self.symbol_table.leaveScope() catch {};
 
+        _ = try self.symbol_table.enterScope(.block);
         const else_type = switch (ie.else_branch) {
             .expression => |e| try self.checkExpression(e),
             .block => |block| blk: {
@@ -1025,6 +1032,7 @@ pub const TypeChecker = struct {
                 break :blk ResolvedType.voidType(span);
             },
         };
+        self.symbol_table.leaveScope() catch {};
 
         // Both branches must have the same type
         if (!unify.typesEqual(then_type, else_type)) {
@@ -1280,6 +1288,15 @@ pub const TypeChecker = struct {
                 }
 
                 try self.checkPattern(lb.pattern, init_type);
+
+                // Add binding to scope so subsequent statements can find it
+                if (lb.pattern.kind == .identifier) {
+                    const ident = lb.pattern.kind.identifier;
+                    const sym = Symbol.variable(0, ident.name, lb.explicit_type, ident.is_mutable, false, lb.pattern.span);
+                    _ = self.symbol_table.define(sym) catch |err| {
+                        if (err == error.OutOfMemory) return error.OutOfMemory;
+                    };
+                }
             },
 
             .var_binding => |vb| {
@@ -1305,6 +1322,12 @@ pub const TypeChecker = struct {
                         ));
                     }
                 }
+
+                // Add binding to scope so subsequent statements can find it
+                const var_sym = Symbol.variable(0, vb.name, vb.explicit_type, true, false, stmt.span);
+                _ = self.symbol_table.define(var_sym) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                };
             },
 
             .assignment => |assign| {
@@ -1356,16 +1379,20 @@ pub const TypeChecker = struct {
                     ));
                 }
 
+                _ = try self.symbol_table.enterScope(.block);
                 for (if_stmt.then_branch) |*s| {
                     try self.checkStatement(s);
                 }
+                self.symbol_table.leaveScope() catch {};
 
                 if (if_stmt.else_branch) |else_branch| {
                     switch (else_branch) {
                         .block => |block| {
+                            _ = try self.symbol_table.enterScope(.block);
                             for (block) |*s| {
                                 try self.checkStatement(s);
                             }
+                            self.symbol_table.leaveScope() catch {};
                         },
                         .else_if => |else_if| {
                             try self.checkStatement(else_if);
@@ -1385,6 +1412,8 @@ pub const TypeChecker = struct {
                     ));
                 }
 
+                _ = try self.symbol_table.enterScope(.block);
+
                 // Get element type
                 if (unify.getIterableElement(iterable_type)) |elem_type| {
                     try self.checkPattern(for_loop.pattern, elem_type);
@@ -1393,6 +1422,7 @@ pub const TypeChecker = struct {
                 for (for_loop.body) |*s| {
                     try self.checkStatement(s);
                 }
+                self.symbol_table.leaveScope() catch {};
             },
 
             .while_loop => |while_loop| {
@@ -1405,15 +1435,19 @@ pub const TypeChecker = struct {
                     ));
                 }
 
+                _ = try self.symbol_table.enterScope(.block);
                 for (while_loop.body) |*s| {
                     try self.checkStatement(s);
                 }
+                self.symbol_table.leaveScope() catch {};
             },
 
             .loop_statement => |loop_stmt| {
+                _ = try self.symbol_table.enterScope(.block);
                 for (loop_stmt.body) |*s| {
                     try self.checkStatement(s);
                 }
+                self.symbol_table.leaveScope() catch {};
             },
 
             .match_statement => |match_stmt| {
@@ -1424,6 +1458,7 @@ pub const TypeChecker = struct {
                 defer patterns.deinit(self.allocator);
 
                 for (match_stmt.arms) |arm| {
+                    _ = try self.symbol_table.enterScope(.block);
                     try self.checkPattern(arm.pattern, subject_type);
 
                     // Collect pattern for exhaustiveness checking
@@ -1443,6 +1478,7 @@ pub const TypeChecker = struct {
                     for (arm.body) |*s| {
                         try self.checkStatement(s);
                     }
+                    self.symbol_table.leaveScope() catch {};
                 }
 
                 // Check exhaustiveness
@@ -1486,9 +1522,11 @@ pub const TypeChecker = struct {
             },
 
             .block => |block| {
+                _ = try self.symbol_table.enterScope(.block);
                 for (block) |*s| {
                     try self.checkStatement(s);
                 }
+                self.symbol_table.leaveScope() catch {};
             },
         }
     }
@@ -1684,9 +1722,11 @@ pub const TypeChecker = struct {
                 self.in_effect_function = true;
                 defer self.in_effect_function = saved_in_effect;
 
+                _ = try self.symbol_table.enterScope(.function);
                 for (t.body) |*stmt| {
                     _ = try self.checkStatement(stmt);
                 }
+                self.symbol_table.leaveScope() catch {};
             },
         }
     }
@@ -1728,9 +1768,23 @@ pub const TypeChecker = struct {
 
         // Check body if present
         if (func.body) |body| {
+            // Enter function scope so parameters and locals are visible
+            _ = try self.symbol_table.enterScope(.function);
+
+            // Add parameters to scope
+            for (func.parameters) |param| {
+                const param_sym = Symbol.variable(0, param.name, param.param_type, false, false, param.span);
+                _ = self.symbol_table.define(param_sym) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    // DuplicateDefinition: resolver already reported this
+                };
+            }
+
             for (body) |*stmt| {
                 try self.checkStatement(stmt);
             }
+
+            self.symbol_table.leaveScope() catch {};
         }
     }
 

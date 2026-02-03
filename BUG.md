@@ -193,9 +193,9 @@ The error recovery mechanism (`error types unify with anything`) combined with d
 
 ---
 
-## [ ] Bug 4: Local variable bindings not added to scope (CRITICAL REGRESSION)
+## [x] Bug 4: Local variable bindings not added to scope (CRITICAL REGRESSION)
 
-**Status:** Open
+**Status:** Fixed
 
 **Severity:** CRITICAL - Blocks all Kira programs using local variables
 
@@ -229,6 +229,19 @@ Error: error.TypeCheckError
 **Expected:** Code compiles successfully - `x` should be in scope after `let x: i32 = 5`
 
 **Actual:** "undefined symbol 'x'" error
+
+**Root Cause:**
+The type checker (`src/typechecker/checker.zig`) never entered function scopes when checking function bodies. The resolver entered function scopes, added local bindings, then left. After the resolver finished, the symbol table's `current_scope_id` was back at module/global level. The type checker then called `symbol_table.lookup()` which searched from the current (module) scope — it couldn't find local variables or function parameters because they lived in function scopes that were no longer active.
+
+**Fix applied:**
+1. Modified `checkFunctionDecl` to enter a new function scope, add parameters as variable symbols, check the body, then leave scope
+2. Modified `checkStatement` for `let_binding` to define the pattern's identifier as a variable in the current scope after type checking
+3. Modified `checkStatement` for `var_binding` to define the variable in the current scope after type checking
+4. Added `enterScope(.block)` / `leaveScope()` around block-scoped statements (if, for, while, loop, match arms, block) and expressions (match expr arms, if expr branches) to match the resolver's scope handling
+5. Added function scope around `test_decl` bodies
+
+**Files modified:**
+- `src/typechecker/checker.zig` - All changes in this file
 
 ---
 
