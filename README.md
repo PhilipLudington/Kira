@@ -192,6 +192,12 @@ zig build run -- examples/factorial.ki
 - [Language Design](DESIGN.md) - Complete language specification
 - [Tutorial](docs/tutorial.md) - Step-by-step guide
 - [Standard Library](docs/stdlib.md) - API reference
+- [Quick Reference](docs/quickref.md) - Cheat sheet for common patterns
+- [AI Agents Guide](docs/ai-agents.md) - Why Kira is designed for AI code generation
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to Kira.
 
 ## Ecosystem
 

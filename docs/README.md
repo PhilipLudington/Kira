@@ -12,6 +12,7 @@ Kira is a functional programming language with **explicit types**, **explicit ef
 | [reference.md](reference.md) | Complete syntax and semantics | Looking up language details |
 | [stdlib.md](stdlib.md) | Standard library API reference | Finding functions and types |
 | [quickref.md](quickref.md) | Concise cheat sheet | Quick lookup while coding |
+| [ai-agents.md](ai-agents.md) | Guide for AI code generation | AI systems generating Kira code |
 
 ## Quick Start
 
@@ -125,6 +126,7 @@ The `examples/` directory contains working programs demonstrating various featur
 3. **Reference**: Use [stdlib.md](stdlib.md) to explore available functions
 4. **Quick lookup**: Keep [quickref.md](quickref.md) handy while coding
 5. **Deep dive**: Consult [reference.md](reference.md) for language details
+6. **AI integration**: Read [ai-agents.md](ai-agents.md) to understand why Kira is built for AI
 
 ## Need Help?
 
