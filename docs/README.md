@@ -18,8 +18,8 @@ Kira is a functional programming language with **explicit types**, **explicit ef
 ### Installation
 
 ```bash
-git clone https://github.com/your-repo/kira
-cd kira
+git clone https://github.com/PhilipLudington/Kira.git
+cd Kira
 zig build
 ```
 
