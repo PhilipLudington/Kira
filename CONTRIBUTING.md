@@ -2,22 +2,192 @@
 
 Thank you for your interest in contributing to Kira! This document provides guidelines and information for contributors.
 
+## Table of Contents
+
+- [Code of Conduct](#code-of-conduct)
+- [Getting Started](#getting-started)
+- [Development Setup](#development-setup)
+- [Making Changes](#making-changes)
+- [Pull Request Process](#pull-request-process)
+- [Coding Standards](#coding-standards)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Getting Help](#getting-help)
+
+## Code of Conduct
+
+Be respectful, inclusive, and constructive. We're all here to build something great together.
+
 ## Getting Started
 
 ### Prerequisites
 
-- **Zig 0.15+** - The compiler is written in Zig
-- **Git** - For version control
+- [Zig](https://ziglang.org/download/) 0.14.0 or later
+- Git
+- A text editor with Kira syntax support (see `editors/`)
 
 ### Building from Source
 
 ```bash
-git clone https://github.com/PhilipLudington/Kira.git
+git clone https://github.com/PhilipLudington/Kira
 cd Kira
-./build.sh
+./run-build.sh
 ```
 
-After building, the executable is installed to `zig-out/bin/Kira`.
+The executable will be at `zig-out/bin/Kira`.
+
+### Running the REPL
+
+```bash
+./zig-out/bin/Kira
+```
+
+## Development Setup
+
+### Project Structure
+
+```
+Kira/
+├── src/                    # Compiler source code
+│   ├── ast/               # Abstract Syntax Tree definitions
+│   ├── lexer/             # Tokenizer
+│   ├── parser/            # Parser
+│   ├── typechecker/       # Type checking and inference
+│   ├── interpreter/       # Runtime interpreter
+│   ├── symbols/           # Symbol table and resolution
+│   ├── modules/           # Module loader
+│   ├── stdlib/            # Standard library implementations
+│   └── main.zig           # Entry point
+├── examples/              # Example Kira programs
+├── docs/                  # Documentation
+├── editors/               # Editor syntax highlighting
+├── carbide/               # Zig development standards
+├── build.zig              # Build configuration
+└── DESIGN.md              # Language specification
+```
+
+### Building and Testing
+
+Always use the wrapper scripts to preserve AirTower integration:
+
+```bash
+# Build the compiler
+./run-build.sh
+
+# Run all tests
+./run-tests.sh
+```
+
+Do **not** run `zig build` or `zig build test` directly.
+
+### Running Examples
+
+```bash
+# Run an example
+./zig-out/bin/Kira run examples/hello.ki
+
+# Type check without running
+./zig-out/bin/Kira check examples/factorial.ki
+
+# Show tokens (debugging)
+./zig-out/bin/Kira --tokens examples/hello.ki
+
+# Show AST (debugging)
+./zig-out/bin/Kira --ast examples/hello.ki
+```
+
+## Making Changes
+
+### Types of Contributions
+
+We welcome:
+
+- **Bug fixes** — Fix issues in the compiler or runtime
+- **Features** — New language features or stdlib additions
+- **Documentation** — Improve docs, add examples, fix typos
+- **Editor support** — Syntax highlighting for new editors
+- **Tests** — Increase test coverage
+- **Examples** — Add example programs demonstrating features
+
+### Before You Start
+
+1. **Check existing issues** — Your idea may already be discussed
+2. **Open an issue first** — For significant changes, discuss before coding
+3. **One change per PR** — Keep pull requests focused
+
+### Branch Naming
+
+Use descriptive branch names:
+
+- `fix/type-checker-crash`
+- `feature/pattern-guards`
+- `docs/improve-tutorial`
+- `editor/helix-support`
+
+## Pull Request Process
+
+### Before Submitting
+
+1. **Run tests**: `./run-tests.sh`
+2. **Test your changes**: Try your changes with example programs
+3. **Update documentation**: If you changed behavior, update relevant docs
+4. **Add tests**: If you added features or fixed bugs
+
+### PR Guidelines
+
+- **Clear title**: Describe what the PR does
+- **Description**: Explain why and how
+- **Small PRs**: Easier to review and merge
+- **Link issues**: Reference related issues with `Fixes #123`
+
+### Review Process
+
+1. Submit your PR against `main`
+2. Wait for review (usually within a few days)
+3. Address feedback with additional commits
+4. Once approved, a maintainer will merge
+
+## Coding Standards
+
+### Zig Code
+
+Follow the standards in `carbide/STANDARDS.md`:
+
+- Use descriptive variable names
+- Add comments for complex logic
+- Keep functions small and focused
+- Handle all error cases explicitly
+- Use `comptime` for compile-time computation
+
+### Kira Code (Examples/Tests)
+
+- Use 4-space indentation
+- Always use explicit types
+- Always use explicit `return`
+- Prefer pure functions when possible
+- Document with `///` comments
+
+### Commit Messages
+
+Use clear, descriptive commit messages:
+
+```
+Fix type checker crash on generic pattern match
+
+The type checker was failing to instantiate generic type parameters
+when matching against constructor patterns. Added proper type
+substitution during pattern compilation.
+
+Fixes #42
+```
+
+Format:
+- First line: Brief summary (50 chars or less)
+- Blank line
+- Body: Detailed explanation if needed
+- Reference issues if applicable
+
+## Testing
 
 ### Running Tests
 
@@ -25,146 +195,54 @@ After building, the executable is installed to `zig-out/bin/Kira`.
 ./run-tests.sh
 ```
 
-## How to Contribute
+### Adding Tests
 
-### Reporting Bugs
+1. **Unit tests**: Add to appropriate `*_test.zig` file in `src/`
+2. **Integration tests**: Add `.ki` files to `examples/` with expected output
+3. **Regression tests**: When fixing bugs, add a test case
 
-Before submitting a bug report:
+### Test File Naming
 
-1. Check existing issues to avoid duplicates
-2. Use the latest version from `main`
-3. Create a minimal reproduction case
+- `test_feature_name.ki` — Feature tests
+- `bug123_description.ki` — Regression tests
 
-When reporting:
+## Documentation
 
-- Describe the expected vs actual behavior
-- Include the Kira code that triggers the bug
-- Provide compiler output/error messages
-- List your environment (OS, Zig version)
+### Updating Docs
 
-See [BUG.md](BUG.md) for examples of well-documented bugs and their fixes.
+- **tutorial.md**: Step-by-step learning guide
+- **reference.md**: Complete language reference
+- **stdlib.md**: Standard library API
+- **quickref.md**: Cheat sheet
+- **DESIGN.md**: Language specification
 
-### Suggesting Features
+### Documentation Style
 
-Feature suggestions are welcome! Please:
+- Use clear, simple language
+- Include code examples
+- Keep formatting consistent
+- Test all code examples
 
-1. Check [DESIGN.md](DESIGN.md) to see if it aligns with the language design
-2. Explain the use case and motivation
-3. Consider how it fits Kira's philosophy of explicit types and effects
+## Getting Help
 
-### Code Contributions
+### Resources
 
-1. **Fork** the repository
-2. **Create a branch** for your changes:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. **Make your changes** following the code style below
-4. **Test** your changes thoroughly
-5. **Submit a pull request** against `main`
+- **Documentation**: `docs/` directory and `DESIGN.md`
+- **Examples**: `examples/` directory
+- **Issues**: [GitHub Issues](https://github.com/PhilipLudington/Kira/issues)
 
-### Pull Request Guidelines
+### Questions
 
-- **Never push directly to main** - always use pull requests
-- Keep PRs focused on a single change
-- Include tests for new functionality
-- Update documentation as needed
-- Describe your changes in the PR description
+If you're stuck:
 
-## Code Style
+1. Check the documentation
+2. Look at similar code in the codebase
+3. Open an issue with the `question` label
 
-### Zig Code
+## Recognition
 
-- Follow Zig's official style guide
-- Use meaningful variable and function names
-- Add comments for complex logic
-- Keep functions focused and reasonably sized
+Contributors are valued! Significant contributions will be recognized in release notes.
 
-### Kira Code (examples, tests)
+---
 
-- Follow the patterns in existing examples
-- Include explicit type annotations (Kira requires them)
-- Mark effect functions with the `effect` keyword
-- Add comments explaining what the example demonstrates
-
-### Documentation
-
-- Use Markdown for documentation
-- Keep examples simple and focused
-- Update the table of contents when adding sections
-
-## Project Structure
-
-```
-Kira/
-├── src/           # Compiler source code (Zig)
-├── examples/      # Example programs
-├── docs/          # Documentation
-├── editors/       # Editor support (syntax highlighting)
-└── carbide/       # Carbide integration
-```
-
-## Development Workflow
-
-### Understanding the Codebase
-
-1. Read [DESIGN.md](DESIGN.md) for language philosophy
-2. Explore `src/` starting with `main.zig`
-3. Read the [docs/tutorial.md](docs/tutorial.md) to understand the language
-
-### Key Concepts
-
-- **Explicit types**: Every variable and parameter must have a type annotation
-- **Explicit effects**: Side effects are tracked with the `effect` keyword
-- **Pattern matching**: Comprehensive support for algebraic data types
-- **Functional style**: Pure functions by default
-
-### Key Source Files
-
-| Directory | Purpose |
-|-----------|---------|
-| `src/main.zig` | Entry point, CLI handling |
-| `src/lexer/` | Lexical analysis, tokenization |
-| `src/ast/` | Abstract syntax tree |
-| `src/parser/` | Syntax parsing |
-| `src/typechecker/` | Type checking |
-| `src/symbols/` | Symbol resolution |
-| `src/interpreter/` | Tree-walking interpreter |
-| `src/modules/` | Module system |
-| `src/stdlib/` | Standard library |
-| `src/config/` | Project configuration |
-
-## Documentation Contributions
-
-Documentation improvements are always welcome:
-
-- Fix typos and clarify confusing sections
-- Add examples for underdocumented features
-- Improve the tutorial and reference docs
-- Add docstrings to standard library functions
-
-## Ecosystem
-
-Kira has a growing ecosystem of libraries. Consider contributing to these as well:
-
-- [kira-http](https://github.com/PhilipLudington/kira-http) - HTTP library
-- [kira-json](https://github.com/PhilipLudington/kira-json) - JSON library
-- [kira-test](https://github.com/PhilipLudington/kira-test) - Testing framework
-- [kira-lpe](https://github.com/PhilipLudington/kira-lpe) - Logic programming engine
-- [kira-pcl](https://github.com/PhilipLudington/kira-pcl) - Parser combinators
-
-## Questions?
-
-If you have questions about contributing:
-
-1. Check the existing documentation
-2. Look at similar PRs for guidance
-3. Open an issue for discussion
-
-## Code of Conduct
-
-Be respectful, constructive, and professional. We're all here to build something useful together.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the same license as the project (see [LICENSE](LICENSE)).
+Thank you for contributing to Kira!

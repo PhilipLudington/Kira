@@ -1,46 +1,51 @@
 ---
 name: Bug Report
-about: Report a bug in the Kira compiler or language
-title: "[BUG] "
+about: Report a bug in the Kira compiler or runtime
+title: '[BUG] '
 labels: bug
 assignees: ''
 ---
 
-## Description
+## Bug Description
 
-A clear and concise description of the bug.
+A clear description of what the bug is.
 
-## Reproduction
+## Steps to Reproduce
 
-### Minimal code example
-
+1. Create a file with the following code:
 ```kira
-// Paste the smallest code that reproduces the issue
-effect fn main() -> void {
-    // ...
-}
+// Your Kira code here
 ```
 
-### Steps to reproduce
+2. Run the command:
+```bash
+kira run yourfile.ki
+```
 
-1. Save the code as `example.ki`
-2. Run `kira run example.ki` (or `kira check example.ki`)
-3. See error
+3. Observe the error
 
-### Expected behavior
+## Expected Behavior
 
 What you expected to happen.
 
-### Actual behavior
+## Actual Behavior
 
 What actually happened. Include any error messages.
 
 ## Environment
 
-- **OS:** (e.g., macOS 14.0, Ubuntu 22.04, Windows 11)
-- **Kira version:** (run `kira --version`)
-- **Zig version:** (run `zig version`)
+- **Kira version**: (run `kira --version`)
+- **Zig version**: (run `zig version`)
+- **Operating system**: (e.g., macOS 14.2, Ubuntu 22.04)
 
-## Additional context
+## Additional Context
 
-Add any other context about the problem here. Screenshots or compiler output are helpful.
+Add any other context about the problem here.
+
+## Minimal Reproducible Example
+
+If possible, provide the smallest possible code that reproduces the issue:
+
+```kira
+// Minimal code to reproduce
+```

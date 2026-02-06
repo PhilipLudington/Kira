@@ -1,42 +1,51 @@
 ---
 name: Feature Request
-about: Suggest a new feature or improvement for Kira
-title: "[FEATURE] "
+about: Suggest an enhancement or new feature for Kira
+title: '[FEATURE] '
 labels: enhancement
 assignees: ''
 ---
 
-## Summary
+## Feature Description
 
-A brief description of the feature you'd like.
+A clear description of the feature you'd like to see.
 
 ## Motivation
 
-Why is this feature needed? What problem does it solve?
+Why is this feature important? What problem does it solve?
 
-## Proposed Solution
+## Proposed Syntax/API
 
-Describe how you envision this feature working.
-
-### Syntax (if applicable)
+If applicable, show what the feature might look like:
 
 ```kira
-// Example of how the feature might look
+// Example of how the feature could work
 ```
 
 ## Alternatives Considered
 
-What alternative solutions or features have you considered?
+Describe any alternative solutions or features you've considered.
 
-## Design Philosophy Alignment
+## Design Considerations
 
-Which of Kira's principles does this feature relate to? (See DESIGN.md)
+### Compatibility
 
-- [ ] Explicit types (no type inference)
-- [ ] Explicit effects (tracked in signatures)
-- [ ] Pure by default
-- [ ] No surprises
+Does this change affect existing code? Is it backwards compatible?
+
+### Effect System
+
+Does this feature interact with the effect system? Pure vs effectful?
+
+### Type System
+
+Does this require changes to the type system?
 
 ## Additional Context
 
-Add any other context, examples from other languages, or references here.
+Add any other context, examples from other languages, or research.
+
+## Willingness to Contribute
+
+- [ ] I'm willing to implement this feature
+- [ ] I can help with testing
+- [ ] I can help with documentation

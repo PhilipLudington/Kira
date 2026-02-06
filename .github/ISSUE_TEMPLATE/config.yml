@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/PhilipLudington/Kira/tree/main/docs
+    about: Check the documentation before opening an issue
+  - name: Examples
+    url: https://github.com/PhilipLudington/Kira/tree/main/examples
+    about: Look at example programs for usage patterns
