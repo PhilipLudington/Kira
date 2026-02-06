@@ -7,10 +7,10 @@ Thank you for your interest in contributing to Kira! This document provides guid
 - [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
+- [Code Style](#code-style)
 - [Making Changes](#making-changes)
-- [Pull Request Process](#pull-request-process)
-- [Coding Standards](#coding-standards)
 - [Testing](#testing)
+- [Pull Requests](#pull-requests)
 - [Documentation](#documentation)
 - [Getting Help](#getting-help)
 
@@ -29,7 +29,7 @@ Be respectful, inclusive, and constructive. We're all here to build something gr
 ### Building from Source
 
 ```bash
-git clone https://github.com/PhilipLudington/Kira
+git clone https://github.com/PhilipLudington/Kira.git
 cd Kira
 ./run-build.sh
 ```
@@ -42,6 +42,16 @@ The executable will be at `zig-out/bin/Kira`.
 ./zig-out/bin/Kira
 ```
 
+### Running Tests
+
+Always use the wrapper script to run tests:
+
+```bash
+./run-tests.sh
+```
+
+> **Important:** Do not run `zig build test` directly. The wrapper script ensures proper AirTower integration and result tracking.
+
 ## Development Setup
 
 ### Project Structure
@@ -53,32 +63,24 @@ Kira/
 │   ├── lexer/             # Tokenizer
 │   ├── parser/            # Parser
 │   ├── typechecker/       # Type checking and inference
-│   ├── interpreter/       # Runtime interpreter
-│   ├── symbols/           # Symbol table and resolution
-│   ├── modules/           # Module loader
+│   ├── interpreter/       # Tree-walking interpreter
+│   ├── symbols/           # Symbol resolution
+│   ├── modules/           # Module loading
 │   ├── stdlib/            # Standard library implementations
 │   └── main.zig           # Entry point
-├── examples/              # Example Kira programs
-├── docs/                  # Documentation
-├── editors/               # Editor syntax highlighting
-├── carbide/               # Zig development standards
-├── build.zig              # Build configuration
-└── DESIGN.md              # Language specification
+├── docs/                   # Documentation
+├── examples/               # Example programs
+├── editors/                # Editor syntax support
+├── carbide/                # Zig development standards
+├── build.zig               # Build configuration
+└── DESIGN.md               # Language specification
 ```
 
-### Building and Testing
+### Coding Standards
 
-Always use the wrapper scripts to preserve AirTower integration:
-
-```bash
-# Build the compiler
-./run-build.sh
-
-# Run all tests
-./run-tests.sh
-```
-
-Do **not** run `zig build` or `zig build test` directly.
+This project uses CarbideZig for Zig development standards. See:
+- `carbide/CARBIDE.md` - Overview of standards
+- `carbide/STANDARDS.md` - Detailed coding guidelines
 
 ### Running Examples
 
@@ -94,6 +96,45 @@ Do **not** run `zig build` or `zig build test` directly.
 
 # Show AST (debugging)
 ./zig-out/bin/Kira --ast examples/hello.ki
+```
+
+## Code Style
+
+### Zig Code
+
+Follow the conventions in `carbide/STANDARDS.md`:
+
+- Use `snake_case` for functions and variables
+- Use `PascalCase` for types
+- Keep functions focused and single-purpose
+- Document public APIs with doc comments
+- Handle all error cases explicitly
+- Use `comptime` for compile-time computation
+
+### Kira Code (Examples/Tests)
+
+- Use 4-space indentation
+- One statement per line
+- Explicit types on all bindings
+- Always use explicit `return`
+- Prefer pure functions when possible
+- Meaningful variable and function names
+- Comments for non-obvious logic
+
+Example:
+
+```kira
+// GOOD: Clear, well-documented
+fn calculate_distance(p1: Point, p2: Point) -> f64 {
+    let dx: f64 = p2.x - p1.x
+    let dy: f64 = p2.y - p1.y
+    return std.math.sqrt(dx * dx + dy * dy)
+}
+
+// AVOID: Unclear names, no documentation
+fn f(a: Point, b: Point) -> f64 {
+    return std.math.sqrt((b.x-a.x)*(b.x-a.x)+(b.y-a.y)*(b.y-a.y))
+}
 ```
 
 ## Making Changes
@@ -119,19 +160,79 @@ We welcome:
 
 Use descriptive branch names:
 
-- `fix/type-checker-crash`
-- `feature/pattern-guards`
-- `docs/improve-tutorial`
-- `editor/helix-support`
+- `feature/description` - New features
+- `fix/description` - Bug fixes
+- `docs/description` - Documentation changes
+- `refactor/description` - Code refactoring
+- `test/description` - Test additions/improvements
 
-## Pull Request Process
+### Commit Messages
+
+Write clear, descriptive commit messages:
+
+```
+<type>: <short summary>
+
+<longer description if needed>
+
+<reference to issue if applicable>
+```
+
+Types:
+- `feat` - New feature
+- `fix` - Bug fix
+- `docs` - Documentation
+- `refactor` - Code refactoring
+- `test` - Test changes
+- `chore` - Maintenance tasks
+
+Example:
+
+```
+feat: Add std.string.pad_left and pad_right functions
+
+Implements string padding functions that pad a string to a
+minimum length with a specified character.
+
+Closes #42
+```
+
+## Testing
+
+### Running Tests
+
+```bash
+# Run all tests
+./run-tests.sh
+
+# Run a specific example
+./zig-out/bin/Kira run examples/hello.ki
+```
+
+### Writing Tests
+
+1. **Unit tests** - Add test blocks to the relevant source file, or to dedicated test files like `src/interpreter/tests.zig`
+2. **Integration tests** - Add example programs to `examples/`
+3. **Regression tests** - Reference the bug being fixed
+
+For bug fixes, add a test case that reproduces the bug:
+
+```zig
+test "regression: issue #42 - string padding with empty string" {
+    const result = try padLeft("", 5, ' ');
+    try std.testing.expectEqualStrings("     ", result);
+}
+```
+
+## Pull Requests
 
 ### Before Submitting
 
-1. **Run tests**: `./run-tests.sh`
-2. **Test your changes**: Try your changes with example programs
-3. **Update documentation**: If you changed behavior, update relevant docs
-4. **Add tests**: If you added features or fixed bugs
+1. **Ensure tests pass** - Run `./run-tests.sh`
+2. **Test your changes** - Try your changes with example programs
+3. **Update documentation** - If adding features, update relevant docs
+4. **Add examples** - For new features, add usage examples
+5. **Check for breaking changes** - Note any API changes
 
 ### PR Guidelines
 
@@ -142,73 +243,16 @@ Use descriptive branch names:
 
 ### Review Process
 
-1. Submit your PR against `main`
+1. Submit PR against `main` branch
 2. Wait for review (usually within a few days)
 3. Address feedback with additional commits
 4. Once approved, a maintainer will merge
 
-## Coding Standards
-
-### Zig Code
-
-Follow the standards in `carbide/STANDARDS.md`:
-
-- Use descriptive variable names
-- Add comments for complex logic
-- Keep functions small and focused
-- Handle all error cases explicitly
-- Use `comptime` for compile-time computation
-
-### Kira Code (Examples/Tests)
-
-- Use 4-space indentation
-- Always use explicit types
-- Always use explicit `return`
-- Prefer pure functions when possible
-- Document with `///` comments
-
-### Commit Messages
-
-Use clear, descriptive commit messages:
-
-```
-Fix type checker crash on generic pattern match
-
-The type checker was failing to instantiate generic type parameters
-when matching against constructor patterns. Added proper type
-substitution during pattern compilation.
-
-Fixes #42
-```
-
-Format:
-- First line: Brief summary (50 chars or less)
-- Blank line
-- Body: Detailed explanation if needed
-- Reference issues if applicable
-
-## Testing
-
-### Running Tests
-
-```bash
-./run-tests.sh
-```
-
-### Adding Tests
-
-1. **Unit tests**: Add to appropriate `*_test.zig` file in `src/`
-2. **Integration tests**: Add `.ki` files to `examples/` with expected output
-3. **Regression tests**: When fixing bugs, add a test case
-
-### Test File Naming
-
-- `test_feature_name.ki` — Feature tests
-- `bug123_description.ki` — Regression tests
-
 ## Documentation
 
 ### Updating Docs
+
+When making changes:
 
 - **tutorial.md**: Step-by-step learning guide
 - **reference.md**: Complete language reference
@@ -218,9 +262,10 @@ Format:
 
 ### Documentation Style
 
-- Use clear, simple language
+- Use clear, concise language
 - Include code examples
-- Keep formatting consistent
+- Link to related documentation
+- Keep formatting consistent with existing docs
 - Test all code examples
 
 ## Getting Help
@@ -239,10 +284,16 @@ If you're stuck:
 2. Look at similar code in the codebase
 3. Open an issue with the `question` label
 
-## Recognition
+## Quick Reference
 
-Contributors are valued! Significant contributions will be recognized in release notes.
+| Task | Command |
+|------|---------|
+| Build | `./run-build.sh` |
+| Test | `./run-tests.sh` |
+| Run example | `./zig-out/bin/Kira run examples/hello.ki` |
+| Check types | `./zig-out/bin/Kira check examples/hello.ki` |
+| Start REPL | `./zig-out/bin/Kira` |
 
 ---
 
-Thank you for contributing to Kira!
+Thank you for contributing to Kira! Your efforts help make the language better for everyone.
