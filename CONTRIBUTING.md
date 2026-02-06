@@ -4,6 +4,7 @@ Thank you for your interest in contributing to Kira! This document provides guid
 
 ## Table of Contents
 
+- [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Code Style](#code-style)
@@ -11,7 +12,11 @@ Thank you for your interest in contributing to Kira! This document provides guid
 - [Testing](#testing)
 - [Pull Requests](#pull-requests)
 - [Documentation](#documentation)
-- [Community Guidelines](#community-guidelines)
+- [Getting Help](#getting-help)
+
+## Code of Conduct
+
+Be respectful, inclusive, and constructive. We're all here to build something great together.
 
 ## Getting Started
 
@@ -27,6 +32,14 @@ Thank you for your interest in contributing to Kira! This document provides guid
 git clone https://github.com/PhilipLudington/Kira.git
 cd Kira
 ./run-build.sh
+```
+
+The executable will be at `zig-out/bin/Kira`.
+
+### Running the REPL
+
+```bash
+./zig-out/bin/Kira
 ```
 
 ### Running Tests
@@ -59,7 +72,8 @@ Kira/
 ├── examples/               # Example programs
 ├── editors/                # Editor syntax support
 ├── carbide/                # Zig development standards
-└── build.zig               # Build configuration
+├── build.zig               # Build configuration
+└── DESIGN.md               # Language specification
 ```
 
 ### Coding Standards
@@ -67,6 +81,22 @@ Kira/
 This project uses CarbideZig for Zig development standards. See:
 - `carbide/CARBIDE.md` - Overview of standards
 - `carbide/STANDARDS.md` - Detailed coding guidelines
+
+### Running Examples
+
+```bash
+# Run an example
+./zig-out/bin/Kira run examples/hello.ki
+
+# Type check without running
+./zig-out/bin/Kira check examples/factorial.ki
+
+# Show tokens (debugging)
+./zig-out/bin/Kira --tokens examples/hello.ki
+
+# Show AST (debugging)
+./zig-out/bin/Kira --ast examples/hello.ki
+```
 
 ## Code Style
 
@@ -79,12 +109,15 @@ Follow the conventions in `carbide/STANDARDS.md`:
 - Keep functions focused and single-purpose
 - Document public APIs with doc comments
 - Handle all error cases explicitly
+- Use `comptime` for compile-time computation
 
 ### Kira Code (Examples/Tests)
 
 - Use 4-space indentation
 - One statement per line
 - Explicit types on all bindings
+- Always use explicit `return`
+- Prefer pure functions when possible
 - Meaningful variable and function names
 - Comments for non-obvious logic
 
@@ -105,6 +138,23 @@ fn f(a: Point, b: Point) -> f64 {
 ```
 
 ## Making Changes
+
+### Types of Contributions
+
+We welcome:
+
+- **Bug fixes** — Fix issues in the compiler or runtime
+- **Features** — New language features or stdlib additions
+- **Documentation** — Improve docs, add examples, fix typos
+- **Editor support** — Syntax highlighting for new editors
+- **Tests** — Increase test coverage
+- **Examples** — Add example programs demonstrating features
+
+### Before You Start
+
+1. **Check existing issues** — Your idea may already be discussed
+2. **Open an issue first** — For significant changes, discuss before coding
+3. **One change per PR** — Keep pull requests focused
 
 ### Branch Naming
 
@@ -179,57 +229,36 @@ test "regression: issue #42 - string padding with empty string" {
 ### Before Submitting
 
 1. **Ensure tests pass** - Run `./run-tests.sh`
-2. **Update documentation** - If adding features, update relevant docs
-3. **Add examples** - For new features, add usage examples
-4. **Check for breaking changes** - Note any API changes
+2. **Test your changes** - Try your changes with example programs
+3. **Update documentation** - If adding features, update relevant docs
+4. **Add examples** - For new features, add usage examples
+5. **Check for breaking changes** - Note any API changes
 
-### PR Description Template
+### PR Guidelines
 
-```markdown
-## Summary
-Brief description of what this PR does.
-
-## Changes
-- List of specific changes
-- Another change
-
-## Testing
-How was this tested?
-
-## Documentation
-- [ ] Updated relevant documentation
-- [ ] Added/updated examples
-- [ ] Updated CHANGELOG (if applicable)
-
-## Related Issues
-Fixes #123
-```
+- **Clear title**: Describe what the PR does
+- **Description**: Explain why and how
+- **Small PRs**: Easier to review and merge
+- **Link issues**: Reference related issues with `Fixes #123`
 
 ### Review Process
 
 1. Submit PR against `main` branch
-2. Automated tests will run
-3. Maintainers will review code and provide feedback
-4. Address feedback and update PR
-5. PR will be merged once approved
+2. Wait for review (usually within a few days)
+3. Address feedback with additional commits
+4. Once approved, a maintainer will merge
 
 ## Documentation
 
-### Types of Documentation
-
-1. **Code comments** - Inline explanation of complex logic
-2. **Doc comments** - API documentation for public functions
-3. **Markdown docs** - Guides and references in `docs/`
-4. **Examples** - Working code in `examples/`
-
-### Updating Documentation
+### Updating Docs
 
 When making changes:
 
-- Update `docs/reference.md` for language changes
-- Update `docs/stdlib.md` for standard library changes
-- Update `docs/tutorial.md` if beginner-facing
-- Add examples for new features
+- **tutorial.md**: Step-by-step learning guide
+- **reference.md**: Complete language reference
+- **stdlib.md**: Standard library API
+- **quickref.md**: Cheat sheet
+- **DESIGN.md**: Language specification
 
 ### Documentation Style
 
@@ -237,29 +266,23 @@ When making changes:
 - Include code examples
 - Link to related documentation
 - Keep formatting consistent with existing docs
+- Test all code examples
 
-## Community Guidelines
+## Getting Help
 
-### Code of Conduct
+### Resources
 
-- Be respectful and inclusive
-- Focus on constructive feedback
-- Help newcomers get started
-- Keep discussions focused and on-topic
+- **Documentation**: `docs/` directory and `DESIGN.md`
+- **Examples**: `examples/` directory
+- **Issues**: [GitHub Issues](https://github.com/PhilipLudington/Kira/issues)
 
-### Getting Help
+### Questions
 
-- Open an issue for bugs or feature requests
-- Check existing issues before opening new ones
-- Provide reproduction steps for bugs
-- Be patient - maintainers are volunteers
+If you're stuck:
 
-### Recognition
-
-Contributors are recognized in:
-- Git history (commits)
-- PR acknowledgments
-- Release notes (for significant contributions)
+1. Check the documentation
+2. Look at similar code in the codebase
+3. Open an issue with the `question` label
 
 ## Quick Reference
 

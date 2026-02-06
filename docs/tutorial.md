@@ -28,22 +28,22 @@ Kira is a functional programming language with explicit types, explicit effects,
 Build Kira from source:
 
 ```bash
-git clone https://github.com/your-repo/kira
-cd kira
-zig build
+git clone https://github.com/PhilipLudington/Kira.git
+cd Kira
+./build.sh
 ```
 
 ### Running Programs
 
 ```bash
 # Run a Kira file
-zig build run -- run examples/hello.ki
+kira run examples/hello.ki
 
 # Type check without running
-zig build run -- check examples/hello.ki
+kira check examples/hello.ki
 
 # Start the REPL
-zig build run
+kira
 ```
 
 ### REPL Commands
@@ -72,7 +72,7 @@ effect fn main() -> void {
 Run it:
 
 ```bash
-zig build run -- run hello.ki
+kira run hello.ki
 ```
 
 Output:
