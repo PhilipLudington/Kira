@@ -38,6 +38,7 @@ What actually happened. Include any error messages.
 ## Environment
 
 - **OS:** (e.g., macOS 14.0, Ubuntu 22.04, Windows 11)
+- **Kira version:** (commit hash or build date)
 - **Zig version:** (run `zig version`)
 
 ## Additional context

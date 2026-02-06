@@ -37,13 +37,13 @@ cd Kira
 
 ```bash
 # Run a Kira file
-zig build run -- run examples/hello.ki
+kira run examples/hello.ki
 
 # Type check without running
-zig build run -- check examples/hello.ki
+kira check examples/hello.ki
 
 # Start the REPL
-zig build run
+kira
 ```
 
 ### REPL Commands
@@ -72,7 +72,7 @@ effect fn main() -> void {
 Run it:
 
 ```bash
-zig build run -- run hello.ki
+kira run hello.ki
 ```
 
 Output:
