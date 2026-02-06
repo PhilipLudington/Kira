@@ -113,7 +113,7 @@ fn stringLength(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
     return Value{ .integer = count };
 }
 
-/// Split string by delimiter: split(str, delim) -> array of strings
+/// Split string by delimiter: split(str, delim) -> List[string]
 fn stringSplit(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 2) return error.ArityMismatch;
 
@@ -127,15 +127,28 @@ fn stringSplit(ctx: BuiltinContext, args: []const Value) InterpreterError!Value 
         else => return error.TypeMismatch,
     };
 
+    // Collect parts into a temporary array
     var parts = std.ArrayListUnmanaged(Value){};
-    errdefer parts.deinit(ctx.allocator);
+    defer parts.deinit(ctx.allocator);
 
     var iter = std.mem.splitSequence(u8, str, delim);
     while (iter.next()) |part| {
         parts.append(ctx.allocator, Value{ .string = part }) catch return error.OutOfMemory;
     }
 
-    return Value{ .array = parts.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory };
+    // Build cons-cell list (matching List[T] representation)
+    var result: Value = Value{ .nil = {} };
+    var i = parts.items.len;
+    while (i > 0) {
+        i -= 1;
+        const head = ctx.allocator.create(Value) catch return error.OutOfMemory;
+        const tail = ctx.allocator.create(Value) catch return error.OutOfMemory;
+        head.* = parts.items[i];
+        tail.* = result;
+        result = Value{ .cons = .{ .head = head, .tail = tail } };
+    }
+
+    return result;
 }
 
 /// Trim whitespace: trim(str) -> str
