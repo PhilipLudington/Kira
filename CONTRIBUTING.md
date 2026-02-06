@@ -161,7 +161,7 @@ Closes #42
 
 ### Writing Tests
 
-1. **Unit tests** - Add to the appropriate `*_test.zig` file in `src/`
+1. **Unit tests** - Add test blocks to the relevant source file, or to dedicated test files like `src/interpreter/tests.zig`
 2. **Integration tests** - Add example programs to `examples/`
 3. **Regression tests** - Reference the bug being fixed
 
