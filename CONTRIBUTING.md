@@ -31,7 +31,7 @@ Be respectful, inclusive, and constructive. We're all here to build something gr
 ```bash
 git clone https://github.com/PhilipLudington/Kira
 cd Kira
-./build.sh
+./run-build.sh
 ```
 
 The executable will be at `zig-out/bin/Kira`.
@@ -68,11 +68,11 @@ Kira/
 
 ### Building and Testing
 
-Always use the wrapper scripts to preserve GitStat integration:
+Always use the wrapper scripts to preserve AirTower integration:
 
 ```bash
 # Build the compiler
-./build.sh
+./run-build.sh
 
 # Run all tests
 ./run-tests.sh
@@ -245,4 +245,4 @@ Contributors are valued! Significant contributions will be recognized in release
 
 ---
 
-Thank you for contributing to Kira! 🎉
+Thank you for contributing to Kira!
