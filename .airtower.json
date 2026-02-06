@@ -10,7 +10,7 @@
     {
       "name": "Debug Build",
       "resultsFile": ".build-results.json",
-      "command": "./build.sh"
+      "command": "./run-build.sh"
     }
   ]
 }
