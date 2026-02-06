@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat test runner wrapper for Kira
+# AirTower test runner wrapper for Kira
 # Runs Zig unit tests and writes results to .test-results.json
 
 RESULTS_FILE=".test-results.json"

@@ -26,7 +26,7 @@ Thank you for your interest in contributing to Kira! This document provides guid
 ```bash
 git clone https://github.com/PhilipLudington/Kira.git
 cd Kira
-./build.sh
+./run-build.sh
 ```
 
 ### Running Tests
@@ -37,7 +37,7 @@ Always use the wrapper script to run tests:
 ./run-tests.sh
 ```
 
-> **Important:** Do not run `zig build test` directly. The wrapper script ensures proper GitStat integration and result tracking.
+> **Important:** Do not run `zig build test` directly. The wrapper script ensures proper AirTower integration and result tracking.
 
 ## Development Setup
 
@@ -155,9 +155,6 @@ Closes #42
 # Run all tests
 ./run-tests.sh
 
-# Run tests with verbose output
-./run-tests.sh --verbose
-
 # Run a specific example
 ./zig-out/bin/Kira run examples/hello.ki
 ```
@@ -268,7 +265,7 @@ Contributors are recognized in:
 
 | Task | Command |
 |------|---------|
-| Build | `./build.sh` |
+| Build | `./run-build.sh` |
 | Test | `./run-tests.sh` |
 | Run example | `./zig-out/bin/Kira run examples/hello.ki` |
 | Check types | `./zig-out/bin/Kira check examples/hello.ki` |
