@@ -20,7 +20,7 @@ Kira is a functional programming language with **explicit types**, **explicit ef
 ```bash
 git clone https://github.com/PhilipLudington/Kira.git
 cd Kira
-zig build
+./build.sh
 ```
 
 ### Hello World

@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Kira! This document provides guid
 
 ### Prerequisites
 
-- **Zig 0.14+** - The compiler is written in Zig
+- **Zig 0.15+** - The compiler is written in Zig
 - **Git** - For version control
 
 ### Building from Source
@@ -14,7 +14,7 @@ Thank you for your interest in contributing to Kira! This document provides guid
 ```bash
 git clone https://github.com/PhilipLudington/Kira.git
 cd Kira
-zig build
+./build.sh
 ```
 
 The executable will be at `zig-out/bin/Kira`.

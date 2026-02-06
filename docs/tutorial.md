@@ -30,7 +30,7 @@ Build Kira from source:
 ```bash
 git clone https://github.com/PhilipLudington/Kira.git
 cd Kira
-zig build
+./build.sh
 ```
 
 ### Running Programs

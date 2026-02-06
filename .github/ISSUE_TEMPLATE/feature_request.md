@@ -30,7 +30,7 @@ What alternative solutions or features have you considered?
 
 ## Design Philosophy Alignment
 
-How does this fit with Kira's principles? (See DESIGN.md)
+Which of Kira's principles does this feature relate to? (See DESIGN.md)
 
 - [ ] Explicit types (no type inference)
 - [ ] Explicit effects (tracked in signatures)
