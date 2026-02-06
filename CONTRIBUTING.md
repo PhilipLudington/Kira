@@ -17,7 +17,7 @@ cd Kira
 ./build.sh
 ```
 
-The executable will be at `zig-out/bin/Kira`.
+After building, the executable is installed to `zig-out/bin/Kira`.
 
 ### Running Tests
 
@@ -124,12 +124,15 @@ Kira/
 | Directory | Purpose |
 |-----------|---------|
 | `src/main.zig` | Entry point, CLI handling |
+| `src/lexer/` | Lexical analysis, tokenization |
 | `src/ast/` | Abstract syntax tree |
 | `src/parser/` | Syntax parsing |
 | `src/typechecker/` | Type checking |
 | `src/symbols/` | Symbol resolution |
 | `src/interpreter/` | Tree-walking interpreter |
 | `src/modules/` | Module system |
+| `src/stdlib/` | Standard library |
+| `src/config/` | Project configuration |
 
 ## Documentation Contributions
 
