@@ -4,16 +4,16 @@ CarbideZig is used in this project for Zig development standards. See `carbide/C
 
 ## Running Tests
 
-Always use the GitStat wrapper script to run tests:
+Always use the AirTower wrapper script to run tests:
 ```bash
 ./run-tests.sh
 ```
-Do NOT run `zig build test` directly - use the wrapper script to preserve GitStat integration and result tracking.
+Do NOT run `zig build test` directly - use the wrapper script to preserve AirTower integration and result tracking.
 
 ## Building
 
-Always use the GitStat wrapper script to build:
+Always use the AirTower wrapper script to build:
 ```bash
-./build.sh
+./run-build.sh
 ```
-Do NOT run `zig build` directly - use the wrapper script to preserve GitStat integration.
+Do NOT run `zig build` directly - use the wrapper script to preserve AirTower integration.

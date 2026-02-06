@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 const ast = @import("../ast/root.zig");
 const symbols = @import("../symbols/root.zig");
@@ -36,6 +37,9 @@ pub const TypeCheckError = error{
     TypeError,
     OutOfMemory,
 };
+
+/// Placeholder symbol ID; `SymbolTable.define()` assigns the real ID.
+const unassigned_symbol_id: SymbolId = 0;
 
 /// The type checker
 pub const TypeChecker = struct {
@@ -89,6 +93,28 @@ pub const TypeChecker = struct {
     /// Get allocator for temporary type allocations
     fn typeAllocator(self: *TypeChecker) Allocator {
         return self.type_arena.allocator();
+    }
+
+    /// Leave the current scope, converting InvalidScope to TypeError.
+    /// InvalidScope indicates scope management corruption and should not
+    /// occur when enter/leave calls are balanced.
+    fn scopeLeave(self: *TypeChecker) TypeCheckError!void {
+        self.symbol_table.leaveScope() catch {
+            if (builtin.mode == .Debug) {
+                @panic("TypeChecker scope management error: leaveScope failed (unbalanced enter/leave)");
+            }
+            return error.TypeError;
+        };
+    }
+
+    /// Leave scope during error cleanup (errdefer). Panics in debug on
+    /// failure since a failed cleanup indicates scope management corruption.
+    fn scopeCleanup(self: *TypeChecker) void {
+        self.symbol_table.leaveScope() catch {
+            if (builtin.mode == .Debug) {
+                @panic("TypeChecker scope cleanup failed: unbalanced scope enter/leave");
+            }
+        };
     }
 
     // ========== Main Entry Point ==========
@@ -943,8 +969,12 @@ pub const TypeChecker = struct {
         defer patterns.deinit(self.allocator);
 
         for (me.arms) |arm| {
-            // Check pattern against subject type
+            _ = try self.symbol_table.enterScope(.block);
+            errdefer self.scopeCleanup();
+
+            // Check pattern against subject type and add bindings to scope
             try self.checkPattern(arm.pattern, subject_type);
+            try self.addPatternBindings(arm.pattern, null);
 
             // Collect pattern for exhaustiveness checking
             try patterns.append(self.allocator, arm.pattern);
@@ -985,6 +1015,8 @@ pub const TypeChecker = struct {
             } else {
                 result_type = arm_type;
             }
+
+            try self.scopeLeave();
         }
 
         // Check exhaustiveness
@@ -1006,24 +1038,36 @@ pub const TypeChecker = struct {
         }
 
         // Check both branches and get their types
-        const then_type = switch (ie.then_branch) {
-            .expression => |e| try self.checkExpression(e),
-            .block => |block| blk: {
-                for (block) |*stmt| {
-                    try self.checkStatement(stmt);
-                }
-                break :blk ResolvedType.voidType(span);
-            },
+        const then_type = then_blk: {
+            _ = try self.symbol_table.enterScope(.block);
+            errdefer self.scopeCleanup();
+            const t = switch (ie.then_branch) {
+                .expression => |e| try self.checkExpression(e),
+                .block => |block| blk: {
+                    for (block) |*stmt| {
+                        try self.checkStatement(stmt);
+                    }
+                    break :blk ResolvedType.voidType(span);
+                },
+            };
+            try self.scopeLeave();
+            break :then_blk t;
         };
 
-        const else_type = switch (ie.else_branch) {
-            .expression => |e| try self.checkExpression(e),
-            .block => |block| blk: {
-                for (block) |*stmt| {
-                    try self.checkStatement(stmt);
-                }
-                break :blk ResolvedType.voidType(span);
-            },
+        const else_type = else_blk: {
+            _ = try self.symbol_table.enterScope(.block);
+            errdefer self.scopeCleanup();
+            const t = switch (ie.else_branch) {
+                .expression => |e| try self.checkExpression(e),
+                .block => |block| blk: {
+                    for (block) |*stmt| {
+                        try self.checkStatement(stmt);
+                    }
+                    break :blk ResolvedType.voidType(span);
+                },
+            };
+            try self.scopeLeave();
+            break :else_blk t;
         };
 
         // Both branches must have the same type
@@ -1264,6 +1308,10 @@ pub const TypeChecker = struct {
 
     /// Type check a statement
     pub fn checkStatement(self: *TypeChecker, stmt: *const Statement) TypeCheckError!void {
+        // Scope balance invariant: no statement should permanently change the scope depth
+        const entry_scope_id = self.symbol_table.current_scope_id;
+        defer std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
+
         switch (stmt.kind) {
             .let_binding => |lb| {
                 const init_type = try self.checkExpression(lb.initializer);
@@ -1280,6 +1328,9 @@ pub const TypeChecker = struct {
                 }
 
                 try self.checkPattern(lb.pattern, init_type);
+
+                // Add all bindings from the pattern to scope
+                try self.addPatternBindings(lb.pattern, lb.explicit_type);
             },
 
             .var_binding => |vb| {
@@ -1305,6 +1356,13 @@ pub const TypeChecker = struct {
                         ));
                     }
                 }
+
+                // Add binding to scope so subsequent statements can find it
+                const var_sym = Symbol.variable(unassigned_symbol_id, vb.name, vb.explicit_type, true, false, stmt.span);
+                _ = self.symbol_table.define(var_sym) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    // DuplicateDefinition: resolver already reported this
+                };
             },
 
             .assignment => |assign| {
@@ -1356,16 +1414,24 @@ pub const TypeChecker = struct {
                     ));
                 }
 
-                for (if_stmt.then_branch) |*s| {
-                    try self.checkStatement(s);
+                {
+                    _ = try self.symbol_table.enterScope(.block);
+                    errdefer self.scopeCleanup();
+                    for (if_stmt.then_branch) |*s| {
+                        try self.checkStatement(s);
+                    }
+                    try self.scopeLeave();
                 }
 
                 if (if_stmt.else_branch) |else_branch| {
                     switch (else_branch) {
                         .block => |block| {
+                            _ = try self.symbol_table.enterScope(.block);
+                            errdefer self.scopeCleanup();
                             for (block) |*s| {
                                 try self.checkStatement(s);
                             }
+                            try self.scopeLeave();
                         },
                         .else_if => |else_if| {
                             try self.checkStatement(else_if);
@@ -1385,14 +1451,20 @@ pub const TypeChecker = struct {
                     ));
                 }
 
-                // Get element type
+                _ = try self.symbol_table.enterScope(.block);
+                errdefer self.scopeCleanup();
+
+                // Get element type and check pattern
                 if (unify.getIterableElement(iterable_type)) |elem_type| {
                     try self.checkPattern(for_loop.pattern, elem_type);
                 }
+                // Always add bindings so loop body can reference the variable
+                try self.addPatternBindings(for_loop.pattern, null);
 
                 for (for_loop.body) |*s| {
                     try self.checkStatement(s);
                 }
+                try self.scopeLeave();
             },
 
             .while_loop => |while_loop| {
@@ -1405,15 +1477,21 @@ pub const TypeChecker = struct {
                     ));
                 }
 
+                _ = try self.symbol_table.enterScope(.block);
+                errdefer self.scopeCleanup();
                 for (while_loop.body) |*s| {
                     try self.checkStatement(s);
                 }
+                try self.scopeLeave();
             },
 
             .loop_statement => |loop_stmt| {
+                _ = try self.symbol_table.enterScope(.block);
+                errdefer self.scopeCleanup();
                 for (loop_stmt.body) |*s| {
                     try self.checkStatement(s);
                 }
+                try self.scopeLeave();
             },
 
             .match_statement => |match_stmt| {
@@ -1424,7 +1502,12 @@ pub const TypeChecker = struct {
                 defer patterns.deinit(self.allocator);
 
                 for (match_stmt.arms) |arm| {
+                    _ = try self.symbol_table.enterScope(.block);
+                    errdefer self.scopeCleanup();
+
+                    // Check pattern against subject type and add bindings to scope
                     try self.checkPattern(arm.pattern, subject_type);
+                    try self.addPatternBindings(arm.pattern, null);
 
                     // Collect pattern for exhaustiveness checking
                     try patterns.append(self.allocator, arm.pattern);
@@ -1443,6 +1526,7 @@ pub const TypeChecker = struct {
                     for (arm.body) |*s| {
                         try self.checkStatement(s);
                     }
+                    try self.scopeLeave();
                 }
 
                 // Check exhaustiveness
@@ -1486,9 +1570,12 @@ pub const TypeChecker = struct {
             },
 
             .block => |block| {
+                _ = try self.symbol_table.enterScope(.block);
+                errdefer self.scopeCleanup();
                 for (block) |*s| {
                     try self.checkStatement(s);
                 }
+                try self.scopeLeave();
             },
         }
     }
@@ -1641,6 +1728,69 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// Walk a pattern and define all bound identifiers in the current scope.
+    /// This mirrors the resolver's resolvePattern for symbol definition.
+    /// When explicit_type is null, an inferred placeholder type is used.
+    fn addPatternBindings(self: *TypeChecker, pattern: *const Pattern, explicit_type: ?*Type) TypeCheckError!void {
+        switch (pattern.kind) {
+            .identifier => |ident| {
+                // Use explicit type or create inferred placeholder (mirrors resolver)
+                var inferred = Type.init(.{ .inferred = {} }, pattern.span);
+                const binding_type = explicit_type orelse &inferred;
+                const sym = Symbol.variable(unassigned_symbol_id, ident.name, binding_type, ident.is_mutable, false, pattern.span);
+                _ = self.symbol_table.define(sym) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    // DuplicateDefinition: resolver already reported this
+                };
+            },
+            .constructor => |ctor| {
+                if (ctor.arguments) |args| {
+                    for (args) |arg| {
+                        switch (arg) {
+                            .positional => |p| try self.addPatternBindings(p, null),
+                            .named => |n| try self.addPatternBindings(n.pattern, null),
+                        }
+                    }
+                }
+            },
+            .record => |rp| {
+                for (rp.fields) |field| {
+                    if (field.pattern) |pat| {
+                        try self.addPatternBindings(pat, null);
+                    } else {
+                        // Shorthand: { x } binds x
+                        var inferred = Type.init(.{ .inferred = {} }, field.span);
+                        const sym = Symbol.variable(unassigned_symbol_id, field.name, &inferred, false, false, field.span);
+                        _ = self.symbol_table.define(sym) catch |err| {
+                            if (err == error.OutOfMemory) return error.OutOfMemory;
+                        };
+                    }
+                }
+            },
+            .tuple => |tup| {
+                for (tup.elements) |elem| {
+                    try self.addPatternBindings(elem, null);
+                }
+            },
+            .or_pattern => |op| {
+                // All alternatives must bind the same names (enforced by resolver).
+                // Process every alternative so all names are defined; duplicates
+                // from subsequent alternatives are silently caught by define().
+                for (op.patterns) |alt| {
+                    try self.addPatternBindings(alt, null);
+                }
+            },
+            .guarded => |g| {
+                try self.addPatternBindings(g.pattern, explicit_type);
+            },
+            .typed => |t| {
+                try self.addPatternBindings(t.pattern, t.expected_type);
+            },
+            // Literals, wildcards, ranges, rest don't bind names
+            else => {},
+        }
+    }
+
     // ========== Declaration Type Checking ==========
 
     /// Type check a declaration
@@ -1684,9 +1834,14 @@ pub const TypeChecker = struct {
                 self.in_effect_function = true;
                 defer self.in_effect_function = saved_in_effect;
 
+                const entry_scope_id = self.symbol_table.current_scope_id;
+                _ = try self.symbol_table.enterScope(.function);
+                errdefer self.scopeCleanup();
                 for (t.body) |*stmt| {
                     _ = try self.checkStatement(stmt);
                 }
+                try self.scopeLeave();
+                std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
             },
         }
     }
@@ -1728,9 +1883,27 @@ pub const TypeChecker = struct {
 
         // Check body if present
         if (func.body) |body| {
+            const entry_scope_id = self.symbol_table.current_scope_id;
+
+            // Enter function scope so parameters and locals are visible
+            _ = try self.symbol_table.enterScope(.function);
+            errdefer self.scopeCleanup();
+
+            // Add parameters to scope
+            for (func.parameters) |param| {
+                const param_sym = Symbol.variable(unassigned_symbol_id, param.name, param.param_type, false, false, param.span);
+                _ = self.symbol_table.define(param_sym) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    // DuplicateDefinition: resolver already reported this
+                };
+            }
+
             for (body) |*stmt| {
                 try self.checkStatement(stmt);
             }
+
+            try self.scopeLeave();
+            std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
         }
     }
 
