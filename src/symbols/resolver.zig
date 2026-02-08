@@ -746,10 +746,8 @@ pub const Resolver = struct {
                 try self.resolvePattern(let_bind.pattern, let_bind.explicit_type, false);
             },
             .var_binding => |var_bind| {
-                // Check if var is allowed (effect function)
-                if (!self.table.isInEffectFunction()) {
-                    try self.addError("'var' bindings are only allowed in effect functions", .{}, stmt.span);
-                }
+                // Local mutation via var is allowed in pure functions —
+                // only I/O and calling effect functions are true side effects.
 
                 if (var_bind.initializer) |initializer| {
                     try self.resolveExpression(initializer);

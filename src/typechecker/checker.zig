@@ -402,6 +402,9 @@ pub const TypeChecker = struct {
             .identifier => |ident| {
                 if (self.symbol_table.lookup(ident.name)) |sym| {
                     return try self.getSymbolType(sym, expr.span);
+                } else if (std.mem.eql(u8, ident.name, "std")) {
+                    // Skip error for 'std' - it's a built-in namespace injected at runtime
+                    return ResolvedType.errorType(expr.span);
                 } else {
                     try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, ident.name, expr.span));
                     return ResolvedType.errorType(expr.span);
@@ -1334,13 +1337,8 @@ pub const TypeChecker = struct {
             },
 
             .var_binding => |vb| {
-                if (!self.in_effect_function) {
-                    try self.addDiagnostic(try errors_mod.simpleError(
-                        self.allocator,
-                        "'var' bindings are only allowed in effect functions",
-                        stmt.span,
-                    ));
-                }
+                // Local mutation via var is allowed in pure functions —
+                // only I/O and calling effect functions are true side effects.
 
                 // explicit_type is required in Kira
                 const declared_type = try self.resolveAstType(vb.explicit_type);
