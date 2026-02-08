@@ -64,7 +64,37 @@ pub const SymbolTable = struct {
         // Create global scope
         table.scopes.append(allocator, Scope.init(0, .global, null)) catch unreachable;
 
+        // Register built-in types (List[T], HashMap)
+        table.registerBuiltinTypes();
+
         return table;
+    }
+
+    /// Register built-in types in the global scope
+    fn registerBuiltinTypes(self: *SymbolTable) void {
+        const builtin_span = Span{
+            .start = .{ .line = 0, .column = 0, .offset = 0 },
+            .end = .{ .line = 0, .column = 0, .offset = 0 },
+        };
+
+        // List[T] — generic sum type with Cons(T, List[T]) and Nil variants
+        const list_gp = self.allocator.alloc(Symbol.GenericParamInfo, 1) catch unreachable;
+        list_gp[0] = .{ .name = "T", .constraints = null };
+
+        const list_variants = self.allocator.alloc(Symbol.VariantInfo, 2) catch unreachable;
+        list_variants[0] = .{ .name = "Cons", .fields = null, .span = builtin_span };
+        list_variants[1] = .{ .name = "Nil", .fields = null, .span = builtin_span };
+
+        _ = self.define(Symbol.typeDef(0, "List", .{
+            .generic_params = list_gp,
+            .definition = .{ .sum_type = .{ .variants = list_variants } },
+        }, true, builtin_span)) catch unreachable;
+
+        // HashMap — non-generic type for key-value storage
+        _ = self.define(Symbol.typeDef(0, "HashMap", .{
+            .generic_params = null,
+            .definition = .{ .product_type = .{ .fields = self.allocator.alloc(Symbol.RecordFieldInfo, 0) catch unreachable } },
+        }, true, builtin_span)) catch unreachable;
     }
 
     /// Free all resources
@@ -466,7 +496,8 @@ test "symbol table basic operations" {
     const sym = Symbol.variable(0, "x", &int_type, false, false, span);
     const id = try table.define(sym);
 
-    try std.testing.expectEqual(@as(SymbolId, 0), id);
+    // IDs 0 and 1 are taken by built-in types (List, HashMap)
+    try std.testing.expectEqual(@as(SymbolId, 2), id);
 
     // Look it up
     const found = table.lookup("x");

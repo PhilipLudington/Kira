@@ -1163,6 +1163,29 @@ pub const TypeChecker = struct {
                     return ResolvedType.errorType(span);
                 }
             }
+        } else if (std.mem.eql(u8, vc.variant_name, "Cons")) {
+            if (vc.arguments) |args| {
+                if (args.len == 2) {
+                    const elem_type = try self.checkExpression(args[0]);
+                    _ = try self.checkExpression(args[1]);
+                    if (self.symbol_table.lookup("List")) |list_sym| {
+                        const type_alloc = self.typeAllocator();
+                        const type_args = try type_alloc.alloc(ResolvedType, 1);
+                        type_args[0] = elem_type;
+                        return .{
+                            .kind = .{ .instantiated = .{
+                                .base_symbol_id = list_sym.id,
+                                .base_name = "List",
+                                .type_arguments = type_args,
+                            } },
+                            .span = span,
+                        };
+                    }
+                }
+            }
+        } else if (std.mem.eql(u8, vc.variant_name, "Nil")) {
+            // Nil - empty list, type parameter unknown without context
+            return ResolvedType.errorType(span);
         }
 
         try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, vc.variant_name, span));
