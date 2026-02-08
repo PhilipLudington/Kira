@@ -879,8 +879,8 @@ pub const Resolver = struct {
     fn resolveExpression(self: *Resolver, expr: *const Expression) ResolveError!void {
         switch (expr.kind) {
             .identifier => |ident| {
-                // Skip error for 'std' - it's a built-in namespace injected at runtime
-                if (self.table.lookup(ident.name) == null and !std.mem.eql(u8, ident.name, "std")) {
+                // Skip error for 'std' and built-in functions - they are injected at runtime
+                if (self.table.lookup(ident.name) == null and !isBuiltinName(ident.name)) {
                     try self.addError("Undefined identifier '{s}'", .{ident.name}, expr.span);
                 }
             },
@@ -1182,6 +1182,40 @@ pub const Resolver = struct {
         return self.diagnostics.items;
     }
 };
+
+/// Check if an identifier is a built-in name injected at runtime.
+/// These are registered by the interpreter (builtins.zig) and the stdlib (root.zig)
+/// but are not present in the symbol table during static analysis.
+fn isBuiltinName(name: []const u8) bool {
+    const builtin_names = [_][]const u8{
+        // Runtime namespace
+        "std",
+        // Print functions
+        "print",    "println",
+        // Type checking
+        "type_of",
+        // Conversion functions
+        "to_string", "to_int", "to_float",
+        // Math functions
+        "abs",      "min",       "max",
+        // Collection functions
+        "len",      "push",      "pop",
+        "head",     "tail",      "empty",    "reverse",
+        // String functions
+        "split",    "join",      "trim",
+        "contains", "starts_with", "ends_with",
+        // Option/Result constructors
+        "Some",     "None",      "Ok",       "Err",
+        // List constructors
+        "Nil",      "Cons",
+        // Assertions
+        "assert",   "assert_eq",
+    };
+    for (&builtin_names) |builtin| {
+        if (std.mem.eql(u8, name, builtin)) return true;
+    }
+    return false;
+}
 
 test "resolver basic function" {
     const allocator = std.testing.allocator;

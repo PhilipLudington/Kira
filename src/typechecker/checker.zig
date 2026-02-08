@@ -402,6 +402,10 @@ pub const TypeChecker = struct {
             .identifier => |ident| {
                 if (self.symbol_table.lookup(ident.name)) |sym| {
                     return try self.getSymbolType(sym, expr.span);
+                } else if (isBuiltinName(ident.name)) {
+                    // Built-in injected at runtime — return error-recovery type
+                    // that propagates silently through field access and function calls
+                    return ResolvedType.errorType(expr.span);
                 } else {
                     try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, ident.name, expr.span));
                     return ResolvedType.errorType(expr.span);
@@ -2149,6 +2153,40 @@ pub const TypeChecker = struct {
         try self.diagnostics.append(self.allocator, diagnostic);
     }
 };
+
+/// Check if an identifier is a built-in name injected at runtime.
+/// These are registered by the interpreter (builtins.zig) and the stdlib (root.zig)
+/// but are not present in the symbol table during static analysis.
+fn isBuiltinName(name: []const u8) bool {
+    const builtin_names = [_][]const u8{
+        // Runtime namespace
+        "std",
+        // Print functions
+        "print",    "println",
+        // Type checking
+        "type_of",
+        // Conversion functions
+        "to_string", "to_int", "to_float",
+        // Math functions
+        "abs",      "min",       "max",
+        // Collection functions
+        "len",      "push",      "pop",
+        "head",     "tail",      "empty",    "reverse",
+        // String functions
+        "split",    "join",      "trim",
+        "contains", "starts_with", "ends_with",
+        // Option/Result constructors
+        "Some",     "None",      "Ok",       "Err",
+        // List constructors
+        "Nil",      "Cons",
+        // Assertions
+        "assert",   "assert_eq",
+    };
+    for (&builtin_names) |b| {
+        if (std.mem.eql(u8, name, b)) return true;
+    }
+    return false;
+}
 
 test "type checker basic initialization" {
     const allocator = std.testing.allocator;

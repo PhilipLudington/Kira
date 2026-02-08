@@ -44,11 +44,11 @@ Error: error.TypeCheckError
 
 ---
 
-## [ ] Bug 3: Built-in conversion functions removed without migration path
+## [x] Bug 3: Built-in conversion functions not recognized by static analysis
 
-**Status:** Open (unblocked by Bug 1 fix)
+**Status:** Fixed
 
-**Description:** The bare built-in functions `to_string()`, `to_float()`, and `to_i64()` are no longer recognized as identifiers. They were moved to namespaced modules (`std.int.to_string`, `std.float.from_int`, `std.math.trunc_to_i64`).
+**Description:** The bare built-in functions `to_string()`, `to_float()`, and `to_int()` are registered at runtime by the interpreter (`src/interpreter/builtins.zig`) but were not recognized during static analysis. The resolver only had a special case for `"std"` and rejected all other runtime-injected identifiers.
 
 **Steps to reproduce:**
 1. Create a file containing: `fn foo(n: i64) -> string { return to_string(n) }`
@@ -58,4 +58,10 @@ Error: error.TypeCheckError
 
 **Actual:** `error: Undefined identifier 'to_string'`
 
-**Impact on this project:** Used extensively in `eval.ki`, `main.ki`, `lexer.ki`, `parser.ki`, and `types.ki` for converting numbers to strings, integers to floats, and i32 to i64. Now that Bug 1 is fixed, these can be migrated to their `std.*` replacements (`std.int.to_string`, `std.float.from_int`).
+**Root cause:** The resolver (`src/symbols/resolver.zig:883`) only special-cased `"std"` when checking for undefined identifiers. All other built-in functions (`to_string`, `to_int`, `to_float`, `print`, `println`, `type_of`, `abs`, `min`, `max`, `len`, etc.) are registered in the interpreter's environment at runtime but were unknown to the resolver and type checker during static analysis.
+
+**Fix:** Added an `isBuiltinName()` function to both the resolver and type checker that recognizes all runtime-injected identifiers (matching the full list from `src/interpreter/builtins.zig`). The resolver skips the "Undefined identifier" error for these names, and the type checker returns an error-recovery type without emitting a diagnostic — the same pattern used for `"std"`.
+
+**Files modified:**
+- `src/symbols/resolver.zig` — Added `isBuiltinName()` function and updated identifier check to skip built-in names
+- `src/typechecker/checker.zig` — Added `isBuiltinName()` function and `else if` branch to return error-recovery type for built-in names (this also completes the Bug 1 type checker fix for `"std"`, which was documented but not implemented)
