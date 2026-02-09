@@ -64,7 +64,7 @@ pub const SymbolTable = struct {
         // Create global scope
         table.scopes.append(allocator, Scope.init(0, .global, null)) catch unreachable;
 
-        // Register built-in types (List[T], HashMap)
+        // Register built-in types (List[T], HashMap, StringBuilder)
         table.registerBuiltinTypes();
 
         return table;
@@ -92,6 +92,12 @@ pub const SymbolTable = struct {
 
         // HashMap — non-generic type for key-value storage
         _ = self.define(Symbol.typeDef(0, "HashMap", .{
+            .generic_params = null,
+            .definition = .{ .product_type = .{ .fields = self.allocator.alloc(Symbol.RecordFieldInfo, 0) catch unreachable } },
+        }, true, builtin_span)) catch unreachable;
+
+        // StringBuilder — non-generic type for string building
+        _ = self.define(Symbol.typeDef(0, "StringBuilder", .{
             .generic_params = null,
             .definition = .{ .product_type = .{ .fields = self.allocator.alloc(Symbol.RecordFieldInfo, 0) catch unreachable } },
         }, true, builtin_span)) catch unreachable;
@@ -496,8 +502,8 @@ test "symbol table basic operations" {
     const sym = Symbol.variable(0, "x", &int_type, false, false, span);
     const id = try table.define(sym);
 
-    // IDs 0 and 1 are taken by built-in types (List, HashMap)
-    try std.testing.expectEqual(@as(SymbolId, 2), id);
+    // IDs 0, 1, and 2 are taken by built-in types (List, HashMap, StringBuilder)
+    try std.testing.expectEqual(@as(SymbolId, 3), id);
 
     // Look it up
     const found = table.lookup("x");

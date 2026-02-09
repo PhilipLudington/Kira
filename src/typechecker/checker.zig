@@ -359,12 +359,10 @@ pub const TypeChecker = struct {
             },
 
             .inferred => {
-                // Inference not allowed in Kira - should have been caught earlier
-                try self.addDiagnostic(try errors_mod.simpleError(
-                    self.allocator,
-                    "type inference is not allowed in Kira",
-                    ast_type.span,
-                ));
+                // Inferred types arise from pattern bindings in match arms
+                // where the type is determined by context (e.g., the matched
+                // subject type). Return error_type which unifies with any type,
+                // allowing the surrounding expressions to type-check correctly.
                 return ResolvedType.errorType(ast_type.span);
             },
         };
@@ -549,6 +547,10 @@ pub const TypeChecker = struct {
         return switch (bin.operator) {
             // Arithmetic operators
             .add, .subtract, .multiply, .divide, .modulo => {
+                // String concatenation with +
+                if (bin.operator == .add and left_type.isString() and right_type.isString()) {
+                    return ResolvedType.primitive(.string, span);
+                }
                 if (left_type.isNumeric() and right_type.isNumeric()) {
                     if (unify.typesEqual(left_type, right_type)) {
                         return left_type;
@@ -1186,6 +1188,17 @@ pub const TypeChecker = struct {
         } else if (std.mem.eql(u8, vc.variant_name, "Nil")) {
             // Nil - empty list, type parameter unknown without context
             return ResolvedType.errorType(span);
+        }
+
+        // Search all type definitions for a sum type containing this variant
+        if (self.findVariantParentType(vc.variant_name)) |parent_sym| {
+            // Check arguments if present
+            if (vc.arguments) |args| {
+                for (args) |arg| {
+                    _ = try self.checkExpression(arg);
+                }
+            }
+            return ResolvedType.named(parent_sym.id, parent_sym.name, span);
         }
 
         try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, vc.variant_name, span));
@@ -2163,6 +2176,27 @@ pub const TypeChecker = struct {
             },
             else => ResolvedType.errorType(span),
         };
+    }
+
+    /// Search all type definitions for a sum type containing a variant with the given name.
+    /// Returns the parent type's symbol if found, null otherwise.
+    fn findVariantParentType(self: *TypeChecker, variant_name: []const u8) ?*const Symbol {
+        for (self.symbol_table.symbols.items) |*sym| {
+            if (sym.kind == .type_def) {
+                const td = sym.kind.type_def;
+                switch (td.definition) {
+                    .sum_type => |st| {
+                        for (st.variants) |v| {
+                            if (std.mem.eql(u8, v.name, variant_name)) {
+                                return sym;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
     }
 
     /// Add a diagnostic

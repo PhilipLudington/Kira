@@ -1,0 +1,57 @@
+// Bug 4 test: List[T], HashMap, StringBuilder, sum type constructors,
+// match destructuring, string concatenation, boolean conditions
+
+// Test 1: Sum type definition and constructor usage
+type Shape =
+    | Circle(f64)
+    | Rectangle(f64, f64)
+    | Point
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Circle(r) => { return 3.14159 * r * r }
+        Rectangle(w, h) => { return w * h }
+        Point => { return 0.0 }
+    }
+}
+
+// Test 2: List[T] in type annotations
+fn list_len(lst: List[i32]) -> i32 {
+    return std.list.length(lst)
+}
+
+// Test 3: String concatenation
+fn greet(name: string) -> string {
+    return "Hello, " + name + "!"
+}
+
+// Test 4: Boolean conditions
+fn check_positive(n: i32) -> string {
+    let is_pos: bool = n > 0
+    if is_pos {
+        return "positive"
+    }
+    return "non-positive"
+}
+
+// Test 5: StringBuilder
+fn build_msg() -> string {
+    let sb: StringBuilder = std.builder.new()
+    let sb2: StringBuilder = std.builder.append(sb, "hello")
+    return std.builder.build(sb2)
+}
+
+effect fn main() -> void {
+    let c: Shape = Circle(5.0)
+    let a: f64 = area(c)
+    std.io.println("area test done")
+
+    let lst: List[i32] = Cons(1, Cons(2, Nil))
+    std.io.println("list test done")
+
+    let msg: string = greet("world")
+    std.io.println(msg)
+
+    let result: string = check_positive(42)
+    std.io.println(result)
+}
