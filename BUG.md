@@ -39,11 +39,15 @@ Files updated: `eval.ki`, `lexer.ki`, `parser.ki`, `types.ki`, `main.ki`.
 
 ## [x] Bug 4: `List[T]` and `HashMap` types not registered in type checker
 
-**Status:** Fixed in Kira compiler
+**Status:** Fixed in Kira v0.11.0
 
-**Description:** The Kira v0.11.0 type checker did not recognize `List[T]` or `HashMap` as built-in types. Both are documented in the Kira standard library docs (`stdlib.md`) as automatically available types, and the Kira interpreter handled them correctly at runtime, but the type checker rejected them with `undefined type`.
+**Description:** The Kira v0.11.0 type checker did not recognize `List[T]`, `HashMap`, or `StringBuilder` as built-in types. It also failed to resolve user-defined sum type variant constructors (e.g., `Circle`, `TokFloat`, `LispNil`), rejected string concatenation with `+`, and errored on pattern variable bindings in match arms.
 
-**Resolution:** Fixed by registering `List` and `HashMap` as built-in type symbols in the global scope during symbol table initialization (`src/symbols/table.zig`), and adding `Cons`/`Nil` variant constructor handling in the type checker (`src/typechecker/checker.zig`).
+**Resolution:** Fixed with four changes to the Kira compiler:
+- Registered `StringBuilder` as a built-in type alongside `List[T]` and `HashMap` in the symbol table (`src/symbols/table.zig`)
+- Added string concatenation support: `string + string` now returns `string` (`src/typechecker/checker.zig`)
+- Variant constructors for user-defined sum types are now resolved by searching all registered type definitions for the matching variant name (`src/typechecker/checker.zig`)
+- Pattern variable bindings in match arms (e.g., `Circle(r)`) no longer emit "type inference is not allowed" — inferred types return error_type silently, which unifies with any type (`src/typechecker/checker.zig`)
 
 ---
 
@@ -51,6 +55,6 @@ Files updated: `eval.ki`, `lexer.ki`, `parser.ki`, `types.ki`, `main.ki`.
 
 **Status:** Fixed (resolved by Bug 4 fix)
 
-**Description:** The Kira v0.11.0 type checker crashed with a segmentation fault when checking `eval.ki` and `main.ki`. The crash occurred in the type checker's hash map implementation (`_hash_map.wyhash`), suggesting a null pointer or uninitialized memory access during type resolution.
+**Description:** The Kira v0.11.0 type checker crashed with a segmentation fault when checking `eval.ki` and `main.ki`. The crash occurred in the type checker's hash map implementation, suggesting a null pointer or uninitialized memory access during type resolution.
 
-**Resolution:** Fixed by the Bug 4 fix (registering `List[T]` and `HashMap` as built-in types). The segfault was caused by the type checker dereferencing null type information for unregistered types. All example files now type-check without crashing.
+**Resolution:** Fixed by the Bug 4 fix. The segfault was caused by the type checker dereferencing null type information for unregistered types and unresolved variant constructors. With all built-in types registered and variant constructor resolution in place, the null dereference paths are eliminated.

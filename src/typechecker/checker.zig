@@ -41,6 +41,12 @@ pub const TypeCheckError = error{
 /// Placeholder symbol ID; `SymbolTable.define()` assigns the real ID.
 const unassigned_symbol_id: SymbolId = 0;
 
+/// Result of looking up a variant across all sum types.
+const VariantLookup = struct {
+    parent_sym: *const Symbol,
+    variant_info: Symbol.VariantInfo,
+};
+
 /// The type checker
 pub const TypeChecker = struct {
     allocator: Allocator,
@@ -539,6 +545,16 @@ pub const TypeChecker = struct {
         const left_type = try self.checkExpression(bin.left);
         const right_type = try self.checkExpression(bin.right);
 
+        // String concatenation with + must be checked before error propagation,
+        // because inferred variables may have error_type before resolution.
+        if (bin.operator == .add and
+            (left_type.isString() or right_type.isString()) and
+            (left_type.isString() or left_type.isError()) and
+            (right_type.isString() or right_type.isError()))
+        {
+            return ResolvedType.primitive(.string, span);
+        }
+
         // Error types propagate
         if (left_type.isError() or right_type.isError()) {
             return ResolvedType.errorType(span);
@@ -547,7 +563,7 @@ pub const TypeChecker = struct {
         return switch (bin.operator) {
             // Arithmetic operators
             .add, .subtract, .multiply, .divide, .modulo => {
-                // String concatenation with +
+                // String concatenation with + (both concretely string)
                 if (bin.operator == .add and left_type.isString() and right_type.isString()) {
                     return ResolvedType.primitive(.string, span);
                 }
@@ -979,7 +995,7 @@ pub const TypeChecker = struct {
 
             // Check pattern against subject type and add bindings to scope
             try self.checkPattern(arm.pattern, subject_type);
-            try self.addPatternBindings(arm.pattern, null);
+            try self.addPatternBindings(arm.pattern, null, subject_type);
 
             // Collect pattern for exhaustiveness checking
             try patterns.append(self.allocator, arm.pattern);
@@ -1122,7 +1138,25 @@ pub const TypeChecker = struct {
         // Look up variant name to find the sum type
         if (self.symbol_table.lookup(vc.variant_name)) |sym| {
             if (sym.kind == .type_def) {
-                // Check arguments if present
+                const td = sym.kind.type_def;
+                switch (td.definition) {
+                    .sum_type => |st| {
+                        // Find the specific variant within this sum type
+                        for (st.variants) |v| {
+                            if (std.mem.eql(u8, v.name, vc.variant_name)) {
+                                return try self.validateVariantConstructorArgs(
+                                    vc.variant_name,
+                                    v,
+                                    vc.arguments,
+                                    sym,
+                                    span,
+                                );
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                // Type exists but variant not found in it — check arguments anyway
                 if (vc.arguments) |args| {
                     for (args) |arg| {
                         _ = try self.checkExpression(arg);
@@ -1191,18 +1225,95 @@ pub const TypeChecker = struct {
         }
 
         // Search all type definitions for a sum type containing this variant
-        if (self.findVariantParentType(vc.variant_name)) |parent_sym| {
-            // Check arguments if present
-            if (vc.arguments) |args| {
-                for (args) |arg| {
-                    _ = try self.checkExpression(arg);
-                }
-            }
-            return ResolvedType.named(parent_sym.id, parent_sym.name, span);
+        if (try self.findVariantParentType(vc.variant_name, span)) |lookup| {
+            return try self.validateVariantConstructorArgs(
+                vc.variant_name,
+                lookup.variant_info,
+                vc.arguments,
+                lookup.parent_sym,
+                span,
+            );
         }
 
         try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, vc.variant_name, span));
         return ResolvedType.errorType(span);
+    }
+
+    /// Validate variant constructor arguments against the variant's field definition.
+    /// Returns the parent sum type on success.
+    fn validateVariantConstructorArgs(
+        self: *TypeChecker,
+        variant_name: []const u8,
+        variant_info: Symbol.VariantInfo,
+        arguments: ?[]*Expression,
+        parent_sym: *const Symbol,
+        span: Span,
+    ) TypeCheckError!ResolvedType {
+        const arg_count: usize = if (arguments) |args| args.len else 0;
+
+        if (variant_info.fields) |fields| {
+            switch (fields) {
+                .tuple_fields => |tuple_fields| {
+                    if (arg_count != tuple_fields.len) {
+                        try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                            self.allocator,
+                            tuple_fields.len,
+                            arg_count,
+                            span,
+                        ));
+                    } else if (arguments) |args| {
+                        for (args, tuple_fields) |arg, field_type| {
+                            const arg_type = try self.checkExpression(arg);
+                            const expected = try self.resolveAstType(field_type);
+                            if (!arg_type.isError() and !expected.isError() and !unify.typesEqual(arg_type, expected)) {
+                                try self.addDiagnostic(try errors_mod.typeMismatch(
+                                    self.allocator,
+                                    expected,
+                                    arg_type,
+                                    arg.span,
+                                ));
+                            }
+                        }
+                    }
+                },
+                .record_fields => |record_fields| {
+                    if (arg_count != record_fields.len) {
+                        try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                            self.allocator,
+                            record_fields.len,
+                            arg_count,
+                            span,
+                        ));
+                    } else if (arguments) |args| {
+                        for (args, record_fields) |arg, field_info| {
+                            const arg_type = try self.checkExpression(arg);
+                            const expected = try self.resolveAstType(field_info.field_type);
+                            if (!arg_type.isError() and !expected.isError() and !unify.typesEqual(arg_type, expected)) {
+                                try self.addDiagnostic(try errors_mod.typeMismatch(
+                                    self.allocator,
+                                    expected,
+                                    arg_type,
+                                    arg.span,
+                                ));
+                            }
+                        }
+                    }
+                },
+            }
+        } else {
+            // Nullary variant — no fields expected
+            if (arg_count > 0) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                    self.allocator,
+                    0,
+                    arg_count,
+                    span,
+                ));
+            }
+        }
+
+        _ = variant_name;
+        return ResolvedType.named(parent_sym.id, parent_sym.name, span);
     }
 
     /// Check type cast
@@ -1369,7 +1480,7 @@ pub const TypeChecker = struct {
                 try self.checkPattern(lb.pattern, init_type);
 
                 // Add all bindings from the pattern to scope
-                try self.addPatternBindings(lb.pattern, lb.explicit_type);
+                try self.addPatternBindings(lb.pattern, lb.explicit_type, null);
             },
 
             .var_binding => |vb| {
@@ -1493,7 +1604,7 @@ pub const TypeChecker = struct {
                     try self.checkPattern(for_loop.pattern, elem_type);
                 }
                 // Always add bindings so loop body can reference the variable
-                try self.addPatternBindings(for_loop.pattern, null);
+                try self.addPatternBindings(for_loop.pattern, null, null);
 
                 for (for_loop.body) |*s| {
                     try self.checkStatement(s);
@@ -1541,7 +1652,7 @@ pub const TypeChecker = struct {
 
                     // Check pattern against subject type and add bindings to scope
                     try self.checkPattern(arm.pattern, subject_type);
-                    try self.addPatternBindings(arm.pattern, null);
+                    try self.addPatternBindings(arm.pattern, null, subject_type);
 
                     // Collect pattern for exhaustiveness checking
                     try patterns.append(self.allocator, arm.pattern);
@@ -1678,9 +1789,65 @@ pub const TypeChecker = struct {
             },
 
             .constructor => |ctor| {
-                // Check constructor pattern against sum type
-                _ = ctor;
-                // TODO: Verify variant exists in type and check field types
+                // Skip checking if expected type is an error placeholder
+                if (expected_type.isError()) return;
+
+                if (self.lookupVariantInType(expected_type, ctor.variant_name)) |variant_info| {
+                    const pat_arg_count: usize = if (ctor.arguments) |a| a.len else 0;
+                    if (variant_info.fields) |fields| {
+                        const expected_count: usize = switch (fields) {
+                            .tuple_fields => |tf| tf.len,
+                            .record_fields => |rf| rf.len,
+                        };
+                        if (pat_arg_count != expected_count) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                expected_count,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        } else if (ctor.arguments) |args| {
+                            switch (fields) {
+                                .tuple_fields => |tf| {
+                                    for (args, tf) |arg, field_type| {
+                                        const p = switch (arg) {
+                                            .positional => |pos| pos,
+                                            .named => |n| n.pattern,
+                                        };
+                                        const resolved_field = try self.resolveAstType(field_type);
+                                        try self.checkPattern(p, resolved_field);
+                                    }
+                                },
+                                .record_fields => |rf| {
+                                    for (args, rf) |arg, field_info| {
+                                        const p = switch (arg) {
+                                            .positional => |pos| pos,
+                                            .named => |n| n.pattern,
+                                        };
+                                        const resolved_field = try self.resolveAstType(field_info.field_type);
+                                        try self.checkPattern(p, resolved_field);
+                                    }
+                                },
+                            }
+                        }
+                    } else {
+                        // Nullary variant — no arguments expected
+                        if (pat_arg_count > 0) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                0,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        }
+                    }
+                } else {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "variant not found in matched type",
+                        pattern.span,
+                    ));
+                }
             },
 
             .record => |rec| {
@@ -1765,24 +1932,40 @@ pub const TypeChecker = struct {
     /// Walk a pattern and define all bound identifiers in the current scope.
     /// This mirrors the resolver's resolvePattern for symbol definition.
     /// When explicit_type is null, an inferred placeholder type is used.
-    fn addPatternBindings(self: *TypeChecker, pattern: *const Pattern, explicit_type: ?*Type) TypeCheckError!void {
+    /// subject_type, when provided, is the resolved type of the match subject
+    /// and is used to infer concrete types for pattern-bound variables.
+    fn addPatternBindings(self: *TypeChecker, pattern: *const Pattern, explicit_type: ?*Type, subject_type: ?ResolvedType) TypeCheckError!void {
         switch (pattern.kind) {
             .identifier => |ident| {
                 // Use explicit type or create inferred placeholder (mirrors resolver)
                 var inferred = Type.init(.{ .inferred = {} }, pattern.span);
                 const binding_type = explicit_type orelse &inferred;
                 const sym = Symbol.variable(unassigned_symbol_id, ident.name, binding_type, ident.is_mutable, false, pattern.span);
-                _ = self.symbol_table.define(sym) catch |err| {
+                const defined_id = self.symbol_table.define(sym) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
-                    // DuplicateDefinition: resolver already reported this
+                    return; // DuplicateDefinition: resolver already reported this
                 };
+                // When we have a concrete subject type and no explicit annotation,
+                // store the resolved type so getSymbolType can return it.
+                if (subject_type) |st| {
+                    if (explicit_type == null and !st.isError()) {
+                        try self.type_env.put(self.allocator, defined_id, st);
+                    }
+                }
             },
             .constructor => |ctor| {
                 if (ctor.arguments) |args| {
-                    for (args) |arg| {
+                    // Try to resolve variant field types from subject_type
+                    const field_types = if (subject_type) |st|
+                        self.lookupVariantFieldTypes(st, ctor.variant_name)
+                    else
+                        null;
+
+                    for (args, 0..) |arg, i| {
+                        const field_subject = if (field_types) |ft| (if (i < ft.len) ft[i] else null) else null;
                         switch (arg) {
-                            .positional => |p| try self.addPatternBindings(p, null),
-                            .named => |n| try self.addPatternBindings(n.pattern, null),
+                            .positional => |p| try self.addPatternBindings(p, null, field_subject),
+                            .named => |n| try self.addPatternBindings(n.pattern, null, field_subject),
                         }
                     }
                 }
@@ -1790,11 +1973,11 @@ pub const TypeChecker = struct {
             .record => |rp| {
                 for (rp.fields) |field| {
                     if (field.pattern) |pat| {
-                        try self.addPatternBindings(pat, null);
+                        try self.addPatternBindings(pat, null, null);
                     } else {
                         // Shorthand: { x } binds x
-                        var inferred = Type.init(.{ .inferred = {} }, field.span);
-                        const sym = Symbol.variable(unassigned_symbol_id, field.name, &inferred, false, false, field.span);
+                        var inferred_field = Type.init(.{ .inferred = {} }, field.span);
+                        const sym = Symbol.variable(unassigned_symbol_id, field.name, &inferred_field, false, false, field.span);
                         _ = self.symbol_table.define(sym) catch |err| {
                             if (err == error.OutOfMemory) return error.OutOfMemory;
                         };
@@ -1803,7 +1986,7 @@ pub const TypeChecker = struct {
             },
             .tuple => |tup| {
                 for (tup.elements) |elem| {
-                    try self.addPatternBindings(elem, null);
+                    try self.addPatternBindings(elem, null, null);
                 }
             },
             .or_pattern => |op| {
@@ -1811,17 +1994,35 @@ pub const TypeChecker = struct {
                 // Process every alternative so all names are defined; duplicates
                 // from subsequent alternatives are silently caught by define().
                 for (op.patterns) |alt| {
-                    try self.addPatternBindings(alt, null);
+                    try self.addPatternBindings(alt, null, subject_type);
                 }
             },
             .guarded => |g| {
-                try self.addPatternBindings(g.pattern, explicit_type);
+                try self.addPatternBindings(g.pattern, explicit_type, subject_type);
             },
             .typed => |t| {
-                try self.addPatternBindings(t.pattern, t.expected_type);
+                try self.addPatternBindings(t.pattern, t.expected_type, null);
             },
             // Literals, wildcards, ranges, rest don't bind names
             else => {},
+        }
+    }
+
+    /// Helper: resolve variant tuple field types as ResolvedType slice.
+    /// Returns null if the variant is not found or has no tuple fields.
+    fn lookupVariantFieldTypes(self: *TypeChecker, resolved_type: ResolvedType, variant_name: []const u8) ?[]const ResolvedType {
+        const variant_info = self.lookupVariantInType(resolved_type, variant_name) orelse return null;
+        const fields = variant_info.fields orelse return null;
+        switch (fields) {
+            .tuple_fields => |tf| {
+                const type_alloc = self.typeAllocator();
+                const resolved = type_alloc.alloc(ResolvedType, tf.len) catch return null;
+                for (tf, 0..) |field_type, i| {
+                    resolved[i] = self.resolveAstType(field_type) catch return null;
+                }
+                return resolved;
+            },
+            .record_fields => return null,
         }
     }
 
@@ -2144,7 +2345,13 @@ pub const TypeChecker = struct {
     /// Get the type of a symbol
     fn getSymbolType(self: *TypeChecker, sym: *const Symbol, span: Span) TypeCheckError!ResolvedType {
         return switch (sym.kind) {
-            .variable => |v| try self.resolveAstType(v.binding_type),
+            .variable => |v| {
+                // Check type_env first — pattern inference may have stored a concrete type
+                if (self.type_env.get(sym.id)) |resolved| {
+                    return resolved;
+                }
+                return try self.resolveAstType(v.binding_type);
+            },
             .function => |f| {
                 const type_alloc = self.typeAllocator();
                 var param_types = std.ArrayListUnmanaged(ResolvedType){};
@@ -2178,9 +2385,35 @@ pub const TypeChecker = struct {
         };
     }
 
+    /// Look up a variant by name within a resolved type (named or instantiated).
+    /// Returns the VariantInfo if the type is a sum type containing that variant, null otherwise.
+    fn lookupVariantInType(self: *TypeChecker, resolved_type: ResolvedType, variant_name: []const u8) ?Symbol.VariantInfo {
+        const sym_id = switch (resolved_type.kind) {
+            .named => |n| n.symbol_id,
+            .instantiated => |inst| inst.base_symbol_id,
+            else => return null,
+        };
+        const sym = self.symbol_table.getSymbol(sym_id) orelse return null;
+        if (sym.kind != .type_def) return null;
+        const td = sym.kind.type_def;
+        switch (td.definition) {
+            .sum_type => |st| {
+                for (st.variants) |v| {
+                    if (std.mem.eql(u8, v.name, variant_name)) {
+                        return v;
+                    }
+                }
+            },
+            else => {},
+        }
+        return null;
+    }
+
     /// Search all type definitions for a sum type containing a variant with the given name.
-    /// Returns the parent type's symbol if found, null otherwise.
-    fn findVariantParentType(self: *TypeChecker, variant_name: []const u8) ?*const Symbol {
+    /// Returns the parent type's symbol and variant info if found uniquely.
+    /// Emits an ambiguity diagnostic if multiple sum types define the same variant name.
+    fn findVariantParentType(self: *TypeChecker, variant_name: []const u8, span: Span) TypeCheckError!?VariantLookup {
+        var found: ?VariantLookup = null;
         for (self.symbol_table.symbols.items) |*sym| {
             if (sym.kind == .type_def) {
                 const td = sym.kind.type_def;
@@ -2188,7 +2421,24 @@ pub const TypeChecker = struct {
                     .sum_type => |st| {
                         for (st.variants) |v| {
                             if (std.mem.eql(u8, v.name, variant_name)) {
-                                return sym;
+                                if (found) |first| {
+                                    // Second match — ambiguous
+                                    var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+                                    errdefer builder.deinit();
+                                    try builder.write("ambiguous variant '");
+                                    try builder.write(variant_name);
+                                    try builder.write("' found in both '");
+                                    try builder.write(first.parent_sym.name);
+                                    try builder.write("' and '");
+                                    try builder.write(sym.name);
+                                    try builder.write("'; qualify with type name");
+                                    try self.addDiagnostic(try builder.build());
+                                    return null;
+                                }
+                                found = .{
+                                    .parent_sym = sym,
+                                    .variant_info = v,
+                                };
                             }
                         }
                     },
@@ -2196,7 +2446,7 @@ pub const TypeChecker = struct {
                 }
             }
         }
-        return null;
+        return found;
     }
 
     /// Add a diagnostic
