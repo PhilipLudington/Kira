@@ -47,22 +47,10 @@ Files updated: `eval.ki`, `lexer.ki`, `parser.ki`, `types.ki`, `main.ki`.
 
 ---
 
-## [ ] Bug 5: Type checker crashes (segfault) on large files
+## [x] Bug 5: Type checker crashes (segfault) on large files
 
-**Status:** Blocked (Kira compiler bug)
+**Status:** Fixed (resolved by Bug 4 fix)
 
-**Description:** The Kira v0.11.0 type checker crashes with a segmentation fault when checking `eval.ki` and `main.ki`. The crash occurs in the type checker's hash map implementation (`_hash_map.wyhash`), suggesting a null pointer or uninitialized memory access during type resolution.
+**Description:** The Kira v0.11.0 type checker crashed with a segmentation fault when checking `eval.ki` and `main.ki`. The crash occurred in the type checker's hash map implementation (`_hash_map.wyhash`), suggesting a null pointer or uninitialized memory access during type resolution.
 
-**Steps to reproduce:**
-1. Run `kira check src/eval.ki` or `kira check src/main.ki`
-
-**Expected:** Type checking completes (with errors or success).
-
-**Actual:**
-```
-Segmentation fault at address 0x1
-???:?:?: in _hash.wyhash.Wyhash.hash
-???:?:?: in _typechecker.checker.TypeChecker.resolveAstType
-```
-
-**Notes:** This may be triggered by the undefined `List[T]`/`HashMap` types (Bug 4) causing the type checker to dereference null type information. Fixing Bug 4 may also fix this crash.
+**Resolution:** Fixed by the Bug 4 fix (registering `List[T]` and `HashMap` as built-in types). The segfault was caused by the type checker dereferencing null type information for unregistered types. All example files now type-check without crashing.
