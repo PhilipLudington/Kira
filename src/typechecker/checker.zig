@@ -40,6 +40,17 @@ pub const TypeCheckError = error{
 
 /// Placeholder symbol ID; `SymbolTable.define()` assigns the real ID.
 const unassigned_symbol_id: SymbolId = 0;
+const builtin_span = Span{
+    .start = .{ .line = 0, .column = 0, .offset = 0 },
+    .end = .{ .line = 0, .column = 0, .offset = 0 },
+};
+
+// Stable placeholder used for inferred pattern bindings.
+// This avoids storing pointers to stack-allocated Type values.
+var inferred_binding_type = Type{
+    .kind = .{ .inferred = {} },
+    .span = builtin_span,
+};
 
 /// Result of looking up a variant across all sum types.
 const VariantLookup = struct {
@@ -127,30 +138,14 @@ pub const TypeChecker = struct {
 
     /// Type check an entire program
     pub fn check(self: *TypeChecker, program: *const Program) TypeCheckError!void {
-        var main_decl: ?*const Declaration = null;
-
         for (program.declarations) |*decl| {
             try self.checkDeclaration(decl);
-
-            // E7: Track main function for effect validation
-            if (decl.kind == .function_decl) {
-                const func = decl.kind.function_decl;
-                if (std.mem.eql(u8, func.name, "main")) {
-                    main_decl = decl;
-                }
-            }
         }
 
-        // E7: Validate main function has IO effect
-        if (main_decl) |decl| {
-            const func = decl.kind.function_decl;
-            if (!func.is_effect) {
-                try self.addDiagnostic(try errors_mod.mainMustHaveIOEffect(
-                    self.allocator,
-                    decl.span,
-                ));
-            }
-        }
+        // E7: main function effect validation is handled by the existing
+        // effect system — if main calls effectful functions without being
+        // declared 'effect', the checker emits "cannot call effect function
+        // from pure function" at the call site (see checkFunctionCall).
 
         // Fail compilation if any type errors were collected
         if (self.hasErrors()) {
@@ -846,6 +841,10 @@ pub const TypeChecker = struct {
 
     /// Check function call
     fn checkFunctionCall(self: *TypeChecker, fc: Expression.FunctionCall, span: Span) TypeCheckError!ResolvedType {
+        if (try self.checkStdFunctionCall(fc, span)) |std_type| {
+            return std_type;
+        }
+
         const callee_type = try self.checkExpression(fc.callee);
 
         if (callee_type.isError()) {
@@ -868,7 +867,7 @@ pub const TypeChecker = struct {
                 // Check argument types
                 for (fc.arguments, f.parameter_types) |arg, param| {
                     const arg_type = try self.checkExpression(arg);
-                    if (!unify.typesEqual(arg_type, param)) {
+                    if (!unify.isAssignable(param, arg_type)) {
                         try self.addDiagnostic(try errors_mod.typeMismatch(
                             self.allocator,
                             param,
@@ -900,6 +899,374 @@ pub const TypeChecker = struct {
                 return ResolvedType.errorType(span);
             },
         };
+    }
+
+    fn appendExpressionPath(
+        self: *TypeChecker,
+        expr: *const Expression,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) TypeCheckError!bool {
+        return switch (expr.kind) {
+            .identifier => |ident| blk: {
+                try out.append(self.typeAllocator(), ident.name);
+                break :blk true;
+            },
+            .field_access => |fa| blk: {
+                if (!(try self.appendExpressionPath(fa.object, out))) break :blk false;
+                try out.append(self.typeAllocator(), fa.field);
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn extractExpressionPath(self: *TypeChecker, expr: *const Expression) TypeCheckError!?[][]const u8 {
+        var path = std.ArrayListUnmanaged([]const u8){};
+        if (!(try self.appendExpressionPath(expr, &path))) {
+            return null;
+        }
+        const segments = try path.toOwnedSlice(self.typeAllocator());
+        return segments;
+    }
+
+    fn addEffectViolationIfNeeded(self: *TypeChecker, span: Span) TypeCheckError!void {
+        if (!self.in_effect_function) {
+            try self.addDiagnostic(try errors_mod.effectViolation(
+                self.allocator,
+                "cannot call effect function from pure function",
+                span,
+            ));
+        }
+    }
+
+    fn makeOptionType(self: *TypeChecker, inner: ResolvedType, span: Span) TypeCheckError!ResolvedType {
+        const type_alloc = self.typeAllocator();
+        const inner_ptr = try type_alloc.create(ResolvedType);
+        inner_ptr.* = inner;
+        return .{ .kind = .{ .option = inner_ptr }, .span = span };
+    }
+
+    fn makeResultType(self: *TypeChecker, ok_type: ResolvedType, err_type: ResolvedType, span: Span) TypeCheckError!ResolvedType {
+        const type_alloc = self.typeAllocator();
+        const ok_ptr = try type_alloc.create(ResolvedType);
+        ok_ptr.* = ok_type;
+        const err_ptr = try type_alloc.create(ResolvedType);
+        err_ptr.* = err_type;
+        return .{
+            .kind = .{ .result = .{
+                .ok_type = ok_ptr,
+                .err_type = err_ptr,
+            } },
+            .span = span,
+        };
+    }
+
+    fn makeListType(self: *TypeChecker, elem_type: ResolvedType, span: Span) TypeCheckError!ResolvedType {
+        const list_sym = self.symbol_table.lookup("List") orelse return ResolvedType.errorType(span);
+        const type_alloc = self.typeAllocator();
+        const args = try type_alloc.alloc(ResolvedType, 1);
+        args[0] = elem_type;
+        return .{
+            .kind = .{ .instantiated = .{
+                .base_symbol_id = list_sym.id,
+                .base_name = "List",
+                .type_arguments = args,
+            } },
+            .span = span,
+        };
+    }
+
+    fn extractListElementType(self: *TypeChecker, list_type: ResolvedType) ?ResolvedType {
+        _ = self;
+        return switch (list_type.kind) {
+            .instantiated => |inst| {
+                if (std.mem.eql(u8, inst.base_name, "List") and inst.type_arguments.len == 1) {
+                    return inst.type_arguments[0];
+                }
+                return null;
+            },
+            .array => |arr| arr.element_type.*,
+            else => null,
+        };
+    }
+
+    fn checkStdFunctionCall(self: *TypeChecker, fc: Expression.FunctionCall, span: Span) TypeCheckError!?ResolvedType {
+        const maybe_path = try self.extractExpressionPath(fc.callee);
+        if (maybe_path == null) return null;
+        const path = maybe_path.?;
+
+        if (path.len != 3) return null;
+        if (!std.mem.eql(u8, path[0], "std")) return null;
+
+        // std.io.*
+        if (std.mem.eql(u8, path[1], "io")) {
+            if (std.mem.eql(u8, path[2], "println") or std.mem.eql(u8, path[2], "print")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                try self.addEffectViolationIfNeeded(span);
+                return ResolvedType.voidType(span);
+            }
+            if (std.mem.eql(u8, path[2], "read_line")) {
+                if (fc.arguments.len != 0) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                try self.addEffectViolationIfNeeded(span);
+                return try self.makeResultType(
+                    ResolvedType.primitive(.string, span),
+                    ResolvedType.primitive(.string, span),
+                    span,
+                );
+            }
+            return null;
+        }
+
+        // std.fs.*
+        if (std.mem.eql(u8, path[1], "fs")) {
+            if (std.mem.eql(u8, path[2], "read_file")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                const arg_t = try self.checkExpression(fc.arguments[0]);
+                const expected = ResolvedType.primitive(.string, fc.arguments[0].span);
+                if (!unify.isAssignable(expected, arg_t)) {
+                    try self.addDiagnostic(try errors_mod.typeMismatch(
+                        self.allocator,
+                        expected,
+                        arg_t,
+                        fc.arguments[0].span,
+                    ));
+                }
+                try self.addEffectViolationIfNeeded(span);
+                return try self.makeResultType(
+                    ResolvedType.primitive(.string, span),
+                    ResolvedType.primitive(.string, span),
+                    span,
+                );
+            }
+            return null;
+        }
+
+        // std.string.*
+        if (std.mem.eql(u8, path[1], "string")) {
+            if (std.mem.eql(u8, path[2], "length")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.i32, span);
+            }
+            if (std.mem.eql(u8, path[2], "trim")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.string, span);
+            }
+            if (std.mem.eql(u8, path[2], "substring")) {
+                if (fc.arguments.len != 3) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 3, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(fc.arguments[1]);
+                _ = try self.checkExpression(fc.arguments[2]);
+                return ResolvedType.primitive(.string, span);
+            }
+            if (std.mem.eql(u8, path[2], "char_at")) {
+                if (fc.arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(fc.arguments[1]);
+                return try self.makeOptionType(ResolvedType.primitive(.char, span), span);
+            }
+            if (std.mem.eql(u8, path[2], "split")) {
+                if (fc.arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(fc.arguments[1]);
+                return try self.makeListType(ResolvedType.primitive(.string, span), span);
+            }
+            return null;
+        }
+
+        // std.list.*
+        if (std.mem.eql(u8, path[1], "list")) {
+            if (std.mem.eql(u8, path[2], "length")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.i32, span);
+            }
+            if (std.mem.eql(u8, path[2], "head")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                const list_t = try self.checkExpression(fc.arguments[0]);
+                const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
+                return try self.makeOptionType(elem_t, span);
+            }
+            if (std.mem.eql(u8, path[2], "tail")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                const list_t = try self.checkExpression(fc.arguments[0]);
+                const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
+                const list_elem_t = try self.makeListType(elem_t, span);
+                return try self.makeOptionType(list_elem_t, span);
+            }
+            if (std.mem.eql(u8, path[2], "empty")) {
+                if (fc.arguments.len != 0) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                if (fc.generic_args) |gargs| {
+                    if (gargs.len == 1) {
+                        const elem_t = try self.resolveAstType(gargs[0]);
+                        return try self.makeListType(elem_t, span);
+                    }
+                }
+                return ResolvedType.errorType(span);
+            }
+            if (std.mem.eql(u8, path[2], "cons")) {
+                if (fc.arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                const elem_t = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(fc.arguments[1]);
+                return try self.makeListType(elem_t, span);
+            }
+            if (std.mem.eql(u8, path[2], "map")) {
+                if (fc.arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                const list_t = try self.checkExpression(fc.arguments[0]);
+                const fn_t = try self.checkExpression(fc.arguments[1]);
+                var out_t: ?ResolvedType = null;
+                if (fc.generic_args) |gargs| {
+                    if (gargs.len == 2) {
+                        out_t = try self.resolveAstType(gargs[1]);
+                    }
+                }
+                if (out_t == null and fn_t.kind == .function) {
+                    out_t = fn_t.kind.function.return_type.*;
+                }
+                if (out_t == null) {
+                    out_t = self.extractListElementType(list_t);
+                }
+                return try self.makeListType(out_t orelse ResolvedType.errorType(span), span);
+            }
+            if (std.mem.eql(u8, path[2], "filter")) {
+                if (fc.arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                const list_t = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(fc.arguments[1]);
+                const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
+                return try self.makeListType(elem_t, span);
+            }
+            return null;
+        }
+
+        // std.time.*
+        if (std.mem.eql(u8, path[1], "time")) {
+            if (std.mem.eql(u8, path[2], "now")) {
+                if (fc.arguments.len != 0) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                return ResolvedType.primitive(.i64, span);
+            }
+            if (std.mem.eql(u8, path[2], "sleep")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                try self.addEffectViolationIfNeeded(span);
+                return ResolvedType.voidType(span);
+            }
+            if (std.mem.eql(u8, path[2], "elapsed")) {
+                if (fc.arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(fc.arguments[1]);
+                return ResolvedType.primitive(.i64, span);
+            }
+            return null;
+        }
+
+        // std.int.* / std.float.* / std.char.*
+        if (std.mem.eql(u8, path[1], "int")) {
+            if (std.mem.eql(u8, path[2], "to_string")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.string, span);
+            }
+            if (std.mem.eql(u8, path[2], "to_i64")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.i64, span);
+            }
+            return null;
+        }
+        if (std.mem.eql(u8, path[1], "float")) {
+            if (std.mem.eql(u8, path[2], "to_string")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.string, span);
+            }
+            if (std.mem.eql(u8, path[2], "from_int")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.f64, span);
+            }
+            return null;
+        }
+        if (std.mem.eql(u8, path[1], "char")) {
+            if (std.mem.eql(u8, path[2], "to_i32")) {
+                if (fc.arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(fc.arguments[0]);
+                return ResolvedType.primitive(.i32, span);
+            }
+            return null;
+        }
+
+        return null;
     }
 
     /// Check method call
@@ -1168,8 +1535,14 @@ pub const TypeChecker = struct {
 
         // Common variants like Some, None, Ok, Err
         if (std.mem.eql(u8, vc.variant_name, "None")) {
-            // Option[T] where T is unknown
-            return ResolvedType.errorType(span); // Need context to determine T
+            // Option[T] where T is unknown — use error_type as placeholder
+            const type_alloc = self.typeAllocator();
+            const inner_ptr = try type_alloc.create(ResolvedType);
+            inner_ptr.* = ResolvedType.errorType(span);
+            return .{
+                .kind = .{ .option = inner_ptr },
+                .span = span,
+            };
         } else if (std.mem.eql(u8, vc.variant_name, "Some")) {
             if (vc.arguments) |args| {
                 if (args.len == 1) {
@@ -1186,17 +1559,37 @@ pub const TypeChecker = struct {
         } else if (std.mem.eql(u8, vc.variant_name, "Ok")) {
             if (vc.arguments) |args| {
                 if (args.len == 1) {
-                    _ = try self.checkExpression(args[0]);
-                    // Result[T, E] - would need context to determine E
-                    return ResolvedType.errorType(span);
+                    const ok_type = try self.checkExpression(args[0]);
+                    const type_alloc = self.typeAllocator();
+                    const ok_ptr = try type_alloc.create(ResolvedType);
+                    ok_ptr.* = ok_type;
+                    const err_ptr = try type_alloc.create(ResolvedType);
+                    err_ptr.* = ResolvedType.errorType(span);
+                    return .{
+                        .kind = .{ .result = .{
+                            .ok_type = ok_ptr,
+                            .err_type = err_ptr,
+                        } },
+                        .span = span,
+                    };
                 }
             }
         } else if (std.mem.eql(u8, vc.variant_name, "Err")) {
             if (vc.arguments) |args| {
                 if (args.len == 1) {
-                    _ = try self.checkExpression(args[0]);
-                    // Result[T, E] - would need context to determine T
-                    return ResolvedType.errorType(span);
+                    const err_type = try self.checkExpression(args[0]);
+                    const type_alloc = self.typeAllocator();
+                    const ok_ptr = try type_alloc.create(ResolvedType);
+                    ok_ptr.* = ResolvedType.errorType(span);
+                    const err_ptr = try type_alloc.create(ResolvedType);
+                    err_ptr.* = err_type;
+                    return .{
+                        .kind = .{ .result = .{
+                            .ok_type = ok_ptr,
+                            .err_type = err_ptr,
+                        } },
+                        .span = span,
+                    };
                 }
             }
         } else if (std.mem.eql(u8, vc.variant_name, "Cons")) {
@@ -1468,7 +1861,7 @@ pub const TypeChecker = struct {
 
                 // explicit_type is required in Kira (not optional)
                 const declared_type = try self.resolveAstType(lb.explicit_type);
-                if (!unify.typesEqual(declared_type, init_type)) {
+                if (!unify.isAssignable(declared_type, init_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         declared_type,
@@ -1492,7 +1885,7 @@ pub const TypeChecker = struct {
 
                 if (vb.initializer) |initializer| {
                     const init_type = try self.checkExpression(initializer);
-                    if (!unify.typesEqual(declared_type, init_type)) {
+                    if (!unify.isAssignable(declared_type, init_type)) {
                         try self.addDiagnostic(try errors_mod.typeMismatch(
                             self.allocator,
                             declared_type,
@@ -1792,6 +2185,88 @@ pub const TypeChecker = struct {
                 // Skip checking if expected type is an error placeholder
                 if (expected_type.isError()) return;
 
+                // Built-in Option[T]: handle Some(x) and None patterns directly
+                // Covers both ResolvedType.option and instantiated "Option"
+                if (self.getOptionInnerType(expected_type)) |inner_type| {
+                    const pat_arg_count: usize = if (ctor.arguments) |a| a.len else 0;
+                    if (std.mem.eql(u8, ctor.variant_name, "Some")) {
+                        if (pat_arg_count != 1) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                1,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        } else if (ctor.arguments) |args| {
+                            const p = switch (args[0]) {
+                                .positional => |pos| pos,
+                                .named => |n| n.pattern,
+                            };
+                            try self.checkPattern(p, inner_type);
+                        }
+                    } else if (std.mem.eql(u8, ctor.variant_name, "None")) {
+                        if (pat_arg_count > 0) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                0,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        }
+                    } else {
+                        try self.addDiagnostic(try errors_mod.simpleError(
+                            self.allocator,
+                            "variant not found in matched type",
+                            pattern.span,
+                        ));
+                    }
+                    return;
+                }
+
+                // Built-in Result[T, E]: handle Ok(x) and Err(e) patterns directly
+                // Covers both ResolvedType.result and instantiated "Result"
+                if (self.getResultTypes(expected_type)) |result_types| {
+                    const pat_arg_count: usize = if (ctor.arguments) |a| a.len else 0;
+                    if (std.mem.eql(u8, ctor.variant_name, "Ok")) {
+                        if (pat_arg_count != 1) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                1,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        } else if (ctor.arguments) |args| {
+                            const p = switch (args[0]) {
+                                .positional => |pos| pos,
+                                .named => |n| n.pattern,
+                            };
+                            try self.checkPattern(p, result_types[0]);
+                        }
+                    } else if (std.mem.eql(u8, ctor.variant_name, "Err")) {
+                        if (pat_arg_count != 1) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                1,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        } else if (ctor.arguments) |args| {
+                            const p = switch (args[0]) {
+                                .positional => |pos| pos,
+                                .named => |n| n.pattern,
+                            };
+                            try self.checkPattern(p, result_types[1]);
+                        }
+                    } else {
+                        try self.addDiagnostic(try errors_mod.simpleError(
+                            self.allocator,
+                            "variant not found in matched type",
+                            pattern.span,
+                        ));
+                    }
+                    return;
+                }
+
                 if (self.lookupVariantInType(expected_type, ctor.variant_name)) |variant_info| {
                     const pat_arg_count: usize = if (ctor.arguments) |a| a.len else 0;
                     if (variant_info.fields) |fields| {
@@ -1938,8 +2413,7 @@ pub const TypeChecker = struct {
         switch (pattern.kind) {
             .identifier => |ident| {
                 // Use explicit type or create inferred placeholder (mirrors resolver)
-                var inferred = Type.init(.{ .inferred = {} }, pattern.span);
-                const binding_type = explicit_type orelse &inferred;
+                const binding_type = explicit_type orelse &inferred_binding_type;
                 const sym = Symbol.variable(unassigned_symbol_id, ident.name, binding_type, ident.is_mutable, false, pattern.span);
                 const defined_id = self.symbol_table.define(sym) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -1976,8 +2450,7 @@ pub const TypeChecker = struct {
                         try self.addPatternBindings(pat, null, null);
                     } else {
                         // Shorthand: { x } binds x
-                        var inferred_field = Type.init(.{ .inferred = {} }, field.span);
-                        const sym = Symbol.variable(unassigned_symbol_id, field.name, &inferred_field, false, false, field.span);
+                        const sym = Symbol.variable(unassigned_symbol_id, field.name, &inferred_binding_type, false, false, field.span);
                         _ = self.symbol_table.define(sym) catch |err| {
                             if (err == error.OutOfMemory) return error.OutOfMemory;
                         };
@@ -2011,6 +2484,48 @@ pub const TypeChecker = struct {
     /// Helper: resolve variant tuple field types as ResolvedType slice.
     /// Returns null if the variant is not found or has no tuple fields.
     fn lookupVariantFieldTypes(self: *TypeChecker, resolved_type: ResolvedType, variant_name: []const u8) ?[]const ResolvedType {
+        // Built-in: Option[T] — Some(T) has 1 field, None has 0
+        if (self.getOptionInnerType(resolved_type)) |inner_type| {
+            if (std.mem.eql(u8, variant_name, "Some")) {
+                const type_alloc = self.typeAllocator();
+                const result = type_alloc.alloc(ResolvedType, 1) catch return null;
+                result[0] = inner_type;
+                return result;
+            }
+            return null;
+        }
+
+        // Built-in: Result[T, E] — Ok(T) has 1 field, Err(E) has 1 field
+        if (self.getResultTypes(resolved_type)) |result_types| {
+            if (std.mem.eql(u8, variant_name, "Ok")) {
+                const type_alloc = self.typeAllocator();
+                const result = type_alloc.alloc(ResolvedType, 1) catch return null;
+                result[0] = result_types[0];
+                return result;
+            } else if (std.mem.eql(u8, variant_name, "Err")) {
+                const type_alloc = self.typeAllocator();
+                const result = type_alloc.alloc(ResolvedType, 1) catch return null;
+                result[0] = result_types[1];
+                return result;
+            }
+            return null;
+        }
+
+        // Built-in: List[T] — Cons(T, List[T]) has 2 fields, Nil has 0
+        if (resolved_type.kind == .instantiated) {
+            const inst = resolved_type.kind.instantiated;
+            if (std.mem.eql(u8, inst.base_name, "List") and inst.type_arguments.len > 0) {
+                if (std.mem.eql(u8, variant_name, "Cons")) {
+                    const type_alloc = self.typeAllocator();
+                    const result = type_alloc.alloc(ResolvedType, 2) catch return null;
+                    result[0] = inst.type_arguments[0]; // T
+                    result[1] = resolved_type; // List[T]
+                    return result;
+                }
+                return null; // Nil has no fields
+            }
+        }
+
         const variant_info = self.lookupVariantInType(resolved_type, variant_name) orelse return null;
         const fields = variant_info.fields orelse return null;
         switch (fields) {
@@ -2387,7 +2902,60 @@ pub const TypeChecker = struct {
 
     /// Look up a variant by name within a resolved type (named or instantiated).
     /// Returns the VariantInfo if the type is a sum type containing that variant, null otherwise.
+    /// Extract the inner type from an Option type.
+    /// Handles both ResolvedType.option and instantiated "Option" representations.
+    fn getOptionInnerType(self: *TypeChecker, resolved_type: ResolvedType) ?ResolvedType {
+        _ = self;
+        return switch (resolved_type.kind) {
+            .option => |inner| inner.*,
+            .instantiated => |inst| {
+                if (std.mem.eql(u8, inst.base_name, "Option") and inst.type_arguments.len == 1) {
+                    return inst.type_arguments[0];
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
+    /// Extract ok and err types from a Result type.
+    /// Handles both ResolvedType.result and instantiated "Result" representations.
+    /// Returns [2]ResolvedType: [0] = ok_type, [1] = err_type.
+    fn getResultTypes(self: *TypeChecker, resolved_type: ResolvedType) ?[2]ResolvedType {
+        _ = self;
+        return switch (resolved_type.kind) {
+            .result => |r| .{ r.ok_type.*, r.err_type.* },
+            .instantiated => |inst| {
+                if (std.mem.eql(u8, inst.base_name, "Result") and inst.type_arguments.len == 2) {
+                    return .{ inst.type_arguments[0], inst.type_arguments[1] };
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
     fn lookupVariantInType(self: *TypeChecker, resolved_type: ResolvedType, variant_name: []const u8) ?Symbol.VariantInfo {
+        // Built-in: Option[T] — variants Some(T) and None
+        if (self.getOptionInnerType(resolved_type) != null) {
+            if (std.mem.eql(u8, variant_name, "Some")) {
+                return .{ .name = "Some", .fields = null, .span = builtin_span };
+            } else if (std.mem.eql(u8, variant_name, "None")) {
+                return .{ .name = "None", .fields = null, .span = builtin_span };
+            }
+            return null;
+        }
+
+        // Built-in: Result[T, E] — variants Ok(T) and Err(E)
+        if (self.getResultTypes(resolved_type) != null) {
+            if (std.mem.eql(u8, variant_name, "Ok")) {
+                return .{ .name = "Ok", .fields = null, .span = builtin_span };
+            } else if (std.mem.eql(u8, variant_name, "Err")) {
+                return .{ .name = "Err", .fields = null, .span = builtin_span };
+            }
+            return null;
+        }
+
         const sym_id = switch (resolved_type.kind) {
             .named => |n| n.symbol_id,
             .instantiated => |inst| inst.base_symbol_id,
@@ -2641,7 +3209,7 @@ test "effect: try on Result in non-Result function forbidden" {
     try std.testing.expect(true);
 }
 
-test "effect: main function must have IO effect" {
+test "effect: pure main function without effect keyword is allowed" {
     const allocator = std.testing.allocator;
     const span = Span{
         .start = .{ .line = 1, .column = 1, .offset = 0 },
@@ -2654,17 +3222,16 @@ test "effect: main function must have IO effect" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-
     // Create a return type
     var return_type = Type.primitive(.void_type, span);
 
-    // Create main function WITHOUT effect keyword
+    // Create main function WITHOUT effect keyword — pure main is allowed
     const func_decl = Declaration.FunctionDecl{
         .name = "main",
         .generic_params = null,
         .parameters = &[_]Declaration.Parameter{},
         .return_type = &return_type,
-        .is_effect = false, // Not an effect function!
+        .is_effect = false,
         .is_public = true,
         .body = null,
         .where_clause = null,
@@ -2686,20 +3253,10 @@ test "effect: main function must have IO effect" {
         .arena = null,
     };
 
-    // Check the program - should fail with TypeError
-    const result = checker.check(&program);
-    try std.testing.expectError(error.TypeError, result);
-
-    // Should have an error about main needing effect
-    try std.testing.expect(checker.hasErrors());
-
-    var found_main_error = false;
-    for (checker.diagnostics.items) |diag| {
-        if (std.mem.indexOf(u8, diag.message, "'main' function must be declared with 'effect' keyword") != null) {
-            found_main_error = true;
-        }
-    }
-    try std.testing.expect(found_main_error);
+    // Pure main without effect should pass — effect validation is now
+    // handled per-call-site, not as a blanket requirement on main
+    try checker.check(&program);
+    try std.testing.expect(!checker.hasErrors());
 }
 
 test "effect: main function with effect keyword allowed" {

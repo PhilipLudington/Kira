@@ -42,20 +42,20 @@ effect fn main() -> void {
     let r1: Option[i32] = safe_divide(10, 2)
     let r2: Option[i32] = safe_divide(10, 0)
 
-    std.io.println("10 / 2 = " + to_string(get_or_default(r1, -1)))
-    std.io.println("10 / 0 = " + to_string(get_or_default(r2, -1)))
+    std.io.println("10 / 2 = " + std.int.to_string(get_or_default(r1, -1)))
+    std.io.println("10 / 0 = " + std.int.to_string(get_or_default(r2, -1)))
 
     std.io.println("")
     std.io.println("Checking values:")
-    std.io.println("  10/2 has value? " + to_string(is_some(r1)))
-    std.io.println("  10/0 has value? " + to_string(is_some(r2)))
+    std.io.println("  10/2 has value? " + if is_some(r1) { "true" } else { "false" })
+    std.io.println("  10/0 has value? " + if is_some(r2) { "true" } else { "false" })
 
     // Transform option
     std.io.println("")
     std.io.println("Doubling values:")
     let doubled: Option[i32] = double_option(r1)
-    std.io.println("  double(10/2) = " + to_string(get_or_default(doubled, -1)))
+    std.io.println("  double(10/2) = " + std.int.to_string(get_or_default(doubled, -1)))
 
     let doubled2: Option[i32] = double_option(r2)
-    std.io.println("  double(10/0) = " + to_string(get_or_default(doubled2, -1)))
+    std.io.println("  double(10/0) = " + std.int.to_string(get_or_default(doubled2, -1)))
 }

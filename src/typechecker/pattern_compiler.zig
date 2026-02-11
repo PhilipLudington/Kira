@@ -370,7 +370,15 @@ pub const PatternCompiler = struct {
 
             .named => |n| self.checkNamedTypeExhaustiveness(n.symbol_id, spaces, missing),
 
-            .instantiated => |inst| self.checkNamedTypeExhaustiveness(inst.base_symbol_id, spaces, missing),
+            .instantiated => |inst| {
+                // Instantiated Option[T] or Result[T, E]
+                if (std.mem.eql(u8, inst.base_name, "Option") and inst.type_arguments.len == 1) {
+                    return self.checkOptionExhaustiveness(spaces, missing);
+                } else if (std.mem.eql(u8, inst.base_name, "Result") and inst.type_arguments.len == 2) {
+                    return self.checkResultExhaustiveness(spaces, missing);
+                }
+                return self.checkNamedTypeExhaustiveness(inst.base_symbol_id, spaces, missing);
+            },
 
             .tuple => |t| self.checkTupleExhaustiveness(t.element_types, spaces, missing),
 

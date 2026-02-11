@@ -38,19 +38,19 @@ effect fn main() -> void {
 
     // Build a list [1, 2, 3]
     let list1: List[i32] = build_list_3(1, 2, 3)
-    std.io.println("List 1 length: " + to_string(std.list.length(list1)))
+    std.io.println("List 1 length: " + std.int.to_string(std.list.length(list1)))
 
     // Build another list [4, 5, 6]
     let list2: List[i32] = build_list_3(4, 5, 6)
-    std.io.println("List 2 length: " + to_string(std.list.length(list2)))
+    std.io.println("List 2 length: " + std.int.to_string(std.list.length(list2)))
 
     // Concatenate
     let combined: List[i32] = concat_lists(list1, list2)
-    std.io.println("Combined length: " + to_string(std.list.length(combined)))
+    std.io.println("Combined length: " + std.int.to_string(std.list.length(combined)))
 
     // Reverse
     let reversed: List[i32] = reverse_list(list1)
-    std.io.println("Reversed length: " + to_string(std.list.length(reversed)))
+    std.io.println("Reversed length: " + std.int.to_string(std.list.length(reversed)))
 
     std.io.println("")
     std.io.println("List operations complete!")

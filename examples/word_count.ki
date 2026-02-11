@@ -44,9 +44,9 @@ fn analyze_text(text: string) -> TextStats {
 
 // Format statistics for display (pure function)
 fn format_stats(stats: TextStats) -> string {
-    return "Characters: " + to_string(stats.chars) + "\n" +
-           "Words: " + to_string(stats.words) + "\n" +
-           "Lines: " + to_string(stats.lines)
+    return "Characters: " + std.int.to_string(stats.chars) + "\n" +
+           "Words: " + std.int.to_string(stats.words) + "\n" +
+           "Lines: " + std.int.to_string(stats.lines)
 }
 
 // Analyze a file and print statistics

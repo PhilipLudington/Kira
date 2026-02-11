@@ -93,9 +93,21 @@ pub fn typesEqual(a: ResolvedType, b: ResolvedType) bool {
 }
 
 /// Check if source type is assignable to target type.
-/// This is stricter than equality in Kira - no implicit conversions.
+/// Allows coercions that are safe: fixed-size arrays [T; N] → dynamic [T].
 pub fn isAssignable(target: ResolvedType, source: ResolvedType) bool {
-    // In Kira, types must be exactly equal (no implicit conversions)
+    // Error types are assignable to anything (for error recovery)
+    if (target.isError() or source.isError()) return true;
+
+    // Array coercion: [T; N] is assignable to [T]
+    if (target.kind == .array and source.kind == .array) {
+        const ta = target.kind.array;
+        const sa = source.kind.array;
+        if (ta.size == null and sa.size != null) {
+            // Fixed-size → dynamic: allowed if element types match
+            return typesEqual(ta.element_type.*, sa.element_type.*);
+        }
+    }
+
     return typesEqual(target, source);
 }
 
@@ -157,7 +169,14 @@ pub fn getIterableElement(resolved_type: ResolvedType) ?ResolvedType {
             ResolvedType.primitive(.char, resolved_type.span)
         else
             null,
-        // For generic types, would need to check Iterator impl
+        .instantiated => |inst| {
+            // Generic collections: first type argument is the element type
+            // e.g., List[i32] → i32, List[string] → string
+            if (inst.type_arguments.len > 0) {
+                return inst.type_arguments[0];
+            }
+            return null;
+        },
         else => null,
     };
 }

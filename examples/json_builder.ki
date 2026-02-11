@@ -18,7 +18,7 @@ fn json_to_string(value: JsonValue) -> string {
             }
             return "false"
         }
-        JsonNumber(n) => { return to_string(n) }
+        JsonNumber(n) => { return std.int.to_string(n) }
         JsonString(s) => { return "\"" + s + "\"" }
     }
 }
@@ -50,7 +50,7 @@ fn indent(level: i32) -> string {
 
 fn build_pretty_json(name: string, age: i32) -> string {
     let i1: string = indent(1)
-    return "{\n" + i1 + "\"name\": \"" + name + "\",\n" + i1 + "\"age\": " + to_string(age) + "\n}"
+    return "{\n" + i1 + "\"name\": \"" + name + "\",\n" + i1 + "\"age\": " + std.int.to_string(age) + "\n}"
 }
 
 // Entry point

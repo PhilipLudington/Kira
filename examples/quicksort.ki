@@ -50,17 +50,17 @@ effect fn main() -> void {
     // Create a demo list
     let list: List[i32] = demo_list()
     std.io.println("Demo list created with 5 elements")
-    std.io.println("List length: " + to_string(std.list.length(list)))
+    std.io.println("List length: " + std.int.to_string(std.list.length(list)))
 
     std.io.println("")
     std.io.println("Comparison function demo:")
-    std.io.println("  compare(1, 2) = " + to_string(compare(1, 2)))
-    std.io.println("  compare(2, 1) = " + to_string(compare(2, 1)))
-    std.io.println("  compare(1, 1) = " + to_string(compare(1, 1)))
+    std.io.println("  compare(1, 2) = " + std.int.to_string(compare(1, 2)))
+    std.io.println("  compare(2, 1) = " + std.int.to_string(compare(2, 1)))
+    std.io.println("  compare(1, 1) = " + std.int.to_string(compare(1, 1)))
 
     std.io.println("")
     std.io.println("Finding minimum in 5..1:")
-    std.io.println("  min = " + to_string(find_min_recursive(1, 5, 999)))
+    std.io.println("  min = " + std.int.to_string(find_min_recursive(1, 5, 999)))
 
     std.io.println("")
     std.io.println("Note: Full quicksort requires list destructuring")

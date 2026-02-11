@@ -18,7 +18,7 @@ effect fn main() -> void {
 
     // Start with empty stack using std.list.empty
     let empty: List[i32] = std.list.empty()
-    std.io.println("Empty stack size: " + to_string(stack_size(empty)))
+    std.io.println("Empty stack size: " + std.int.to_string(stack_size(empty)))
 
     // Push items using cons
     let s1: List[i32] = push(empty, 10)
@@ -26,6 +26,6 @@ effect fn main() -> void {
     let s3: List[i32] = push(s2, 30)
 
     std.io.println("After pushing 10, 20, 30:")
-    std.io.println("Stack size: " + to_string(stack_size(s3)))
+    std.io.println("Stack size: " + std.int.to_string(stack_size(s3)))
     std.io.println("Done!")
 }

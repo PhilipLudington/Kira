@@ -68,7 +68,7 @@ fn scale_name(s: Scale) -> string {
 
 // Format temperature
 fn format_temp(t: Temperature) -> string {
-    return to_string(t.value) + " " + scale_name(t.scale)
+    return std.float.to_string(t.value) + " " + scale_name(t.scale)
 }
 
 // Entry point

@@ -52,22 +52,22 @@ effect fn main() -> void {
     // Test 1: Call with named function (add)
     std.io.println("Test 1: my_fold with named function 'add'")
     let sum: i32 = my_fold(list, 0, add)
-    std.io.println("  sum = " + to_string(sum) + " (expected: 15)")
+    std.io.println("  sum = " + std.int.to_string(sum) + " (expected: 15)")
 
     // Test 2: Call with different named function (multiply)
     std.io.println("Test 2: my_fold with named function 'multiply'")
     let product: i32 = my_fold(list, 1, multiply)
-    std.io.println("  product = " + to_string(product) + " (expected: 120)")
+    std.io.println("  product = " + std.int.to_string(product) + " (expected: 120)")
 
     // Test 3: Call with lambda (this was the problematic case in Bug 1)
     std.io.println("Test 3: my_fold with inline lambda (Bug 1 scenario)")
     let sum2: i32 = my_fold(list, 0, fn(acc: i32, x: i32) -> i32 { return acc + x })
-    std.io.println("  sum2 = " + to_string(sum2) + " (expected: 15)")
+    std.io.println("  sum2 = " + std.int.to_string(sum2) + " (expected: 15)")
 
     // Test 4: Call with another lambda after previous lambda
     std.io.println("Test 4: my_fold with another lambda")
     let doubled_sum: i32 = my_fold(list, 0, fn(acc: i32, x: i32) -> i32 { return acc + x * 2 })
-    std.io.println("  doubled_sum = " + to_string(doubled_sum) + " (expected: 30)")
+    std.io.println("  doubled_sum = " + std.int.to_string(doubled_sum) + " (expected: 30)")
 
     // Test 5: Interleave named and lambda calls (the original bug scenario)
     std.io.println("Test 5: Interleaved named and lambda calls")
@@ -75,10 +75,10 @@ effect fn main() -> void {
     let r2: i32 = my_fold(list, 0, fn(a: i32, b: i32) -> i32 { return a + b })
     let r3: i32 = my_fold(list, 1, multiply)
     let r4: i32 = my_fold(list, 1, fn(a: i32, b: i32) -> i32 { return a * b })
-    std.io.println("  r1 (add) = " + to_string(r1))
-    std.io.println("  r2 (lambda +) = " + to_string(r2))
-    std.io.println("  r3 (multiply) = " + to_string(r3))
-    std.io.println("  r4 (lambda *) = " + to_string(r4))
+    std.io.println("  r1 (add) = " + std.int.to_string(r1))
+    std.io.println("  r2 (lambda +) = " + std.int.to_string(r2))
+    std.io.println("  r3 (multiply) = " + std.int.to_string(r3))
+    std.io.println("  r4 (lambda *) = " + std.int.to_string(r4))
 
     std.io.println("")
     if sum == 15 {

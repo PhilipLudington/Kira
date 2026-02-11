@@ -80,7 +80,7 @@ fn show_expr(expr: Expr) -> string {
     var result: string = ""
     match expr {
         Number(n) => {
-            result = to_string(n)
+            result = std.int.to_string(n)
         }
         Add(left, right) => {
             result = "(" + show_expr(left) + " + " + show_expr(right) + ")"
@@ -106,7 +106,7 @@ fn is_digit(c: char) -> bool {
 // Convert digit character to integer
 fn digit_to_int(c: char) -> i32 {
     // ASCII: '0' = 48
-    return to_int(c) - 48
+    return std.char.to_i32(c) - 48
 }
 
 // Skip whitespace at the beginning of input
@@ -186,7 +186,7 @@ effect fn main() -> void {
     let expr1: Expr = Add(Number(2), Number(3))
     std.io.println("Expression: " + show_expr(expr1))
     match eval(expr1) {
-        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
         Err(e) => { std.io.println("Error: " + e) }
     }
     std.io.println("")
@@ -195,7 +195,7 @@ effect fn main() -> void {
     let expr2: Expr = Mul(Add(Number(2), Number(3)), Number(4))
     std.io.println("Expression: " + show_expr(expr2))
     match eval(expr2) {
-        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
         Err(e) => { std.io.println("Error: " + e) }
     }
     std.io.println("")
@@ -204,7 +204,7 @@ effect fn main() -> void {
     let expr3: Expr = Div(Number(10), Sub(Number(5), Number(3)))
     std.io.println("Expression: " + show_expr(expr3))
     match eval(expr3) {
-        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
         Err(e) => { std.io.println("Error: " + e) }
     }
     std.io.println("")
@@ -213,7 +213,7 @@ effect fn main() -> void {
     let expr4: Expr = Div(Number(10), Number(0))
     std.io.println("Expression: " + show_expr(expr4))
     match eval(expr4) {
-        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
         Err(e) => { std.io.println("Error: " + e) }
     }
     std.io.println("")
@@ -228,7 +228,7 @@ effect fn main() -> void {
     )
     std.io.println("Expression: " + show_expr(expr5))
     match eval(expr5) {
-        Ok(r) => { std.io.println("Result: " + to_string(r)) }
+        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
         Err(e) => { std.io.println("Error: " + e) }
     }
 

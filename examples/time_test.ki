@@ -6,7 +6,7 @@ effect fn main() -> void {
 
     // Test now() - get current timestamp
     let start: i64 = std.time.now()
-    std.io.println("Start timestamp: " + to_string(start))
+    std.io.println("Start timestamp: " + std.int.to_string(start))
 
     // Test sleep() - pause execution
     std.io.println("Sleeping for 100ms...")
@@ -14,11 +14,11 @@ effect fn main() -> void {
 
     // Get end timestamp
     let end: i64 = std.time.now()
-    std.io.println("End timestamp: " + to_string(end))
+    std.io.println("End timestamp: " + std.int.to_string(end))
 
     // Test elapsed() - calculate difference
     let elapsed: i64 = std.time.elapsed(start, end)
-    std.io.println("Elapsed time: " + to_string(elapsed) + " ms")
+    std.io.println("Elapsed time: " + std.int.to_string(elapsed) + " ms")
 
     // Verify elapsed is approximately 100ms (with some tolerance)
     if elapsed >= 90 {

@@ -38,18 +38,18 @@ effect fn main() -> void {
 
     // Build: (3 + 4) * 2
     let expr1: Expr = Mul(Add(Num(3.0), Num(4.0)), Num(2.0))
-    std.io.println("(3 + 4) * 2 = " + to_string(eval(expr1)))
+    std.io.println("(3 + 4) * 2 = " + std.float.to_string(eval(expr1)))
 
     // Build: 10 - (2 * 3)
     let expr2: Expr = Sub(Num(10.0), Mul(Num(2.0), Num(3.0)))
-    std.io.println("10 - (2 * 3) = " + to_string(eval(expr2)))
+    std.io.println("10 - (2 * 3) = " + std.float.to_string(eval(expr2)))
 
     // Build: -5
     let expr3: Expr = Neg(Num(5.0))
-    std.io.println("-5 = " + to_string(eval(expr3)))
+    std.io.println("-5 = " + std.float.to_string(eval(expr3)))
 
     // Complex: ((1 + 2) * 3) - 4
     let expr4: Expr = Sub(Mul(Add(Num(1.0), Num(2.0)), Num(3.0)), Num(4.0))
-    std.io.println("((1 + 2) * 3) - 4 = " + to_string(eval(expr4)))
-    std.io.println("  Operations: " + to_string(count_ops(expr4)))
+    std.io.println("((1 + 2) * 3) - 4 = " + std.float.to_string(eval(expr4)))
+    std.io.println("  Operations: " + std.int.to_string(count_ops(expr4)))
 }

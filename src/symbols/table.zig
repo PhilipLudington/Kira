@@ -64,7 +64,7 @@ pub const SymbolTable = struct {
         // Create global scope
         table.scopes.append(allocator, Scope.init(0, .global, null)) catch unreachable;
 
-        // Register built-in types (List[T], HashMap, StringBuilder)
+        // Register built-in types (List[T], HashMap, StringBuilder, Option[T], Result[T, E])
         table.registerBuiltinTypes();
 
         return table;
@@ -100,6 +100,33 @@ pub const SymbolTable = struct {
         _ = self.define(Symbol.typeDef(0, "StringBuilder", .{
             .generic_params = null,
             .definition = .{ .product_type = .{ .fields = self.allocator.alloc(Symbol.RecordFieldInfo, 0) catch unreachable } },
+        }, true, builtin_span)) catch unreachable;
+
+        // Option[T] — generic sum type with Some(T) and None variants
+        const option_gp = self.allocator.alloc(Symbol.GenericParamInfo, 1) catch unreachable;
+        option_gp[0] = .{ .name = "T", .constraints = null };
+
+        const option_variants = self.allocator.alloc(Symbol.VariantInfo, 2) catch unreachable;
+        option_variants[0] = .{ .name = "Some", .fields = null, .span = builtin_span };
+        option_variants[1] = .{ .name = "None", .fields = null, .span = builtin_span };
+
+        _ = self.define(Symbol.typeDef(0, "Option", .{
+            .generic_params = option_gp,
+            .definition = .{ .sum_type = .{ .variants = option_variants } },
+        }, true, builtin_span)) catch unreachable;
+
+        // Result[T, E] — generic sum type with Ok(T) and Err(E) variants
+        const result_gp = self.allocator.alloc(Symbol.GenericParamInfo, 2) catch unreachable;
+        result_gp[0] = .{ .name = "T", .constraints = null };
+        result_gp[1] = .{ .name = "E", .constraints = null };
+
+        const result_variants = self.allocator.alloc(Symbol.VariantInfo, 2) catch unreachable;
+        result_variants[0] = .{ .name = "Ok", .fields = null, .span = builtin_span };
+        result_variants[1] = .{ .name = "Err", .fields = null, .span = builtin_span };
+
+        _ = self.define(Symbol.typeDef(0, "Result", .{
+            .generic_params = result_gp,
+            .definition = .{ .sum_type = .{ .variants = result_variants } },
         }, true, builtin_span)) catch unreachable;
     }
 
@@ -502,8 +529,8 @@ test "symbol table basic operations" {
     const sym = Symbol.variable(0, "x", &int_type, false, false, span);
     const id = try table.define(sym);
 
-    // IDs 0, 1, and 2 are taken by built-in types (List, HashMap, StringBuilder)
-    try std.testing.expectEqual(@as(SymbolId, 3), id);
+    // IDs 0-4 are taken by built-in types (List, HashMap, StringBuilder, Option, Result)
+    try std.testing.expectEqual(@as(SymbolId, 5), id);
 
     // Look it up
     const found = table.lookup("x");

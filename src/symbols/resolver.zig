@@ -50,6 +50,18 @@ pub const ResolveError = error{
     OutOfMemory,
 };
 
+const builtin_span = Span{
+    .start = .{ .line = 0, .column = 0, .offset = 0 },
+    .end = .{ .line = 0, .column = 0, .offset = 0 },
+};
+
+// Stable placeholder used for inferred pattern bindings.
+// This avoids storing pointers to stack-allocated Type values.
+var inferred_binding_type = Type{
+    .kind = .{ .inferred = {} },
+    .span = builtin_span,
+};
+
 /// Diagnostic message for resolution errors
 pub const Diagnostic = struct {
     message: []const u8,
@@ -1046,11 +1058,7 @@ pub const Resolver = struct {
         switch (pattern.kind) {
             .identifier => |ident| {
                 // Create a placeholder type if none provided
-                const binding_type = explicit_type orelse blk: {
-                    // Type will be inferred by type checker
-                    var inferred = Type.init(.{ .inferred = {} }, pattern.span);
-                    break :blk &inferred;
-                };
+                const binding_type = explicit_type orelse &inferred_binding_type;
 
                 const sym = Symbol.variable(0, ident.name, binding_type, ident.is_mutable, false, pattern.span);
                 _ = self.table.define(sym) catch |err| {
@@ -1089,8 +1097,7 @@ pub const Resolver = struct {
                         try self.resolvePattern(pat, null, false);
                     } else {
                         // Shorthand: { x } binds x
-                        var inferred = Type.init(.{ .inferred = {} }, field.span);
-                        const sym = Symbol.variable(0, field.name, &inferred, false, false, field.span);
+                        const sym = Symbol.variable(0, field.name, &inferred_binding_type, false, false, field.span);
                         _ = self.table.define(sym) catch |err| {
                             if (err == error.DuplicateDefinition) {
                                 try self.addError("Duplicate binding '{s}'", .{field.name}, field.span);

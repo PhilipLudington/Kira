@@ -12,6 +12,8 @@ cmd=(
   --sandbox "$SANDBOX_MODE"
   --ask-for-approval "$APPROVAL_POLICY"
   --add-dir /tmp
+  --add-dir /opt/homebrew/Cellar/zig
+  --add-dir /Users/mrphil/.cache/zig
 )
 
 # Optional extra writable roots, colon-separated:

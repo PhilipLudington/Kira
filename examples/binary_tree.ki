@@ -74,13 +74,13 @@ effect fn main() -> void {
         Node(7, Empty, leaf(9)))
 
     std.io.println("Tree statistics:")
-    std.io.println("  Size: " + to_string(size(tree)))
-    std.io.println("  Height: " + to_string(height(tree)))
-    std.io.println("  Sum: " + to_string(sum(tree)))
+    std.io.println("  Size: " + std.int.to_string(size(tree)))
+    std.io.println("  Height: " + std.int.to_string(height(tree)))
+    std.io.println("  Sum: " + std.int.to_string(sum(tree)))
 
     std.io.println("")
     std.io.println("Contains checks:")
-    std.io.println("  Contains 5? " + to_string(contains(tree, 5)))
-    std.io.println("  Contains 3? " + to_string(contains(tree, 3)))
-    std.io.println("  Contains 6? " + to_string(contains(tree, 6)))
+    std.io.println("  Contains 5? " + if contains(tree, 5) { "true" } else { "false" })
+    std.io.println("  Contains 3? " + if contains(tree, 3) { "true" } else { "false" })
+    std.io.println("  Contains 6? " + if contains(tree, 6) { "true" } else { "false" })
 }

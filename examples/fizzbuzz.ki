@@ -15,7 +15,7 @@ fn fizzbuzz(n: i32) -> string {
     if div5 {
         return "Buzz"
     }
-    return to_string(n)
+    return std.int.to_string(n)
 }
 
 // Print FizzBuzz from current to max (recursive)
@@ -23,7 +23,7 @@ effect fn print_fizzbuzz(current: i32, max: i32) -> void {
     if current > max {
         return
     }
-    std.io.println(to_string(current) + ": " + fizzbuzz(current))
+    std.io.println(std.int.to_string(current) + ": " + fizzbuzz(current))
     print_fizzbuzz(current + 1, max)
 }
 
@@ -50,5 +50,5 @@ effect fn main() -> void {
     std.io.println("")
     std.io.println("Statistics for 1-100:")
     let fb_count: i32 = count_fizzbuzzes(1, 100, 0)
-    std.io.println("  FizzBuzz count: " + to_string(fb_count))
+    std.io.println("  FizzBuzz count: " + std.int.to_string(fb_count))
 }
