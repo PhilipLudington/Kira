@@ -990,28 +990,30 @@ pub const TypeChecker = struct {
         };
     }
 
-    fn checkStdFunctionCall(self: *TypeChecker, fc: Expression.FunctionCall, span: Span) TypeCheckError!?ResolvedType {
-        const maybe_path = try self.extractExpressionPath(fc.callee);
-        if (maybe_path == null) return null;
-        const path = maybe_path.?;
-
+    fn checkStdCallByPath(
+        self: *TypeChecker,
+        path: [][]const u8,
+        generic_args: ?[]*Type,
+        arguments: []*Expression,
+        span: Span,
+    ) TypeCheckError!?ResolvedType {
         if (path.len != 3) return null;
         if (!std.mem.eql(u8, path[0], "std")) return null;
 
         // std.io.*
         if (std.mem.eql(u8, path[1], "io")) {
             if (std.mem.eql(u8, path[2], "println") or std.mem.eql(u8, path[2], "print")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 try self.addEffectViolationIfNeeded(span);
                 return ResolvedType.voidType(span);
             }
             if (std.mem.eql(u8, path[2], "read_line")) {
-                if (fc.arguments.len != 0) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, fc.arguments.len, span));
+                if (arguments.len != 0) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
                 try self.addEffectViolationIfNeeded(span);
@@ -1027,18 +1029,18 @@ pub const TypeChecker = struct {
         // std.fs.*
         if (std.mem.eql(u8, path[1], "fs")) {
             if (std.mem.eql(u8, path[2], "read_file")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                const arg_t = try self.checkExpression(fc.arguments[0]);
-                const expected = ResolvedType.primitive(.string, fc.arguments[0].span);
+                const arg_t = try self.checkExpression(arguments[0]);
+                const expected = ResolvedType.primitive(.string, arguments[0].span);
                 if (!unify.isAssignable(expected, arg_t)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         expected,
                         arg_t,
-                        fc.arguments[0].span,
+                        arguments[0].span,
                     ));
                 }
                 try self.addEffectViolationIfNeeded(span);
@@ -1054,47 +1056,47 @@ pub const TypeChecker = struct {
         // std.string.*
         if (std.mem.eql(u8, path[1], "string")) {
             if (std.mem.eql(u8, path[2], "length")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.i32, span);
             }
             if (std.mem.eql(u8, path[2], "trim")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.string, span);
             }
             if (std.mem.eql(u8, path[2], "substring")) {
-                if (fc.arguments.len != 3) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 3, fc.arguments.len, span));
+                if (arguments.len != 3) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 3, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
-                _ = try self.checkExpression(fc.arguments[1]);
-                _ = try self.checkExpression(fc.arguments[2]);
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                _ = try self.checkExpression(arguments[2]);
                 return ResolvedType.primitive(.string, span);
             }
             if (std.mem.eql(u8, path[2], "char_at")) {
-                if (fc.arguments.len != 2) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
-                _ = try self.checkExpression(fc.arguments[1]);
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
                 return try self.makeOptionType(ResolvedType.primitive(.char, span), span);
             }
             if (std.mem.eql(u8, path[2], "split")) {
-                if (fc.arguments.len != 2) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
-                _ = try self.checkExpression(fc.arguments[1]);
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
                 return try self.makeListType(ResolvedType.primitive(.string, span), span);
             }
             return null;
@@ -1103,38 +1105,38 @@ pub const TypeChecker = struct {
         // std.list.*
         if (std.mem.eql(u8, path[1], "list")) {
             if (std.mem.eql(u8, path[2], "length")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.i32, span);
             }
             if (std.mem.eql(u8, path[2], "head")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                const list_t = try self.checkExpression(fc.arguments[0]);
+                const list_t = try self.checkExpression(arguments[0]);
                 const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
                 return try self.makeOptionType(elem_t, span);
             }
             if (std.mem.eql(u8, path[2], "tail")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                const list_t = try self.checkExpression(fc.arguments[0]);
+                const list_t = try self.checkExpression(arguments[0]);
                 const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
                 const list_elem_t = try self.makeListType(elem_t, span);
                 return try self.makeOptionType(list_elem_t, span);
             }
             if (std.mem.eql(u8, path[2], "empty")) {
-                if (fc.arguments.len != 0) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, fc.arguments.len, span));
+                if (arguments.len != 0) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                if (fc.generic_args) |gargs| {
+                if (generic_args) |gargs| {
                     if (gargs.len == 1) {
                         const elem_t = try self.resolveAstType(gargs[0]);
                         return try self.makeListType(elem_t, span);
@@ -1143,23 +1145,23 @@ pub const TypeChecker = struct {
                 return ResolvedType.errorType(span);
             }
             if (std.mem.eql(u8, path[2], "cons")) {
-                if (fc.arguments.len != 2) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                const elem_t = try self.checkExpression(fc.arguments[0]);
-                _ = try self.checkExpression(fc.arguments[1]);
+                const elem_t = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
                 return try self.makeListType(elem_t, span);
             }
             if (std.mem.eql(u8, path[2], "map")) {
-                if (fc.arguments.len != 2) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                const list_t = try self.checkExpression(fc.arguments[0]);
-                const fn_t = try self.checkExpression(fc.arguments[1]);
+                const list_t = try self.checkExpression(arguments[0]);
+                const fn_t = try self.checkExpression(arguments[1]);
                 var out_t: ?ResolvedType = null;
-                if (fc.generic_args) |gargs| {
+                if (generic_args) |gargs| {
                     if (gargs.len == 2) {
                         out_t = try self.resolveAstType(gargs[1]);
                     }
@@ -1173,12 +1175,12 @@ pub const TypeChecker = struct {
                 return try self.makeListType(out_t orelse ResolvedType.errorType(span), span);
             }
             if (std.mem.eql(u8, path[2], "filter")) {
-                if (fc.arguments.len != 2) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                const list_t = try self.checkExpression(fc.arguments[0]);
-                _ = try self.checkExpression(fc.arguments[1]);
+                const list_t = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
                 const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
                 return try self.makeListType(elem_t, span);
             }
@@ -1188,28 +1190,28 @@ pub const TypeChecker = struct {
         // std.time.*
         if (std.mem.eql(u8, path[1], "time")) {
             if (std.mem.eql(u8, path[2], "now")) {
-                if (fc.arguments.len != 0) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, fc.arguments.len, span));
+                if (arguments.len != 0) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 0, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
                 return ResolvedType.primitive(.i64, span);
             }
             if (std.mem.eql(u8, path[2], "sleep")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 try self.addEffectViolationIfNeeded(span);
                 return ResolvedType.voidType(span);
             }
             if (std.mem.eql(u8, path[2], "elapsed")) {
-                if (fc.arguments.len != 2) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, fc.arguments.len, span));
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
-                _ = try self.checkExpression(fc.arguments[1]);
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
                 return ResolvedType.primitive(.i64, span);
             }
             return null;
@@ -1218,49 +1220,49 @@ pub const TypeChecker = struct {
         // std.int.* / std.float.* / std.char.*
         if (std.mem.eql(u8, path[1], "int")) {
             if (std.mem.eql(u8, path[2], "to_string")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.string, span);
             }
             if (std.mem.eql(u8, path[2], "to_i64")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.i64, span);
             }
             return null;
         }
         if (std.mem.eql(u8, path[1], "float")) {
             if (std.mem.eql(u8, path[2], "to_string")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.string, span);
             }
             if (std.mem.eql(u8, path[2], "from_int")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.f64, span);
             }
             return null;
         }
         if (std.mem.eql(u8, path[1], "char")) {
             if (std.mem.eql(u8, path[2], "to_i32")) {
-                if (fc.arguments.len != 1) {
-                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, fc.arguments.len, span));
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
                     return ResolvedType.errorType(span);
                 }
-                _ = try self.checkExpression(fc.arguments[0]);
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.i32, span);
             }
             return null;
@@ -1269,8 +1271,26 @@ pub const TypeChecker = struct {
         return null;
     }
 
+    fn checkStdFunctionCall(self: *TypeChecker, fc: Expression.FunctionCall, span: Span) TypeCheckError!?ResolvedType {
+        const maybe_path = try self.extractExpressionPath(fc.callee);
+        if (maybe_path == null) return null;
+        return try self.checkStdCallByPath(maybe_path.?, fc.generic_args, fc.arguments, span);
+    }
+
     /// Check method call
     fn checkMethodCall(self: *TypeChecker, mc: Expression.MethodCall, span: Span) TypeCheckError!ResolvedType {
+        const maybe_obj_path = try self.extractExpressionPath(mc.object);
+        if (maybe_obj_path) |obj_path| {
+            const type_alloc = self.typeAllocator();
+            const path = try type_alloc.alloc([]const u8, obj_path.len + 1);
+            @memcpy(path[0..obj_path.len], obj_path);
+            path[obj_path.len] = mc.method;
+
+            if (try self.checkStdCallByPath(path, mc.generic_args, mc.arguments, span)) |std_type| {
+                return std_type;
+            }
+        }
+
         const object_type = try self.checkExpression(mc.object);
 
         if (object_type.isError()) {
@@ -1317,10 +1337,19 @@ pub const TypeChecker = struct {
         self.current_return_type = return_type;
         self.in_effect_function = closure.is_effect;
 
-        // Check body
+        // Check body in closure scope with parameters bound.
+        _ = try self.symbol_table.enterScope(.function);
+        errdefer self.scopeCleanup();
+        for (closure.parameters) |param| {
+            const param_sym = Symbol.variable(unassigned_symbol_id, param.name, param.param_type, false, false, param.span);
+            _ = self.symbol_table.define(param_sym) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+            };
+        }
         for (closure.body) |*stmt| {
             try self.checkStatement(stmt);
         }
+        try self.scopeLeave();
 
         // Build function type
         const return_type_ptr = try type_alloc.create(ResolvedType);
