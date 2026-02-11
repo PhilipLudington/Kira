@@ -990,6 +990,19 @@ pub const TypeChecker = struct {
         };
     }
 
+    fn getListElementType(self: *TypeChecker, resolved_type: ResolvedType) ?ResolvedType {
+        _ = self;
+        return switch (resolved_type.kind) {
+            .instantiated => |inst| {
+                if (std.mem.eql(u8, inst.base_name, "List") and inst.type_arguments.len == 1) {
+                    return inst.type_arguments[0];
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
     fn checkStdCallByPath(
         self: *TypeChecker,
         path: [][]const u8,
@@ -1183,6 +1196,20 @@ pub const TypeChecker = struct {
                 _ = try self.checkExpression(arguments[1]);
                 const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
                 return try self.makeListType(elem_t, span);
+            }
+            return null;
+        }
+
+        // std.map.*
+        if (std.mem.eql(u8, path[1], "map")) {
+            if (std.mem.eql(u8, path[2], "contains")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return ResolvedType.primitive(.bool, span);
             }
             return null;
         }
@@ -1622,28 +1649,73 @@ pub const TypeChecker = struct {
                 }
             }
         } else if (std.mem.eql(u8, vc.variant_name, "Cons")) {
-            if (vc.arguments) |args| {
-                if (args.len == 2) {
-                    const elem_type = try self.checkExpression(args[0]);
-                    _ = try self.checkExpression(args[1]);
-                    if (self.symbol_table.lookup("List")) |list_sym| {
-                        const type_alloc = self.typeAllocator();
-                        const type_args = try type_alloc.alloc(ResolvedType, 1);
-                        type_args[0] = elem_type;
-                        return .{
-                            .kind = .{ .instantiated = .{
-                                .base_symbol_id = list_sym.id,
-                                .base_name = "List",
-                                .type_arguments = type_args,
-                            } },
-                            .span = span,
-                        };
+            const arg_count: usize = if (vc.arguments) |args| args.len else 0;
+            if (arg_count != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                    self.allocator,
+                    2,
+                    arg_count,
+                    span,
+                ));
+                if (vc.arguments) |args| {
+                    for (args) |arg| {
+                        _ = try self.checkExpression(arg);
+                    }
+                }
+                return ResolvedType.errorType(span);
+            }
+
+            const args = vc.arguments.?;
+            const head_type = try self.checkExpression(args[0]);
+            const tail_type = try self.checkExpression(args[1]);
+
+            if (self.getListElementType(tail_type)) |tail_elem_type| {
+                if (tail_elem_type.isError() and !head_type.isError()) {
+                    // Preserve head-driven inference for Cons(_, Nil):
+                    // Nil is represented as List[error] until context is known.
+                    return try self.makeListType(head_type, span);
+                }
+                if (head_type.isError() and !tail_elem_type.isError()) {
+                    return try self.makeListType(tail_elem_type, span);
+                }
+                if (!head_type.isError() and !tail_elem_type.isError() and !unify.typesEqual(head_type, tail_elem_type)) {
+                    try self.addDiagnostic(try errors_mod.typeMismatch(
+                        self.allocator,
+                        tail_elem_type,
+                        head_type,
+                        args[0].span,
+                    ));
+                }
+                return try self.makeListType(tail_elem_type, span);
+            }
+            if (!tail_type.isError()) {
+                const expected_tail_type = try self.makeListType(head_type, args[1].span);
+                if (!expected_tail_type.isError() and !head_type.isError()) {
+                    try self.addDiagnostic(try errors_mod.typeMismatch(
+                        self.allocator,
+                        expected_tail_type,
+                        tail_type,
+                        args[1].span,
+                    ));
+                }
+            }
+            return try self.makeListType(head_type, span);
+        } else if (std.mem.eql(u8, vc.variant_name, "Nil")) {
+            const arg_count: usize = if (vc.arguments) |args| args.len else 0;
+            if (arg_count > 0) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                    self.allocator,
+                    0,
+                    arg_count,
+                    span,
+                ));
+                if (vc.arguments) |args| {
+                    for (args) |arg| {
+                        _ = try self.checkExpression(arg);
                     }
                 }
             }
-        } else if (std.mem.eql(u8, vc.variant_name, "Nil")) {
-            // Nil - empty list, type parameter unknown without context
-            return ResolvedType.errorType(span);
+            return try self.makeListType(ResolvedType.errorType(span), span);
         }
 
         // Search all type definitions for a sum type containing this variant
@@ -2293,6 +2365,48 @@ pub const TypeChecker = struct {
                                 .named => |n| n.pattern,
                             };
                             try self.checkPattern(p, result_types[1]);
+                        }
+                    } else {
+                        try self.addDiagnostic(try errors_mod.simpleError(
+                            self.allocator,
+                            "variant not found in matched type",
+                            pattern.span,
+                        ));
+                    }
+                    return;
+                }
+
+                // Built-in List[T]: handle Cons(head, tail) and Nil patterns directly
+                if (self.getListElementType(expected_type)) |elem_type| {
+                    const pat_arg_count: usize = if (ctor.arguments) |a| a.len else 0;
+                    if (std.mem.eql(u8, ctor.variant_name, "Cons")) {
+                        if (pat_arg_count != 2) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                2,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
+                        } else if (ctor.arguments) |args| {
+                            const head_pattern = switch (args[0]) {
+                                .positional => |pos| pos,
+                                .named => |n| n.pattern,
+                            };
+                            const tail_pattern = switch (args[1]) {
+                                .positional => |pos| pos,
+                                .named => |n| n.pattern,
+                            };
+                            try self.checkPattern(head_pattern, elem_type);
+                            try self.checkPattern(tail_pattern, expected_type);
+                        }
+                    } else if (std.mem.eql(u8, ctor.variant_name, "Nil")) {
+                        if (pat_arg_count > 0) {
+                            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                                self.allocator,
+                                0,
+                                pat_arg_count,
+                                pattern.span,
+                            ));
                         }
                     } else {
                         try self.addDiagnostic(try errors_mod.simpleError(
@@ -3177,7 +3291,6 @@ test "effect: try operator in effect function allowed" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-
     // In an effect function - this should allow try operator
     checker.in_effect_function = true;
 
@@ -3227,7 +3340,6 @@ test "effect: try on Result in non-Result function forbidden" {
 
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
-
 
     // In an effect function (to pass E4 check)
     checker.in_effect_function = true;
@@ -3336,7 +3448,6 @@ test "effect: main function with effect keyword allowed" {
     var checker = TypeChecker.init(allocator, &table);
     defer checker.deinit();
 
-
     // Create a return type
     var return_type = Type.primitive(.void_type, span);
 
@@ -3379,4 +3490,199 @@ test "effect: main function with effect keyword allowed" {
         }
     }
     try std.testing.expect(!found_main_error);
+}
+
+test "patterns: Cons(head, tail) is valid for List[T]" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var elem_type = Type.primitive(.i32, span);
+    var type_args = [_]*Type{&elem_type};
+    var list_type_ast = Type{
+        .kind = .{ .generic = .{
+            .base = "List",
+            .type_arguments = &type_args,
+        } },
+        .span = span,
+    };
+    const expected_list_type = try checker.resolveAstType(&list_type_ast);
+
+    var head_pattern = Pattern.identifier("h", span);
+    var tail_pattern = Pattern.identifier("t", span);
+    var cons_args = [_]Pattern.PatternArg{
+        .{ .positional = &head_pattern },
+        .{ .positional = &tail_pattern },
+    };
+    var cons_pattern = Pattern{
+        .kind = .{ .constructor = .{
+            .type_path = null,
+            .variant_name = "Cons",
+            .arguments = &cons_args,
+        } },
+        .span = span,
+    };
+
+    try checker.checkPattern(&cons_pattern, expected_list_type);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "stdlib: std.map.contains returns bool" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var map_type = Type.named("HashMap", span);
+    var key_type = Type.primitive(.string, span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "m", &map_type, false, false, span));
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "k", &key_type, false, false, span));
+
+    var std_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "std", .generic_args = null } },
+        .span = span,
+    };
+    var std_map = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_ident,
+            .field = "map",
+        } },
+        .span = span,
+    };
+    var contains_fn = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_map,
+            .field = "contains",
+        } },
+        .span = span,
+    };
+    var map_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "m", .generic_args = null } },
+        .span = span,
+    };
+    var key_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "k", .generic_args = null } },
+        .span = span,
+    };
+    var args = [_]*Expression{ &map_ident, &key_ident };
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &contains_fn,
+            .generic_args = null,
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    const call_type = try checker.checkExpression(&call_expr);
+    try std.testing.expect(call_type.isBool());
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "constructors: Cons requires tail to be List[T]" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var head_expr = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
+        .span = span,
+    };
+    var bad_tail_expr = Expression{
+        .kind = .{ .string_literal = .{ .value = "x" } },
+        .span = span,
+    };
+    var args = [_]*Expression{ &head_expr, &bad_tail_expr };
+    var cons_expr = Expression{
+        .kind = .{ .variant_constructor = .{
+            .variant_name = "Cons",
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    _ = try checker.checkExpression(&cons_expr);
+    try std.testing.expect(checker.hasErrors());
+
+    var found_type_mismatch = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "type mismatch") != null) {
+            found_type_mismatch = true;
+        }
+    }
+    try std.testing.expect(found_type_mismatch);
+}
+
+test "constructors: Cons(head, Nil) preserves head element type" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var head_expr = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
+        .span = span,
+    };
+    var nil_expr = Expression{
+        .kind = .{ .variant_constructor = .{
+            .variant_name = "Nil",
+            .arguments = null,
+        } },
+        .span = span,
+    };
+    var cons_args = [_]*Expression{ &head_expr, &nil_expr };
+    var cons_expr = Expression{
+        .kind = .{ .variant_constructor = .{
+            .variant_name = "Cons",
+            .arguments = &cons_args,
+        } },
+        .span = span,
+    };
+
+    const inferred = try checker.checkExpression(&cons_expr);
+    const elem = checker.extractListElementType(inferred) orelse ResolvedType.errorType(span);
+    try std.testing.expect(elem.kind == .primitive);
+    try std.testing.expectEqual(Type.PrimitiveType.i32, elem.kind.primitive);
+
+    var string_type = Type.primitive(.string, span);
+    var expected_args = [_]*Type{&string_type};
+    var expected_list_ast = Type{
+        .kind = .{ .generic = .{
+            .base = "List",
+            .type_arguments = &expected_args,
+        } },
+        .span = span,
+    };
+    const expected_list = try checker.resolveAstType(&expected_list_ast);
+    try std.testing.expect(!unify.isAssignable(expected_list, inferred));
 }
