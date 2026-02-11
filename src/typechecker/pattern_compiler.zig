@@ -162,6 +162,7 @@ pub const PatternCompiler = struct {
     allocator: Allocator,
     symbol_table: *SymbolTable,
     diagnostics: *std.ArrayListUnmanaged(Diagnostic),
+    const tuple_constructor_combo_limit: usize = 4096;
 
     /// Initialize the pattern compiler
     pub fn init(
@@ -251,11 +252,13 @@ pub const PatternCompiler = struct {
                         try args.append(self.allocator, try self.patternToSpace(pat));
                     }
                 }
-                break :blk .{ .constructor = .{
-                    .variant_name = ctor.variant_name,
-                    .type_symbol_id = null, // Will be resolved during checking
-                    .arguments = try args.toOwnedSlice(self.allocator),
-                } };
+                break :blk .{
+                    .constructor = .{
+                        .variant_name = ctor.variant_name,
+                        .type_symbol_id = null, // Will be resolved during checking
+                        .arguments = try args.toOwnedSlice(self.allocator),
+                    },
+                };
             },
 
             .record => |rec| blk: {
@@ -589,13 +592,187 @@ pub const PatternCompiler = struct {
             }
         }
 
-        // TODO: More sophisticated tuple exhaustiveness checking
-        // For now, require a catch-all pattern
+        // Finite constructor-product tuple checking:
+        // If each tuple element is a finite constructor domain (e.g. List top-level:
+        // Cons/Nil, Option: Some/None, Result: Ok/Err, or finite sum type variants),
+        // check that all constructor combinations are covered.
+        var universes = try self.allocator.alloc(std.ArrayListUnmanaged([]const u8), element_types.len);
+        defer {
+            for (universes) |*u| {
+                u.deinit(self.allocator);
+            }
+            self.allocator.free(universes);
+        }
+
+        for (universes) |*u| {
+            u.* = .{};
+        }
+
+        for (element_types, 0..) |elem_type, i| {
+            if (!(try self.collectFiniteConstructorUniverse(elem_type, &universes[i]))) {
+                try missing.append(self.allocator, .{
+                    .description = "_ or (_, ...) tuple pattern",
+                    .variant_name = null,
+                });
+                return false;
+            }
+        }
+
+        if (element_types.len == 0) return true;
+
+        // Bound combinatorial expansion to avoid exponential blowups on large tuples.
+        var combo_count: usize = 1;
+        for (universes) |u| {
+            if (u.items.len == 0) {
+                try missing.append(self.allocator, .{
+                    .description = "_ or (_, ...) tuple pattern",
+                    .variant_name = null,
+                });
+                return false;
+            }
+            combo_count = std.math.mul(usize, combo_count, u.items.len) catch {
+                combo_count = tuple_constructor_combo_limit + 1;
+                break;
+            };
+            if (combo_count > tuple_constructor_combo_limit) break;
+        }
+        if (combo_count > tuple_constructor_combo_limit) {
+            try missing.append(self.allocator, .{
+                .description = "_ or (_, ...) tuple pattern",
+                .variant_name = null,
+            });
+            return false;
+        }
+
+        var indices = try self.allocator.alloc(usize, element_types.len);
+        defer self.allocator.free(indices);
+        @memset(indices, 0);
+
+        while (true) {
+            if (!tupleCombinationCovered(spaces, universes, indices)) {
+                try missing.append(self.allocator, .{
+                    .description = "_ or (_, ...) tuple pattern",
+                    .variant_name = null,
+                });
+                return false;
+            }
+
+            // Odometer increment across constructor domains.
+            var pos = element_types.len;
+            while (pos > 0) {
+                pos -= 1;
+                indices[pos] += 1;
+                if (indices[pos] < universes[pos].items.len) {
+                    break;
+                }
+                indices[pos] = 0;
+                if (pos == 0) {
+                    return true;
+                }
+            }
+        }
+
+        // Unreachable, but keeps control flow explicit for Zig.
         try missing.append(self.allocator, .{
             .description = "_ or (_, ...) tuple pattern",
             .variant_name = null,
         });
         return false;
+    }
+
+    fn collectFiniteConstructorUniverse(
+        self: *PatternCompiler,
+        element_type: ResolvedType,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) !bool {
+        switch (element_type.kind) {
+            .option => {
+                try out.append(self.allocator, "Some");
+                try out.append(self.allocator, "None");
+                return true;
+            },
+            .result => {
+                try out.append(self.allocator, "Ok");
+                try out.append(self.allocator, "Err");
+                return true;
+            },
+            .instantiated => |inst| {
+                // Resolve constructor sets by symbol ID, not by base name, so shadowed or
+                // similarly-named instantiated types use their actual type definitions.
+                return self.collectSymbolConstructors(inst.base_symbol_id, out);
+            },
+            .named => |n| return self.collectSymbolConstructors(n.symbol_id, out),
+            else => return false,
+        }
+    }
+
+    fn collectSymbolConstructors(
+        self: *PatternCompiler,
+        symbol_id: SymbolId,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) !bool {
+        const sym = self.symbol_table.getSymbol(symbol_id) orelse return false;
+        if (sym.kind != .type_def) return false;
+
+        switch (sym.kind.type_def.definition) {
+            .sum_type => |st| {
+                for (st.variants) |v| {
+                    try out.append(self.allocator, v.name);
+                }
+                return st.variants.len > 0;
+            },
+            else => return false,
+        }
+    }
+
+    fn tupleCombinationCovered(
+        spaces: []PatternSpace,
+        universes: []const std.ArrayListUnmanaged([]const u8),
+        indices: []const usize,
+    ) bool {
+        for (spaces) |space| {
+            if (tupleSpaceCoversCombination(space, universes, indices)) return true;
+        }
+        return false;
+    }
+
+    fn tupleSpaceCoversCombination(
+        space: PatternSpace,
+        universes: []const std.ArrayListUnmanaged([]const u8),
+        indices: []const usize,
+    ) bool {
+        return switch (space) {
+            .any => true,
+            .tuple => |elems| blk: {
+                if (elems.len != indices.len) break :blk false;
+                for (elems, 0..) |elem_space, i| {
+                    const ctor_name = universes[i].items[indices[i]];
+                    if (!elementSpaceCoversConstructor(elem_space, ctor_name)) break :blk false;
+                }
+                break :blk true;
+            },
+            .union_space => |alts| blk: {
+                for (alts) |alt| {
+                    if (tupleSpaceCoversCombination(alt, universes, indices)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn elementSpaceCoversConstructor(space: PatternSpace, constructor_name: []const u8) bool {
+        return switch (space) {
+            .any => true,
+            .constructor => |ctor| std.mem.eql(u8, ctor.variant_name, constructor_name),
+            .union_space => |alts| blk: {
+                for (alts) |alt| {
+                    if (elementSpaceCoversConstructor(alt, constructor_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     /// Check exhaustiveness for Option types
@@ -1269,4 +1446,126 @@ test "tuple space structure" {
     try std.testing.expectEqual(@as(usize, 2), tuple_space.tuple.len);
     try std.testing.expect(tuple_space.tuple[0] == .any);
     try std.testing.expect(tuple_space.tuple[1] == .bool_value);
+}
+
+test "tuple exhaustiveness with finite constructors" {
+    const allocator = std.testing.allocator;
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var diagnostics = std.ArrayListUnmanaged(Diagnostic){};
+    defer diagnostics.deinit(allocator);
+
+    var compiler = PatternCompiler.init(allocator, &table, &diagnostics);
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 2, .offset = 1 },
+    };
+
+    const list_sym = table.lookup("List").?;
+    const args_a = try allocator.alloc(ResolvedType, 1);
+    args_a[0] = ResolvedType.primitive(.string, span);
+    const list_a = ResolvedType{
+        .kind = .{ .instantiated = .{
+            .base_symbol_id = list_sym.id,
+            .base_name = "List",
+            .type_arguments = args_a,
+        } },
+        .span = span,
+    };
+
+    const args_b = try allocator.alloc(ResolvedType, 1);
+    args_b[0] = ResolvedType.primitive(.i64, span);
+    const list_b = ResolvedType{
+        .kind = .{ .instantiated = .{
+            .base_symbol_id = list_sym.id,
+            .base_name = "List",
+            .type_arguments = args_b,
+        } },
+        .span = span,
+    };
+
+    var element_types = [_]ResolvedType{ list_a, list_b };
+
+    const nil_ctor = PatternSpace{ .constructor = .{
+        .variant_name = "Nil",
+        .type_symbol_id = null,
+        .arguments = &.{},
+    } };
+    const cons_ctor = PatternSpace{ .constructor = .{
+        .variant_name = "Cons",
+        .type_symbol_id = null,
+        .arguments = &.{},
+    } };
+
+    var t1_elems = [_]PatternSpace{ nil_ctor, nil_ctor };
+    var t2_elems = [_]PatternSpace{ cons_ctor, cons_ctor };
+    var t3_elems = [_]PatternSpace{ nil_ctor, cons_ctor };
+    var t4_elems = [_]PatternSpace{ cons_ctor, nil_ctor };
+    var spaces = [_]PatternSpace{
+        .{ .tuple = t1_elems[0..] },
+        .{ .tuple = t2_elems[0..] },
+        .{ .tuple = t3_elems[0..] },
+        .{ .tuple = t4_elems[0..] },
+    };
+
+    var missing = std.ArrayListUnmanaged(MissingPattern){};
+    defer missing.deinit(allocator);
+
+    const exhaustive = try compiler.checkTupleExhaustiveness(element_types[0..], spaces[0..], &missing);
+    try std.testing.expect(exhaustive);
+    try std.testing.expectEqual(@as(usize, 0), missing.items.len);
+
+    allocator.free(args_a);
+    allocator.free(args_b);
+}
+
+test "instantiated constructor universe uses symbol id, not base name" {
+    const allocator = std.testing.allocator;
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var diagnostics = std.ArrayListUnmanaged(Diagnostic){};
+    defer diagnostics.deinit(allocator);
+
+    var compiler = PatternCompiler.init(allocator, &table, &diagnostics);
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 2, .offset = 1 },
+    };
+
+    _ = try table.enterScope(.block);
+    const variants = try allocator.alloc(Symbol.VariantInfo, 2);
+    variants[0] = .{ .name = "Left", .fields = null, .span = span };
+    variants[1] = .{ .name = "Right", .fields = null, .span = span };
+    const option_like_id = try table.define(Symbol.typeDef(0, "Option", .{
+        .generic_params = null,
+        .definition = .{ .sum_type = .{ .variants = variants } },
+    }, false, span));
+
+    const type_args = try allocator.alloc(ResolvedType, 1);
+    defer allocator.free(type_args);
+    type_args[0] = ResolvedType.primitive(.i32, span);
+
+    const inst_type = ResolvedType{
+        .kind = .{
+            .instantiated = .{
+                .base_symbol_id = option_like_id,
+                .base_name = "Option", // Intentionally collides with builtin name.
+                .type_arguments = type_args,
+            },
+        },
+        .span = span,
+    };
+
+    var universe = std.ArrayListUnmanaged([]const u8){};
+    defer universe.deinit(allocator);
+
+    const ok = try compiler.collectFiniteConstructorUniverse(inst_type, &universe);
+    try std.testing.expect(ok);
+    try std.testing.expectEqual(@as(usize, 2), universe.items.len);
+    try std.testing.expectEqualStrings("Left", universe.items[0]);
+    try std.testing.expectEqualStrings("Right", universe.items[1]);
 }

@@ -104,7 +104,27 @@ Project impact:
 
 ---
 
-## [ ] Bug B: `kira-lisp` still fails type-check with tuple/exhaustiveness/condition cascades
+### [x] Fix A5: tuple constructor-product exhaustiveness in pattern compiler
+
+Status: fixed in local build (`/Users/mrphil/Fun/Kira/zig-out/bin/kira`).
+
+Issue addressed:
+- Tuple matches over finite constructor domains (e.g. `(List[T], List[U])` with `Nil/Cons` combinations)
+  were incorrectly reported as non-exhaustive unless a wildcard arm was present.
+
+Fix:
+- `src/typechecker/pattern_compiler.zig` now performs finite constructor-product coverage for tuple elements
+  (List top-level `Cons/Nil`, Option `Some/None`, Result `Ok/Err`, and finite sum types).
+- Added regression test: `tuple exhaustiveness with finite constructors`.
+
+Project impact:
+- Removed false positives like:
+  - `non-exhaustive match: missing patterns for _ or (_, ...) tuple pattern`
+    at `kira-lisp/src/eval.ki:96`.
+
+---
+
+## [ ] Bug B: `kira-lisp` still fails type-check with remaining binding/typing/effect issues
 
 Status: open. The high-noise constructor and stdlib signature mismatches are fixed, but project type-checking still fails in remaining categories.
 
@@ -117,7 +137,6 @@ Commands:
 ```
 
 Observed error families:
-- `non-exhaustive match: missing patterns ...` (notably tuple/list matching paths)
 - `if condition must be a boolean expression` (remaining sites)
 - `for loop requires an iterable`
 - `type mismatch` on tuple/number/list sites
@@ -131,15 +150,15 @@ No segmentation fault reproduced in this run.
 
 ### Suggested next investigation
 
-1. Isolate tuple-pattern + tuple-subject flow in `match (name_list, value_list)` paths; these appear to trigger downstream cascades.
-2. Investigate exhaustiveness diagnostics for tuple and list composite matches in `src/typechecker/pattern_compiler.zig`.
-3. Confirm condition typing after upstream tuple/match fixes (several `if` errors appear to be secondary).
+1. Investigate binding inference flow for constructor-bound variables (remaining `if condition must be a boolean expression` on numeric compares likely stems from `error_type` bindings).
+2. Investigate tuple-vs-record/list typing around bindings such as `let (bname, bvalue) = binding`.
+3. Resolve remaining iterable inference failures in `for` loops.
 4. Re-check effect-system diagnostics in `kira-lisp` to distinguish intended strictness vs regressions.
 
 ---
 
 ## Quick Triage Priority
 
-1. **Bug B / tuple match + binding typing** - highest impact on project checkability.
-2. **Bug B / exhaustiveness false positives** - high; causes cascading noise.
+1. **Bug B / constructor binding type propagation** - highest impact on project checkability.
+2. **Bug B / iterable + tuple/list binding typing** - high; causes cascading noise.
 3. **Bug B / remaining condition/effect diagnostics** - high; may hide true type errors.
