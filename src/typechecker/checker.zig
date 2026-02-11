@@ -1362,7 +1362,7 @@ pub const TypeChecker = struct {
 
             // Check pattern against subject type and add bindings to scope
             try self.checkPattern(arm.pattern, subject_type);
-            try self.addPatternBindings(arm.pattern, null, subject_type);
+            try self.addPatternBindings(arm.pattern, null, subject_type, false);
 
             // Collect pattern for exhaustiveness checking
             try patterns.append(self.allocator, arm.pattern);
@@ -1873,7 +1873,7 @@ pub const TypeChecker = struct {
                 try self.checkPattern(lb.pattern, init_type);
 
                 // Add all bindings from the pattern to scope
-                try self.addPatternBindings(lb.pattern, lb.explicit_type, null);
+                try self.addPatternBindings(lb.pattern, lb.explicit_type, null, lb.allow_shadow);
             },
 
             .var_binding => |vb| {
@@ -1893,6 +1893,14 @@ pub const TypeChecker = struct {
                             initializer.span,
                         ));
                     }
+                }
+
+                if (!vb.allow_shadow and self.symbol_table.lookupLocal(vb.name) == null and self.symbol_table.lookupInParentScopes(vb.name) != null) {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "shadowing binding requires 'shadow' keyword",
+                        stmt.span,
+                    ));
                 }
 
                 // Add binding to scope so subsequent statements can find it
@@ -1997,7 +2005,7 @@ pub const TypeChecker = struct {
                     try self.checkPattern(for_loop.pattern, elem_type);
                 }
                 // Always add bindings so loop body can reference the variable
-                try self.addPatternBindings(for_loop.pattern, null, null);
+                try self.addPatternBindings(for_loop.pattern, null, null, false);
 
                 for (for_loop.body) |*s| {
                     try self.checkStatement(s);
@@ -2045,7 +2053,7 @@ pub const TypeChecker = struct {
 
                     // Check pattern against subject type and add bindings to scope
                     try self.checkPattern(arm.pattern, subject_type);
-                    try self.addPatternBindings(arm.pattern, null, subject_type);
+                    try self.addPatternBindings(arm.pattern, null, subject_type, false);
 
                     // Collect pattern for exhaustiveness checking
                     try patterns.append(self.allocator, arm.pattern);
@@ -2409,11 +2417,24 @@ pub const TypeChecker = struct {
     /// When explicit_type is null, an inferred placeholder type is used.
     /// subject_type, when provided, is the resolved type of the match subject
     /// and is used to infer concrete types for pattern-bound variables.
-    fn addPatternBindings(self: *TypeChecker, pattern: *const Pattern, explicit_type: ?*Type, subject_type: ?ResolvedType) TypeCheckError!void {
+    fn addPatternBindings(
+        self: *TypeChecker,
+        pattern: *const Pattern,
+        explicit_type: ?*Type,
+        subject_type: ?ResolvedType,
+        allow_shadow: bool,
+    ) TypeCheckError!void {
         switch (pattern.kind) {
             .identifier => |ident| {
                 // Use explicit type or create inferred placeholder (mirrors resolver)
                 const binding_type = explicit_type orelse &inferred_binding_type;
+                if (!allow_shadow and self.symbol_table.lookupLocal(ident.name) == null and self.symbol_table.lookupInParentScopes(ident.name) != null) {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "shadowing binding requires 'shadow' keyword",
+                        pattern.span,
+                    ));
+                }
                 const sym = Symbol.variable(unassigned_symbol_id, ident.name, binding_type, ident.is_mutable, false, pattern.span);
                 const defined_id = self.symbol_table.define(sym) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -2438,8 +2459,8 @@ pub const TypeChecker = struct {
                     for (args, 0..) |arg, i| {
                         const field_subject = if (field_types) |ft| (if (i < ft.len) ft[i] else null) else null;
                         switch (arg) {
-                            .positional => |p| try self.addPatternBindings(p, null, field_subject),
-                            .named => |n| try self.addPatternBindings(n.pattern, null, field_subject),
+                            .positional => |p| try self.addPatternBindings(p, null, field_subject, allow_shadow),
+                            .named => |n| try self.addPatternBindings(n.pattern, null, field_subject, allow_shadow),
                         }
                     }
                 }
@@ -2447,9 +2468,16 @@ pub const TypeChecker = struct {
             .record => |rp| {
                 for (rp.fields) |field| {
                     if (field.pattern) |pat| {
-                        try self.addPatternBindings(pat, null, null);
+                        try self.addPatternBindings(pat, null, null, allow_shadow);
                     } else {
                         // Shorthand: { x } binds x
+                        if (!allow_shadow and self.symbol_table.lookupLocal(field.name) == null and self.symbol_table.lookupInParentScopes(field.name) != null) {
+                            try self.addDiagnostic(try errors_mod.simpleError(
+                                self.allocator,
+                                "shadowing binding requires 'shadow' keyword",
+                                field.span,
+                            ));
+                        }
                         const sym = Symbol.variable(unassigned_symbol_id, field.name, &inferred_binding_type, false, false, field.span);
                         _ = self.symbol_table.define(sym) catch |err| {
                             if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -2459,7 +2487,7 @@ pub const TypeChecker = struct {
             },
             .tuple => |tup| {
                 for (tup.elements) |elem| {
-                    try self.addPatternBindings(elem, null, null);
+                    try self.addPatternBindings(elem, null, null, allow_shadow);
                 }
             },
             .or_pattern => |op| {
@@ -2467,14 +2495,14 @@ pub const TypeChecker = struct {
                 // Process every alternative so all names are defined; duplicates
                 // from subsequent alternatives are silently caught by define().
                 for (op.patterns) |alt| {
-                    try self.addPatternBindings(alt, null, subject_type);
+                    try self.addPatternBindings(alt, null, subject_type, allow_shadow);
                 }
             },
             .guarded => |g| {
-                try self.addPatternBindings(g.pattern, explicit_type, subject_type);
+                try self.addPatternBindings(g.pattern, explicit_type, subject_type, allow_shadow);
             },
             .typed => |t| {
-                try self.addPatternBindings(t.pattern, t.expected_type, null);
+                try self.addPatternBindings(t.pattern, t.expected_type, null, allow_shadow);
             },
             // Literals, wildcards, ranges, rest don't bind names
             else => {},
@@ -2641,6 +2669,13 @@ pub const TypeChecker = struct {
 
             // Add parameters to scope
             for (func.parameters) |param| {
+                if (self.symbol_table.lookupLocal(param.name) == null and self.symbol_table.lookupInParentScopes(param.name) != null) {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "shadowing binding requires 'shadow' keyword",
+                        param.span,
+                    ));
+                }
                 const param_sym = Symbol.variable(unassigned_symbol_id, param.name, param.param_type, false, false, param.span);
                 _ = self.symbol_table.define(param_sym) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;

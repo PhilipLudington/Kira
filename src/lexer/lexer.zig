@@ -624,14 +624,15 @@ test "lexer number literals" {
 }
 
 test "lexer keywords" {
-    var lexer = Lexer.init("fn let type module import pub effect trait impl const var if else match for return break true false self Self and or not is in as where");
+    var lexer = Lexer.init("fn let type module import pub effect trait impl const var shadow if else match for return break true false self Self and or not is in as where");
     var tokens = try lexer.scanAllTokens(std.testing.allocator);
     defer tokens.deinit(std.testing.allocator);
 
     const expected = [_]TokenType{
         .fn_keyword,    .let,           .type_keyword,  .module,
         .import,        .pub_keyword,   .effect,        .trait,
-        .impl,          .const_keyword, .var_keyword,   .if_keyword,
+        .impl,          .const_keyword, .var_keyword,   .shadow_keyword,
+        .if_keyword,
         .else_keyword,  .match,         .for_keyword,   .return_keyword,
         .break_keyword, .true_keyword,  .false_keyword, .self_keyword,
         .self_type,     .and_keyword,   .or_keyword,    .not_keyword,

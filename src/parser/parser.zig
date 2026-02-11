@@ -954,12 +954,24 @@ pub const Parser = struct {
 
         // Let binding
         if (self.check(.let)) {
-            return self.parseLetBinding();
+            return self.parseLetBinding(false);
         }
 
         // Var binding
         if (self.check(.var_keyword)) {
-            return self.parseVarBinding();
+            return self.parseVarBinding(false);
+        }
+
+        // Explicit shadowing escape hatch: `shadow let ...` / `shadow var ...`
+        if (self.check(.shadow_keyword)) {
+            _ = self.advance(); // consume 'shadow'
+            if (self.check(.let)) {
+                return self.parseLetBinding(true);
+            }
+            if (self.check(.var_keyword)) {
+                return self.parseVarBinding(true);
+            }
+            return self.reportError("expected 'let' or 'var' after 'shadow'", null);
         }
 
         // If statement
@@ -1034,7 +1046,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseLetBinding(self: *Parser) ParseError!Statement {
+    fn parseLetBinding(self: *Parser, allow_shadow: bool) ParseError!Statement {
         const start = self.peek().span;
         _ = self.advance(); // consume 'let'
 
@@ -1052,10 +1064,11 @@ pub const Parser = struct {
             .explicit_type = explicit_type,
             .initializer = initializer,
             .is_public = is_public,
+            .allow_shadow = allow_shadow,
         } }, self.makeSpan(start.start));
     }
 
-    fn parseVarBinding(self: *Parser) ParseError!Statement {
+    fn parseVarBinding(self: *Parser, allow_shadow: bool) ParseError!Statement {
         const start = self.peek().span;
         _ = self.advance(); // consume 'var'
 
@@ -1073,6 +1086,7 @@ pub const Parser = struct {
             .name = name,
             .explicit_type = explicit_type,
             .initializer = initializer,
+            .allow_shadow = allow_shadow,
         } }, self.makeSpan(start.start));
     }
 
@@ -2673,6 +2687,23 @@ test "parse simple let binding" {
 
     const stmt = try parser.parseStatement();
     try std.testing.expect(stmt.kind == .let_binding);
+}
+
+test "parse shadow let binding" {
+    const source = "shadow let x: i32 = 42";
+    var lex = lexer.Lexer.init(source);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tokens = try lex.scanAllTokens(alloc);
+    var parser = Parser.init(alloc, tokens.items);
+    defer parser.deinit();
+
+    const stmt = try parser.parseStatement();
+    try std.testing.expect(stmt.kind == .let_binding);
+    try std.testing.expect(stmt.kind.let_binding.allow_shadow);
 }
 
 test "parse function declaration" {

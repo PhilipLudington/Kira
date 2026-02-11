@@ -730,6 +730,9 @@ pub const Resolver = struct {
 
         // Add parameters to scope
         for (func.parameters) |param| {
+            if (self.table.lookupInParentScopes(param.name) != null) {
+                try self.addError("shadowing '{s}' requires 'shadow' binding", .{param.name}, param.span);
+            }
             const param_sym = Symbol.variable(0, param.name, param.param_type, false, false, param.span);
             _ = self.table.define(param_sym) catch |err| {
                 if (err == error.DuplicateDefinition) {
@@ -755,7 +758,7 @@ pub const Resolver = struct {
                 try self.resolveExpression(let_bind.initializer);
 
                 // Add the binding to scope
-                try self.resolvePattern(let_bind.pattern, let_bind.explicit_type, false);
+                try self.resolvePattern(let_bind.pattern, let_bind.explicit_type, let_bind.allow_shadow);
             },
             .var_binding => |var_bind| {
                 // Local mutation via var is allowed in pure functions —
@@ -763,6 +766,10 @@ pub const Resolver = struct {
 
                 if (var_bind.initializer) |initializer| {
                     try self.resolveExpression(initializer);
+                }
+
+                if (!var_bind.allow_shadow and self.table.lookupLocal(var_bind.name) == null and self.table.lookupInParentScopes(var_bind.name) != null) {
+                    try self.addError("shadowing '{s}' requires 'shadow' binding", .{var_bind.name}, stmt.span);
                 }
 
                 const var_sym = Symbol.variable(0, var_bind.name, var_bind.explicit_type, true, false, stmt.span);
@@ -927,6 +934,9 @@ pub const Resolver = struct {
                 _ = try self.table.enterScope(.function);
 
                 for (closure.parameters) |param| {
+                    if (self.table.lookupInParentScopes(param.name) != null) {
+                        try self.addError("shadowing '{s}' requires 'shadow' binding", .{param.name}, param.span);
+                    }
                     const param_sym = Symbol.variable(0, param.name, param.param_type, false, false, param.span);
                     _ = self.table.define(param_sym) catch {};
                 }
@@ -1053,12 +1063,16 @@ pub const Resolver = struct {
         self: *Resolver,
         pattern: *const Pattern,
         explicit_type: ?*Type,
-        _: bool,
+        allow_shadow: bool,
     ) ResolveError!void {
         switch (pattern.kind) {
             .identifier => |ident| {
                 // Create a placeholder type if none provided
                 const binding_type = explicit_type orelse &inferred_binding_type;
+
+                if (!allow_shadow and self.table.lookupLocal(ident.name) == null and self.table.lookupInParentScopes(ident.name) != null) {
+                    try self.addError("shadowing '{s}' requires 'shadow' binding", .{ident.name}, pattern.span);
+                }
 
                 const sym = Symbol.variable(0, ident.name, binding_type, ident.is_mutable, false, pattern.span);
                 _ = self.table.define(sym) catch |err| {
@@ -1080,8 +1094,8 @@ pub const Resolver = struct {
                 if (ctor.arguments) |args| {
                     for (args) |arg| {
                         switch (arg) {
-                            .positional => |p| try self.resolvePattern(p, null, false),
-                            .named => |n| try self.resolvePattern(n.pattern, null, false),
+                            .positional => |p| try self.resolvePattern(p, null, allow_shadow),
+                            .named => |n| try self.resolvePattern(n.pattern, null, allow_shadow),
                         }
                     }
                 }
@@ -1094,9 +1108,12 @@ pub const Resolver = struct {
                 }
                 for (rp.fields) |field| {
                     if (field.pattern) |pat| {
-                        try self.resolvePattern(pat, null, false);
+                        try self.resolvePattern(pat, null, allow_shadow);
                     } else {
                         // Shorthand: { x } binds x
+                        if (!allow_shadow and self.table.lookupLocal(field.name) == null and self.table.lookupInParentScopes(field.name) != null) {
+                            try self.addError("shadowing '{s}' requires 'shadow' binding", .{field.name}, field.span);
+                        }
                         const sym = Symbol.variable(0, field.name, &inferred_binding_type, false, false, field.span);
                         _ = self.table.define(sym) catch |err| {
                             if (err == error.DuplicateDefinition) {
@@ -1109,21 +1126,21 @@ pub const Resolver = struct {
             },
             .tuple => |tp| {
                 for (tp.elements) |elem| {
-                    try self.resolvePattern(elem, null, false);
+                    try self.resolvePattern(elem, null, allow_shadow);
                 }
             },
             .or_pattern => |op| {
                 // All alternatives must bind the same names
                 for (op.patterns) |alt| {
-                    try self.resolvePattern(alt, null, false);
+                    try self.resolvePattern(alt, null, allow_shadow);
                 }
             },
             .guarded => |g| {
-                try self.resolvePattern(g.pattern, explicit_type, false);
+                try self.resolvePattern(g.pattern, explicit_type, allow_shadow);
                 try self.resolveExpression(g.guard);
             },
             .typed => |t| {
-                try self.resolvePattern(t.pattern, t.expected_type, false);
+                try self.resolvePattern(t.pattern, t.expected_type, allow_shadow);
             },
             // Literals, wildcards, rest, and ranges don't bind
             .wildcard,
@@ -1334,4 +1351,70 @@ test "resolver catches undefined identifier in let binding" {
 
     // Should have an error for undefined_var
     try std.testing.expect(resolver.hasErrors());
+}
+
+test "resolver rejects implicit shadowing in let binding" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var i64_type = ast.Type.init(.{ .primitive = .i64 }, span);
+    _ = try table.define(Symbol.variable(0, "x", &i64_type, false, false, span));
+    _ = try table.enterScope(.block);
+    defer table.leaveScope() catch {};
+
+    var pattern = ast.Pattern.init(.{ .identifier = .{ .name = "x", .is_mutable = false } }, span);
+    var init_expr = Expression.init(.{ .integer_literal = .{ .value = 1, .suffix = null } }, span);
+    var let_stmt = Statement.init(.{ .let_binding = .{
+        .pattern = &pattern,
+        .explicit_type = &i64_type,
+        .initializer = &init_expr,
+        .is_public = false,
+        .allow_shadow = false,
+    } }, span);
+
+    try resolver.resolveStatement(&let_stmt);
+    try std.testing.expect(resolver.hasErrors());
+}
+
+test "resolver allows explicit shadowing with shadow let" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var i64_type = ast.Type.init(.{ .primitive = .i64 }, span);
+    _ = try table.define(Symbol.variable(0, "x", &i64_type, false, false, span));
+    _ = try table.enterScope(.block);
+    defer table.leaveScope() catch {};
+
+    var pattern = ast.Pattern.init(.{ .identifier = .{ .name = "x", .is_mutable = false } }, span);
+    var init_expr = Expression.init(.{ .integer_literal = .{ .value = 1, .suffix = null } }, span);
+    var let_stmt = Statement.init(.{ .let_binding = .{
+        .pattern = &pattern,
+        .explicit_type = &i64_type,
+        .initializer = &init_expr,
+        .is_public = false,
+        .allow_shadow = true,
+    } }, span);
+
+    try resolver.resolveStatement(&let_stmt);
+    try std.testing.expect(!resolver.hasErrors());
 }

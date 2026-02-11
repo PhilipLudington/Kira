@@ -277,6 +277,21 @@ pub const SymbolTable = struct {
         return null;
     }
 
+    /// Look up a symbol in ancestor scopes only (excluding current scope).
+    pub fn lookupInParentScopes(self: *SymbolTable, name: []const u8) ?*Symbol {
+        var scope_id = self.currentScope().parent_id;
+
+        while (scope_id) |id| {
+            const scope = &self.scopes.items[id];
+            if (scope.lookupLocal(name)) |symbol_id| {
+                return &self.symbols.items[symbol_id];
+            }
+            scope_id = scope.parent_id;
+        }
+
+        return null;
+    }
+
     /// Look up a symbol in a specific scope
     pub fn lookupInScope(self: *SymbolTable, scope_id: ScopeId, name: []const u8) ?*Symbol {
         const scope = self.getScope(scope_id) orelse return null;

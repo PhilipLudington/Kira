@@ -37,6 +37,7 @@ pub const TokenType = enum {
     impl,
     const_keyword,
     var_keyword,
+    shadow_keyword,
 
     // Control flow
     if_keyword,
@@ -138,6 +139,7 @@ pub const TokenType = enum {
             .impl,
             .const_keyword,
             .var_keyword,
+            .shadow_keyword,
             .if_keyword,
             .else_keyword,
             .match,
@@ -206,6 +208,7 @@ pub const TokenType = enum {
             .impl => "impl",
             .const_keyword => "const",
             .var_keyword => "var",
+            .shadow_keyword => "shadow",
             .if_keyword => "if",
             .else_keyword => "else",
             .match => "match",
@@ -304,6 +307,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "impl", .impl },
     .{ "const", .const_keyword },
     .{ "var", .var_keyword },
+    .{ "shadow", .shadow_keyword },
     .{ "if", .if_keyword },
     .{ "else", .else_keyword },
     .{ "match", .match },
@@ -329,6 +333,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
 test "keyword lookup" {
     try std.testing.expectEqual(TokenType.fn_keyword, keywords.get("fn").?);
     try std.testing.expectEqual(TokenType.let, keywords.get("let").?);
+    try std.testing.expectEqual(TokenType.shadow_keyword, keywords.get("shadow").?);
     try std.testing.expectEqual(TokenType.self_type, keywords.get("Self").?);
     try std.testing.expectEqual(TokenType.test_keyword, keywords.get("test").?);
     try std.testing.expect(keywords.get("notakeyword") == null);

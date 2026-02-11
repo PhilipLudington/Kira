@@ -46,6 +46,7 @@ pub const Statement = struct {
         explicit_type: *Type, // Required in Kira
         initializer: *Expression,
         is_public: bool, // `pub let`
+        allow_shadow: bool = false, // Explicit `shadow let` escape hatch
     };
 
     /// Mutable binding: `var name: Type = value`
@@ -54,6 +55,7 @@ pub const Statement = struct {
         name: []const u8,
         explicit_type: *Type,
         initializer: ?*Expression, // May be uninitialized: `var x: i32`
+        allow_shadow: bool = false, // Explicit `shadow var` escape hatch
     };
 
     /// Assignment: `name = value` or `obj.field = value`
