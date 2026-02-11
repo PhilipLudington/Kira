@@ -1510,6 +1510,25 @@ pub const TypeChecker = struct {
         };
     }
 
+    fn checkBlockExpressionType(self: *TypeChecker, block: []Statement, span: Span) TypeCheckError!ResolvedType {
+        if (block.len == 0) return ResolvedType.voidType(span);
+
+        if (block.len > 1) {
+            for (block[0 .. block.len - 1]) |*stmt| {
+                try self.checkStatement(stmt);
+            }
+        }
+
+        const last_stmt = &block[block.len - 1];
+        return switch (last_stmt.kind) {
+            .expression_statement => |expr| try self.checkExpression(expr),
+            else => blk: {
+                try self.checkStatement(last_stmt);
+                break :blk ResolvedType.voidType(span);
+            },
+        };
+    }
+
     /// Check match expression
     fn checkMatchExpr(self: *TypeChecker, me: Expression.MatchExpr, span: Span) TypeCheckError!ResolvedType {
         const subject_type = try self.checkExpression(me.subject);
@@ -1556,13 +1575,7 @@ pub const TypeChecker = struct {
             // Check body
             const arm_type = switch (arm.body) {
                 .expression => |e| try self.checkExpression(e),
-                .block => |block| blk: {
-                    for (block) |*stmt| {
-                        try self.checkStatement(stmt);
-                    }
-                    // Block type is void unless it has a return
-                    break :blk ResolvedType.voidType(span);
-                },
+                .block => |block| try self.checkBlockExpressionType(block, span),
             };
 
             if (result_type) |rt| {
@@ -1605,12 +1618,7 @@ pub const TypeChecker = struct {
             errdefer self.scopeCleanup();
             const t = switch (ie.then_branch) {
                 .expression => |e| try self.checkExpression(e),
-                .block => |block| blk: {
-                    for (block) |*stmt| {
-                        try self.checkStatement(stmt);
-                    }
-                    break :blk ResolvedType.voidType(span);
-                },
+                .block => |block| try self.checkBlockExpressionType(block, span),
             };
             try self.scopeLeave();
             break :then_blk t;
@@ -1621,12 +1629,7 @@ pub const TypeChecker = struct {
             errdefer self.scopeCleanup();
             const t = switch (ie.else_branch) {
                 .expression => |e| try self.checkExpression(e),
-                .block => |block| blk: {
-                    for (block) |*stmt| {
-                        try self.checkStatement(stmt);
-                    }
-                    break :blk ResolvedType.voidType(span);
-                },
+                .block => |block| try self.checkBlockExpressionType(block, span),
             };
             try self.scopeLeave();
             break :else_blk t;
@@ -2220,11 +2223,14 @@ pub const TypeChecker = struct {
                 errdefer self.scopeCleanup();
 
                 // Get element type and check pattern
-                if (unify.getIterableElement(iterable_type)) |elem_type| {
+                const elem_type_opt = unify.getIterableElement(iterable_type);
+                if (elem_type_opt) |elem_type| {
                     try self.checkPattern(for_loop.pattern, elem_type);
                 }
-                // Always add bindings so loop body can reference the variable
-                try self.addPatternBindings(for_loop.pattern, null, null, false);
+                // Always add bindings so loop body can reference the variable.
+                // Preserve iterable element type when known to avoid degrading loop-bound
+                // variables to inferred/error placeholders.
+                try self.addPatternBindings(for_loop.pattern, null, elem_type_opt, false);
 
                 for (for_loop.body) |*s| {
                     try self.checkStatement(s);
@@ -3920,4 +3926,72 @@ test "constructors: Cons(head, Nil) preserves head element type" {
     };
     const expected_list = try checker.resolveAstType(&expected_list_ast);
     try std.testing.expect(!unify.isAssignable(expected_list, inferred));
+}
+
+test "match expression block arm uses tail expression type" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var subj = Expression{
+        .kind = .{ .bool_literal = true },
+        .span = span,
+    };
+
+    var pat_true = Pattern.init(.{ .bool_literal = true }, span);
+    var pat_false = Pattern.init(.{ .bool_literal = false }, span);
+
+    var expr_true = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
+        .span = span,
+    };
+    const stmt_true = Statement{
+        .kind = .{ .expression_statement = &expr_true },
+        .span = span,
+    };
+    var expr_false = Expression{
+        .kind = .{ .integer_literal = .{ .value = 0, .suffix = null } },
+        .span = span,
+    };
+    const stmt_false = Statement{
+        .kind = .{ .expression_statement = &expr_false },
+        .span = span,
+    };
+
+    var true_block = [_]Statement{stmt_true};
+    const arm_true = Expression.MatchArm{
+        .pattern = &pat_true,
+        .guard = null,
+        .body = .{ .block = true_block[0..] },
+        .span = span,
+    };
+    var false_block = [_]Statement{stmt_false};
+    const arm_false = Expression.MatchArm{
+        .pattern = &pat_false,
+        .guard = null,
+        .body = .{ .block = false_block[0..] },
+        .span = span,
+    };
+    var arms = [_]Expression.MatchArm{ arm_true, arm_false };
+
+    var match_expr = Expression{
+        .kind = .{ .match_expr = .{
+            .subject = &subj,
+            .arms = &arms,
+        } },
+        .span = span,
+    };
+
+    const t = try checker.checkExpression(&match_expr);
+    try std.testing.expect(t.kind == .primitive);
+    try std.testing.expectEqual(Type.PrimitiveType.i32, t.kind.primitive);
+    try std.testing.expect(!checker.hasErrors());
 }

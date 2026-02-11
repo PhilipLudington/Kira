@@ -124,7 +124,31 @@ Project impact:
 
 ---
 
-## [ ] Bug B: `kira-lisp` still fails type-check with remaining binding/typing/effect issues
+### [x] Fix A6: for-loop binding propagation + expression-block arm typing
+
+Status: fixed in local build (`/Users/mrphil/Fun/Kira/zig-out/bin/kira`).
+
+Issues addressed:
+- For-loops dropped iterable element types when creating pattern bindings, causing loop-bound vars
+  to degrade to inferred/error placeholders and triggering false
+  `if condition must be a boolean expression`.
+- `match`/`if` expression block arms were always typed as `void`, causing downstream
+  `expected ... found 'void'` mismatches.
+
+Fix:
+- `src/typechecker/checker.zig` now passes inferred iterable element type into
+  `addPatternBindings` for `for` loops.
+- Added `checkBlockExpressionType` and used it for `match`/`if` expression block arms,
+  typing them from the tail expression statement when present.
+- Added regression test: `match expression block arm uses tail expression type`.
+
+Project impact:
+- `/Users/mrphil/Fun/kira-lisp/src/eval.ki` now type-checks successfully.
+- Removed prior `void`-typed match-expression cascades in `/Users/mrphil/Fun/kira-lisp/src/main.ki`.
+
+---
+
+## [ ] Bug B: `kira-lisp` still fails type-check with remaining tuple/list/int/effect issues
 
 Status: open. The high-noise constructor and stdlib signature mismatches are fixed, but project type-checking still fails in remaining categories.
 
@@ -137,9 +161,10 @@ Commands:
 ```
 
 Observed error families:
-- `if condition must be a boolean expression` (remaining sites)
 - `for loop requires an iterable`
-- `type mismatch` on tuple/number/list sites
+- `tuple pattern used with non-tuple type` / tuple binding mismatches
+- `type mismatch` on integer width conversions (`i32` vs `i64`)
+- remaining non-exhaustive matches for specific variants
 - effect checking errors (`cannot call effect function from pure function`)
 
 No segmentation fault reproduced in this run.
@@ -150,15 +175,15 @@ No segmentation fault reproduced in this run.
 
 ### Suggested next investigation
 
-1. Investigate binding inference flow for constructor-bound variables (remaining `if condition must be a boolean expression` on numeric compares likely stems from `error_type` bindings).
-2. Investigate tuple-vs-record/list typing around bindings such as `let (bname, bvalue) = binding`.
-3. Resolve remaining iterable inference failures in `for` loops.
+1. Investigate tuple-vs-record/list typing around bindings such as `let (bname, bvalue) = binding`.
+2. Resolve remaining iterable inference failures in `for def in defs` / related list-producing flows.
+3. Audit int width defaults in stdlib signatures used by `kira-lisp` (`i32`/`i64` expectations).
 4. Re-check effect-system diagnostics in `kira-lisp` to distinguish intended strictness vs regressions.
 
 ---
 
 ## Quick Triage Priority
 
-1. **Bug B / constructor binding type propagation** - highest impact on project checkability.
-2. **Bug B / iterable + tuple/list binding typing** - high; causes cascading noise.
-3. **Bug B / remaining condition/effect diagnostics** - high; may hide true type errors.
+1. **Bug B / tuple/list binding typing** - highest impact on project checkability.
+2. **Bug B / iterable inference in remaining for-loops** - high; causes cascading noise.
+3. **Bug B / int-width + effect diagnostics** - high; may hide true type errors.
