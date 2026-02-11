@@ -83,9 +83,30 @@ This confirms `Cons(1, Nil)` preserves head-driven element typing.
 
 ---
 
-## [ ] Bug B: `kira-lisp` still fails type-check with remaining checker instability
+### [x] Fix A4: stdlib signature alignment for `std.string`/`std.map`/`std.fs` in checker
 
-Status: open. The two high-noise `Cons`/`std.map.contains` issues are fixed, but project type-checking still fails on other categories.
+Status: fixed in local build (`/Users/mrphil/Fun/Kira/zig-out/bin/kira`).
+
+Implemented checker-side signature updates for:
+- `std.string.substring -> Option[string]` (was treated as `string`)
+- `std.string.parse_int -> Option[i64]`
+- `std.string.parse_float -> Option[f64]`
+- `std.string.starts_with/ends_with/contains -> bool`
+- `std.string.chars -> List[char]`
+- `std.string.index_of -> Option[i64]`
+- `std.map.get -> Option[...]` (placeholder inner type)
+- `std.fs.write_file/remove/append_file -> Result[void, string]`
+- `std.fs.exists/is_file/is_dir -> bool`
+
+Project impact:
+- Removed initial `variant not found in matched type`/`Some`/`None` false positives triggered by mismatched stdlib return typing.
+- Reduced `kira-lisp` error count significantly, especially in `src/eval.ki`.
+
+---
+
+## [ ] Bug B: `kira-lisp` still fails type-check with tuple/exhaustiveness/condition cascades
+
+Status: open. The high-noise constructor and stdlib signature mismatches are fixed, but project type-checking still fails in remaining categories.
 
 ### Current behavior
 
@@ -96,8 +117,7 @@ Commands:
 ```
 
 Observed error families:
-- `variant not found in matched type`
-- `non-exhaustive match: missing patterns ...`
+- `non-exhaustive match: missing patterns ...` (notably tuple/list matching paths)
 - `if condition must be a boolean expression` (remaining sites)
 - `for loop requires an iterable`
 - `type mismatch` on tuple/number/list sites
@@ -111,15 +131,15 @@ No segmentation fault reproduced in this run.
 
 ### Suggested next investigation
 
-1. Isolate first `variant not found in matched type` in `kira-lisp` and minimize.
-2. Investigate exhaustiveness diagnostics after constructor fixes to ensure no stale pattern-space assumptions.
-3. Audit remaining stdlib bool-return APIs used in `if` conditions beyond `std.map.contains`.
+1. Isolate tuple-pattern + tuple-subject flow in `match (name_list, value_list)` paths; these appear to trigger downstream cascades.
+2. Investigate exhaustiveness diagnostics for tuple and list composite matches in `src/typechecker/pattern_compiler.zig`.
+3. Confirm condition typing after upstream tuple/match fixes (several `if` errors appear to be secondary).
 4. Re-check effect-system diagnostics in `kira-lisp` to distinguish intended strictness vs regressions.
 
 ---
 
 ## Quick Triage Priority
 
-1. **Bug B / variant resolution in matches** - highest impact on project checkability.
+1. **Bug B / tuple match + binding typing** - highest impact on project checkability.
 2. **Bug B / exhaustiveness false positives** - high; causes cascading noise.
 3. **Bug B / remaining condition/effect diagnostics** - high; may hide true type errors.

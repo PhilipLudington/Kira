@@ -1063,6 +1063,37 @@ pub const TypeChecker = struct {
                     span,
                 );
             }
+            if (std.mem.eql(u8, path[2], "write_file") or
+                std.mem.eql(u8, path[2], "remove") or
+                std.mem.eql(u8, path[2], "append_file"))
+            {
+                const expected_args: usize = if (std.mem.eql(u8, path[2], "write_file") or std.mem.eql(u8, path[2], "append_file")) 2 else 1;
+                if (arguments.len != expected_args) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, expected_args, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                for (arguments) |arg| {
+                    _ = try self.checkExpression(arg);
+                }
+                try self.addEffectViolationIfNeeded(span);
+                return try self.makeResultType(
+                    ResolvedType.voidType(span),
+                    ResolvedType.primitive(.string, span),
+                    span,
+                );
+            }
+            if (std.mem.eql(u8, path[2], "exists") or
+                std.mem.eql(u8, path[2], "is_file") or
+                std.mem.eql(u8, path[2], "is_dir"))
+            {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                try self.addEffectViolationIfNeeded(span);
+                return ResolvedType.primitive(.bool, span);
+            }
             return null;
         }
 
@@ -1084,6 +1115,24 @@ pub const TypeChecker = struct {
                 _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.string, span);
             }
+            if (std.mem.eql(u8, path[2], "contains")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return ResolvedType.primitive(.bool, span);
+            }
+            if (std.mem.eql(u8, path[2], "starts_with") or std.mem.eql(u8, path[2], "ends_with")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return ResolvedType.primitive(.bool, span);
+            }
             if (std.mem.eql(u8, path[2], "substring")) {
                 if (arguments.len != 3) {
                     try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 3, arguments.len, span));
@@ -1092,7 +1141,7 @@ pub const TypeChecker = struct {
                 _ = try self.checkExpression(arguments[0]);
                 _ = try self.checkExpression(arguments[1]);
                 _ = try self.checkExpression(arguments[2]);
-                return ResolvedType.primitive(.string, span);
+                return try self.makeOptionType(ResolvedType.primitive(.string, span), span);
             }
             if (std.mem.eql(u8, path[2], "char_at")) {
                 if (arguments.len != 2) {
@@ -1111,6 +1160,39 @@ pub const TypeChecker = struct {
                 _ = try self.checkExpression(arguments[0]);
                 _ = try self.checkExpression(arguments[1]);
                 return try self.makeListType(ResolvedType.primitive(.string, span), span);
+            }
+            if (std.mem.eql(u8, path[2], "chars")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return try self.makeListType(ResolvedType.primitive(.char, span), span);
+            }
+            if (std.mem.eql(u8, path[2], "index_of")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return try self.makeOptionType(ResolvedType.primitive(.i64, span), span);
+            }
+            if (std.mem.eql(u8, path[2], "parse_int")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return try self.makeOptionType(ResolvedType.primitive(.i64, span), span);
+            }
+            if (std.mem.eql(u8, path[2], "parse_float")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return try self.makeOptionType(ResolvedType.primitive(.f64, span), span);
             }
             return null;
         }
@@ -1202,6 +1284,15 @@ pub const TypeChecker = struct {
 
         // std.map.*
         if (std.mem.eql(u8, path[1], "map")) {
+            if (std.mem.eql(u8, path[2], "get")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return try self.makeOptionType(ResolvedType.errorType(span), span);
+            }
             if (std.mem.eql(u8, path[2], "contains")) {
                 if (arguments.len != 2) {
                     try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
@@ -1209,6 +1300,33 @@ pub const TypeChecker = struct {
                 }
                 _ = try self.checkExpression(arguments[0]);
                 _ = try self.checkExpression(arguments[1]);
+                return ResolvedType.primitive(.bool, span);
+            }
+            if (std.mem.eql(u8, path[2], "keys") or
+                std.mem.eql(u8, path[2], "values") or
+                std.mem.eql(u8, path[2], "entries"))
+            {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return try self.makeListType(ResolvedType.errorType(span), span);
+            }
+            if (std.mem.eql(u8, path[2], "size")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return ResolvedType.primitive(.i32, span);
+            }
+            if (std.mem.eql(u8, path[2], "is_empty")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
                 return ResolvedType.primitive(.bool, span);
             }
             return null;
@@ -3591,6 +3709,123 @@ test "stdlib: std.map.contains returns bool" {
 
     const call_type = try checker.checkExpression(&call_expr);
     try std.testing.expect(call_type.isBool());
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "stdlib: std.string.substring returns Option[string]" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var std_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "std", .generic_args = null } },
+        .span = span,
+    };
+    var std_string = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_ident,
+            .field = "string",
+        } },
+        .span = span,
+    };
+    var substring_fn = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_string,
+            .field = "substring",
+        } },
+        .span = span,
+    };
+    var s_arg = Expression{
+        .kind = .{ .string_literal = .{ .value = "hello" } },
+        .span = span,
+    };
+    var start_arg = Expression{
+        .kind = .{ .integer_literal = .{ .value = 0, .suffix = "i32" } },
+        .span = span,
+    };
+    var end_arg = Expression{
+        .kind = .{ .integer_literal = .{ .value = 2, .suffix = "i32" } },
+        .span = span,
+    };
+    var args = [_]*Expression{ &s_arg, &start_arg, &end_arg };
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &substring_fn,
+            .generic_args = null,
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    const call_type = try checker.checkExpression(&call_expr);
+    try std.testing.expect(checker.getOptionInnerType(call_type) != null);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "stdlib: std.map.get returns Option" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var map_type = Type.named("HashMap", span);
+    var key_type = Type.primitive(.string, span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "m", &map_type, false, false, span));
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "k", &key_type, false, false, span));
+
+    var std_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "std", .generic_args = null } },
+        .span = span,
+    };
+    var std_map = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_ident,
+            .field = "map",
+        } },
+        .span = span,
+    };
+    var get_fn = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_map,
+            .field = "get",
+        } },
+        .span = span,
+    };
+    var map_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "m", .generic_args = null } },
+        .span = span,
+    };
+    var key_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "k", .generic_args = null } },
+        .span = span,
+    };
+    var args = [_]*Expression{ &map_ident, &key_ident };
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &get_fn,
+            .generic_args = null,
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    const call_type = try checker.checkExpression(&call_expr);
+    try std.testing.expect(checker.getOptionInnerType(call_type) != null);
     try std.testing.expect(!checker.hasErrors());
 }
 
