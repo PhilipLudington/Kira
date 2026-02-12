@@ -108,6 +108,17 @@ pub fn isAssignable(target: ResolvedType, source: ResolvedType) bool {
         }
     }
 
+    // Integer compatibility: allow assignment between integer widths/signedness.
+    // Kira runtime integers are represented uniformly; checker width differences
+    // should not block common assignments in user code.
+    if (target.kind == .primitive and source.kind == .primitive) {
+        const tp = target.kind.primitive;
+        const sp = source.kind.primitive;
+        if (tp.isInteger() and sp.isInteger()) {
+            return true;
+        }
+    }
+
     return typesEqual(target, source);
 }
 
@@ -270,4 +281,17 @@ test "is valid cast" {
 
     // Non-numeric to non-numeric is invalid
     try std.testing.expect(!isValidCast(bool_type, i32_type));
+}
+
+test "integer assignability ignores width differences" {
+    const span = @import("../ast/root.zig").Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 1, .offset = 0 },
+    };
+
+    const i32_type = ResolvedType.primitive(.i32, span);
+    const i64_type = ResolvedType.primitive(.i64, span);
+
+    try std.testing.expect(isAssignable(i32_type, i64_type));
+    try std.testing.expect(isAssignable(i64_type, i32_type));
 }

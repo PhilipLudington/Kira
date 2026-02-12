@@ -566,6 +566,12 @@ pub const TypeChecker = struct {
                     if (unify.typesEqual(left_type, right_type)) {
                         return left_type;
                     }
+                    if (left_type.kind == .primitive and right_type.kind == .primitive and
+                        left_type.kind.primitive.isInteger() and right_type.kind.primitive.isInteger())
+                    {
+                        const promoted = self.promoteIntegerPrimitive(left_type.kind.primitive, right_type.kind.primitive);
+                        return ResolvedType.primitive(promoted, span);
+                    }
                 }
                 try self.addDiagnostic(try errors_mod.invalidBinaryOperand(
                     self.allocator,
@@ -579,7 +585,11 @@ pub const TypeChecker = struct {
 
             // Comparison operators
             .less_than, .greater_than, .less_equal, .greater_equal => {
-                if (unify.isComparable(left_type) and unify.typesEqual(left_type, right_type)) {
+                if (unify.isComparable(left_type) and
+                    (unify.typesEqual(left_type, right_type) or
+                        (left_type.kind == .primitive and right_type.kind == .primitive and
+                            left_type.kind.primitive.isInteger() and right_type.kind.primitive.isInteger())))
+                {
                     return ResolvedType.primitive(.bool, span);
                 }
                 try self.addDiagnostic(try errors_mod.invalidBinaryOperand(
@@ -594,7 +604,11 @@ pub const TypeChecker = struct {
 
             // Equality operators
             .equal, .not_equal => {
-                if (unify.isEquatable(left_type) and unify.typesEqual(left_type, right_type)) {
+                if (unify.isEquatable(left_type) and
+                    (unify.typesEqual(left_type, right_type) or
+                        (left_type.kind == .primitive and right_type.kind == .primitive and
+                            left_type.kind.primitive.isInteger() and right_type.kind.primitive.isInteger())))
+                {
                     return ResolvedType.primitive(.bool, span);
                 }
                 try self.addDiagnostic(try errors_mod.invalidBinaryOperand(
@@ -641,6 +655,22 @@ pub const TypeChecker = struct {
                 ));
                 return ResolvedType.errorType(span);
             },
+        };
+    }
+
+    fn promoteIntegerPrimitive(self: *TypeChecker, a: Type.PrimitiveType, b: Type.PrimitiveType) Type.PrimitiveType {
+        _ = self;
+        const bits_a = a.bitSize() orelse 128;
+        const bits_b = b.bitSize() orelse 128;
+        const bits = if (bits_a >= bits_b) bits_a else bits_b;
+        const signed = a.isSigned() or b.isSigned();
+
+        return switch (bits) {
+            8 => if (signed) .i8 else .u8,
+            16 => if (signed) .i16 else .u16,
+            32 => if (signed) .i32 else .u32,
+            64 => if (signed) .i64 else .u64,
+            else => if (signed) .i128 else .u128,
         };
     }
 
@@ -1105,7 +1135,7 @@ pub const TypeChecker = struct {
                     return ResolvedType.errorType(span);
                 }
                 _ = try self.checkExpression(arguments[0]);
-                return ResolvedType.primitive(.i32, span);
+                return ResolvedType.primitive(.i64, span);
             }
             if (std.mem.eql(u8, path[2], "trim")) {
                 if (arguments.len != 1) {
@@ -1205,7 +1235,7 @@ pub const TypeChecker = struct {
                     return ResolvedType.errorType(span);
                 }
                 _ = try self.checkExpression(arguments[0]);
-                return ResolvedType.primitive(.i32, span);
+                return ResolvedType.primitive(.i64, span);
             }
             if (std.mem.eql(u8, path[2], "head")) {
                 if (arguments.len != 1) {
@@ -1319,7 +1349,7 @@ pub const TypeChecker = struct {
                     return ResolvedType.errorType(span);
                 }
                 _ = try self.checkExpression(arguments[0]);
-                return ResolvedType.primitive(.i32, span);
+                return ResolvedType.primitive(.i64, span);
             }
             if (std.mem.eql(u8, path[2], "is_empty")) {
                 if (arguments.len != 1) {
@@ -1408,7 +1438,15 @@ pub const TypeChecker = struct {
                     return ResolvedType.errorType(span);
                 }
                 _ = try self.checkExpression(arguments[0]);
-                return ResolvedType.primitive(.i32, span);
+                return ResolvedType.primitive(.i64, span);
+            }
+            if (std.mem.eql(u8, path[2], "from_i32")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return try self.makeOptionType(ResolvedType.primitive(.char, span), span);
             }
             return null;
         }
@@ -2083,19 +2121,21 @@ pub const TypeChecker = struct {
 
                 // explicit_type is required in Kira (not optional)
                 const declared_type = try self.resolveAstType(lb.explicit_type);
-                if (!unify.isAssignable(declared_type, init_type)) {
+                const normalized_declared = try self.expandAliasType(declared_type);
+                const normalized_init = try self.expandAliasType(init_type);
+                if (!unify.isAssignable(normalized_declared, normalized_init)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
-                        declared_type,
-                        init_type,
+                        normalized_declared,
+                        normalized_init,
                         lb.initializer.span,
                     ));
                 }
 
-                try self.checkPattern(lb.pattern, init_type);
+                try self.checkPattern(lb.pattern, normalized_init);
 
                 // Add all bindings from the pattern to scope
-                try self.addPatternBindings(lb.pattern, lb.explicit_type, null, lb.allow_shadow);
+                try self.addPatternBindings(lb.pattern, lb.explicit_type, normalized_declared, lb.allow_shadow);
             },
 
             .var_binding => |vb| {
@@ -2753,8 +2793,17 @@ pub const TypeChecker = struct {
                 }
             },
             .tuple => |tup| {
-                for (tup.elements) |elem| {
-                    try self.addPatternBindings(elem, null, null, allow_shadow);
+                const tuple_subject = if (subject_type) |st| blk: {
+                    const normalized = try self.expandAliasType(st);
+                    if (normalized.kind == .tuple) {
+                        break :blk normalized.kind.tuple.element_types;
+                    }
+                    break :blk null;
+                } else null;
+
+                for (tup.elements, 0..) |elem, i| {
+                    const elem_subject = if (tuple_subject) |ts| (if (i < ts.len) ts[i] else null) else null;
+                    try self.addPatternBindings(elem, null, elem_subject, allow_shadow);
                 }
             },
             .or_pattern => |op| {
@@ -3158,6 +3207,45 @@ pub const TypeChecker = struct {
     }
 
     // ========== Helper Functions ==========
+
+    fn expandAliasType(self: *TypeChecker, resolved_type: ResolvedType) TypeCheckError!ResolvedType {
+        var visiting: std.AutoHashMapUnmanaged(SymbolId, void) = .{};
+        defer visiting.deinit(self.allocator);
+        return self.expandAliasTypeInner(resolved_type, &visiting);
+    }
+
+    fn expandAliasTypeInner(
+        self: *TypeChecker,
+        resolved_type: ResolvedType,
+        visiting: *std.AutoHashMapUnmanaged(SymbolId, void),
+    ) TypeCheckError!ResolvedType {
+        return switch (resolved_type.kind) {
+            .named => |n| blk: {
+                const gop = try visiting.getOrPut(self.allocator, n.symbol_id);
+                if (gop.found_existing) {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "cyclic type alias detected",
+                        resolved_type.span,
+                    ));
+                    break :blk ResolvedType.errorType(resolved_type.span);
+                }
+                defer _ = visiting.remove(n.symbol_id);
+
+                const sym = self.symbol_table.getSymbol(n.symbol_id) orelse break :blk resolved_type;
+                if (sym.kind != .type_def) break :blk resolved_type;
+
+                switch (sym.kind.type_def.definition) {
+                    .alias => |alias_ast| {
+                        const expanded = try self.resolveAstType(alias_ast);
+                        break :blk try self.expandAliasTypeInner(expanded, visiting);
+                    },
+                    else => break :blk resolved_type,
+                }
+            },
+            else => resolved_type,
+        };
+    }
 
     /// Get the type of a symbol
     fn getSymbolType(self: *TypeChecker, sym: *const Symbol, span: Span) TypeCheckError!ResolvedType {
@@ -3835,6 +3923,192 @@ test "stdlib: std.map.get returns Option" {
     try std.testing.expect(!checker.hasErrors());
 }
 
+test "stdlib: std.char.from_i32 returns Option[char]" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var std_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "std", .generic_args = null } },
+        .span = span,
+    };
+    var std_char = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_ident,
+            .field = "char",
+        } },
+        .span = span,
+    };
+    var from_fn = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_char,
+            .field = "from_i32",
+        } },
+        .span = span,
+    };
+    var arg = Expression{
+        .kind = .{ .integer_literal = .{ .value = 65, .suffix = "i32" } },
+        .span = span,
+    };
+    var args = [_]*Expression{&arg};
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &from_fn,
+            .generic_args = null,
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    const call_type = try checker.checkExpression(&call_expr);
+    const inner = checker.getOptionInnerType(call_type) orelse ResolvedType.errorType(span);
+    try std.testing.expect(inner.isChar());
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "stdlib: std.string.length returns i64" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var std_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "std", .generic_args = null } },
+        .span = span,
+    };
+    var std_string = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_ident,
+            .field = "string",
+        } },
+        .span = span,
+    };
+    var length_fn = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_string,
+            .field = "length",
+        } },
+        .span = span,
+    };
+    var arg = Expression{
+        .kind = .{ .string_literal = .{ .value = "hello" } },
+        .span = span,
+    };
+    var args = [_]*Expression{&arg};
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &length_fn,
+            .generic_args = null,
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    const call_type = try checker.checkExpression(&call_expr);
+    try std.testing.expect(call_type.kind == .primitive and call_type.kind.primitive == .i64);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "stdlib: std.char.to_i32 returns i64" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var std_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "std", .generic_args = null } },
+        .span = span,
+    };
+    var std_char = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_ident,
+            .field = "char",
+        } },
+        .span = span,
+    };
+    var to_fn = Expression{
+        .kind = .{ .field_access = .{
+            .object = &std_char,
+            .field = "to_i32",
+        } },
+        .span = span,
+    };
+    var arg = Expression{
+        .kind = .{ .char_literal = .{ .value = 'A' } },
+        .span = span,
+    };
+    var args = [_]*Expression{&arg};
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &to_fn,
+            .generic_args = null,
+            .arguments = &args,
+        } },
+        .span = span,
+    };
+
+    const call_type = try checker.checkExpression(&call_expr);
+    try std.testing.expect(call_type.kind == .primitive and call_type.kind.primitive == .i64);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "binary comparison allows mixed integer widths" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var left = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = "i64" } },
+        .span = span,
+    };
+    var right = Expression{
+        .kind = .{ .integer_literal = .{ .value = 0, .suffix = "i32" } },
+        .span = span,
+    };
+    var expr = Expression{
+        .kind = .{ .binary = .{
+            .left = &left,
+            .operator = .greater_than,
+            .right = &right,
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&expr);
+    try std.testing.expect(result.isBool());
+    try std.testing.expect(!checker.hasErrors());
+}
+
 test "constructors: Cons requires tail to be List[T]" {
     const allocator = std.testing.allocator;
     const span = Span{
@@ -3994,4 +4268,43 @@ test "match expression block arm uses tail expression type" {
     try std.testing.expect(t.kind == .primitive);
     try std.testing.expectEqual(Type.PrimitiveType.i32, t.kind.primitive);
     try std.testing.expect(!checker.hasErrors());
+}
+
+test "expand alias type reports indirect alias cycles" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var type_b = Type.named("B", span);
+    const a_id = try table.define(Symbol.typeDef(unassigned_symbol_id, "A", .{
+        .generic_params = null,
+        .definition = .{ .alias = &type_b },
+    }, true, span));
+
+    var type_a = Type.named("A", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "B", .{
+        .generic_params = null,
+        .definition = .{ .alias = &type_a },
+    }, true, span));
+
+    const expanded = try checker.expandAliasType(ResolvedType.named(a_id, "A", span));
+    try std.testing.expect(expanded.isError());
+    try std.testing.expect(checker.hasErrors());
+
+    var found_cycle = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "cyclic type alias detected") != null) {
+            found_cycle = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_cycle);
 }

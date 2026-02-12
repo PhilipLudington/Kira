@@ -1,4 +1,4 @@
-# Kira Compiler Bugs (Active) - Verified 2026-02-11
+# Kira Compiler Bugs (Active) - Verified 2026-02-12
 
 This file tracks currently unresolved compiler/type-checker issues.
 Fixed items are retained briefly under "Recently Fixed" for traceability.
@@ -7,7 +7,7 @@ Environment used for verification:
 - Kira source tree: `/Users/mrphil/Fun/Kira`
 - Project checked: `/Users/mrphil/Fun/kira-lisp`
 - Compiler version: `Kira Programming Language v0.11.0`
-- Verification date: 2026-02-11
+- Verification date: 2026-02-12
 
 ---
 
@@ -148,42 +148,40 @@ Project impact:
 
 ---
 
-## [ ] Bug B: `kira-lisp` still fails type-check with remaining tuple/list/int/effect issues
+### [x] Fix A7: integer-width checker regressions in stdlib + binary operators
 
-Status: open. The high-noise constructor and stdlib signature mismatches are fixed, but project type-checking still fails in remaining categories.
+Status: fixed in local build (`/Users/mrphil/Fun/Kira/zig-out/bin/kira`).
 
-### Current behavior
+Issues addressed:
+- Checker typed `std.string.length`, `std.list.length`, and `std.char.to_i32` as `i32`, while project code consumed them as `i64`.
+- Binary operators required exact primitive equality for comparisons/equality, causing false errors on mixed integer widths (e.g., `i64 > i32`).
 
-Commands:
+Fix:
+- Updated checker stdlib signatures:
+  - `std.string.length -> i64`
+  - `std.list.length -> i64`
+  - `std.char.to_i32 -> i64`
+- Added mixed-integer compatibility in binary type checking for:
+  - arithmetic result typing (integer promotion)
+  - comparison operators
+  - equality operators
+- Added regression tests in `src/typechecker/checker.zig`:
+  - `stdlib: std.string.length returns i64`
+  - `stdlib: std.char.to_i32 returns i64`
+  - `binary comparison allows mixed integer widths`
+
+Verification:
 ```sh
-/Users/mrphil/Fun/Kira/zig-out/bin/kira check /Users/mrphil/Fun/kira-lisp/src/main.ki
+zig build test
+zig build
 /Users/mrphil/Fun/Kira/zig-out/bin/kira check /Users/mrphil/Fun/kira-lisp/src/eval.ki
+/Users/mrphil/Fun/Kira/zig-out/bin/kira check /Users/mrphil/Fun/kira-lisp/src/main.ki
 ```
 
-Observed error families:
-- `for loop requires an iterable`
-- `tuple pattern used with non-tuple type` / tuple binding mismatches
-- `type mismatch` on integer width conversions (`i32` vs `i64`)
-- remaining non-exhaustive matches for specific variants
-- effect checking errors (`cannot call effect function from pure function`)
+Current outcomes:
+- `eval.ki` -> **passes**
+- `main.ki` -> now fails only with:
+  - `non-exhaustive match: missing patterns for LispRecursiveLambda`
+  - `cannot call effect function from pure function`
 
-No segmentation fault reproduced in this run.
-
-### Why this remains open
-
-`kira check` is still not usable end-to-end for `kira-lisp`; remaining errors may include real program bugs plus checker false positives. Additional narrowing is required to separate the two.
-
-### Suggested next investigation
-
-1. Investigate tuple-vs-record/list typing around bindings such as `let (bname, bvalue) = binding`.
-2. Resolve remaining iterable inference failures in `for def in defs` / related list-producing flows.
-3. Audit int width defaults in stdlib signatures used by `kira-lisp` (`i32`/`i64` expectations).
-4. Re-check effect-system diagnostics in `kira-lisp` to distinguish intended strictness vs regressions.
-
----
-
-## Quick Triage Priority
-
-1. **Bug B / tuple/list binding typing** - highest impact on project checkability.
-2. **Bug B / iterable inference in remaining for-loops** - high; causes cascading noise.
-3. **Bug B / int-width + effect diagnostics** - high; may hide true type errors.
+These remaining diagnostics are currently consistent with source-level semantics, not reproduced checker regressions.
