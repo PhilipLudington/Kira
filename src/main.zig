@@ -1661,3 +1661,48 @@ test "get source line" {
     const line4 = getSourceLine(source, 4);
     try std.testing.expect(line4 == null);
 }
+
+test "runFile supports cross-file aliased imports end-to-end" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "a.ki",
+        .data =
+        \\module a
+        \\
+        \\pub type Thing = { x: u64 }
+        \\
+        \\pub fn mk(x: u64) -> Thing {
+        \\    return Thing { x: x }
+        \\}
+        \\
+        \\pub fn get(t: Thing) -> u64 {
+        \\    return t.x
+        \\}
+        ,
+    });
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "main.ki",
+        .data =
+        \\module main
+        \\import a.{ Thing as T, mk as make, get }
+        \\
+        \\effect fn main() -> void {
+        \\    let t: T = make(7u64)
+        \\    let x: u64 = get(t)
+        \\    if x == 0u64 {
+        \\        std.io.println("unreachable")
+        \\    }
+        \\}
+        ,
+    });
+
+    const main_path = try tmp.dir.realpathAlloc(allocator, "main.ki");
+    defer allocator.free(main_path);
+
+    try runFile(allocator, main_path, true, &[_][]const u8{});
+}
