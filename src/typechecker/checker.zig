@@ -176,7 +176,8 @@ pub const TypeChecker = struct {
             .named => |n| {
                 // Look up the type name in the symbol table
                 if (self.symbol_table.lookup(n.name)) |sym| {
-                    return ResolvedType.named(sym.id, n.name, ast_type.span);
+                    const resolved_sym = self.resolveImportAliasSymbol(sym) orelse sym;
+                    return ResolvedType.named(resolved_sym.id, n.name, ast_type.span);
                 } else {
                     // Check if it's a type variable in scope
                     if (self.type_var_substitutions.get(n.name)) |resolved| {
@@ -191,13 +192,14 @@ pub const TypeChecker = struct {
                 // Look up the base type
                 const type_alloc = self.typeAllocator();
                 if (self.symbol_table.lookup(g.base)) |sym| {
+                    const resolved_sym = self.resolveImportAliasSymbol(sym) orelse sym;
                     var resolved_args = std.ArrayListUnmanaged(ResolvedType){};
                     for (g.type_arguments) |arg| {
                         try resolved_args.append(type_alloc, try self.resolveAstType(arg));
                     }
                     return .{
                         .kind = .{ .instantiated = .{
-                            .base_symbol_id = sym.id,
+                            .base_symbol_id = resolved_sym.id,
                             .base_name = g.base,
                             .type_arguments = try resolved_args.toOwnedSlice(type_alloc),
                         } },
@@ -328,6 +330,7 @@ pub const TypeChecker = struct {
                 // Look up the path in the symbol table
                 const type_alloc = self.typeAllocator();
                 if (self.symbol_table.lookupPath(p.segments)) |sym| {
+                    const resolved_sym = self.resolveImportAliasSymbol(sym) orelse sym;
                     if (p.generic_args) |args| {
                         var resolved_args = std.ArrayListUnmanaged(ResolvedType){};
                         for (args) |arg| {
@@ -335,14 +338,14 @@ pub const TypeChecker = struct {
                         }
                         return .{
                             .kind = .{ .instantiated = .{
-                                .base_symbol_id = sym.id,
+                                .base_symbol_id = resolved_sym.id,
                                 .base_name = p.segments[p.segments.len - 1],
                                 .type_arguments = try resolved_args.toOwnedSlice(type_alloc),
                             } },
                             .span = ast_type.span,
                         };
                     }
-                    return ResolvedType.named(sym.id, p.segments[p.segments.len - 1], ast_type.span);
+                    return ResolvedType.named(resolved_sym.id, p.segments[p.segments.len - 1], ast_type.span);
                 } else {
                     var buf: [256]u8 = undefined;
                     var pos: usize = 0;
@@ -3288,6 +3291,21 @@ pub const TypeChecker = struct {
             },
             else => ResolvedType.errorType(span),
         };
+    }
+
+    fn resolveImportAliasSymbol(self: *TypeChecker, sym: *const Symbol) ?*const Symbol {
+        var current = sym;
+        var depth: usize = 0;
+        while (depth < 64) : (depth += 1) {
+            switch (current.kind) {
+                .import_alias => |ia| {
+                    const resolved_id = ia.resolved_id orelse return null;
+                    current = self.symbol_table.getSymbol(resolved_id) orelse return null;
+                },
+                else => return current,
+            }
+        }
+        return null;
     }
 
     /// Look up a variant by name within a resolved type (named or instantiated).

@@ -574,8 +574,11 @@ pub const ModuleLoader = struct {
 
         // If we found a module scope, populate it with the file's declarations
         if (found_module_scope) |scope_id| {
+            // Preserve caller scope so import loading doesn't perturb resolver state.
+            const previous_scope_id = self.table.current_scope_id;
             // Re-enter the module scope
             self.table.setCurrentScope(scope_id) catch return error.OutOfMemory;
+            defer self.table.setCurrentScope(previous_scope_id) catch {};
 
             // Process all declarations
             for (program.declarations) |*decl| {
@@ -611,9 +614,6 @@ pub const ModuleLoader = struct {
                 // Recursively load the imported module
                 _ = self.loadModule(import_path) catch continue;
             }
-
-            // Return to global scope
-            self.table.setCurrentScope(0) catch {};
 
             // Allocate program on heap to keep it alive
             const heap_program = self.allocator.create(Program) catch return error.OutOfMemory;
