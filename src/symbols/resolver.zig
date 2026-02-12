@@ -1418,3 +1418,253 @@ test "resolver allows explicit shadowing with shadow let" {
     try resolver.resolveStatement(&let_stmt);
     try std.testing.expect(!resolver.hasErrors());
 }
+
+test "resolver import binds pub symbols into importing scope" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 1, .offset = 0 },
+    };
+
+    var u64_type = ast.Type.init(.{ .primitive = .u64 }, span);
+
+    const source_scope_id = try table.enterScope(.module);
+    const fn_symbol = Symbol.FunctionSymbol{
+        .generic_params = null,
+        .parameter_types = &[_]*Type{},
+        .parameter_names = &[_][]const u8{},
+        .return_type = &u64_type,
+        .is_effect = false,
+        .has_body = true,
+    };
+    _ = try table.define(Symbol.function(0, "mk", fn_symbol, true, span));
+    _ = try table.define(Symbol.typeDef(0, "Thing", .{
+        .generic_params = null,
+        .definition = .{ .alias = &u64_type },
+    }, true, span));
+    try table.leaveScope();
+    try table.registerModule("a", source_scope_id);
+
+    const target_scope_id = try table.enterScope(.module);
+    try table.leaveScope();
+
+    var import_path = [_][]const u8{"a"};
+    var import_items = [_]Declaration.ImportItem{
+        .{ .name = "Thing", .alias = null, .span = span },
+        .{ .name = "mk", .alias = null, .span = span },
+    };
+    const import_decl = Declaration.ImportDecl{
+        .path = &import_path,
+        .items = &import_items,
+    };
+
+    try resolver.resolveImportDecl(&import_decl, target_scope_id, span);
+    try std.testing.expect(!resolver.hasErrors());
+
+    const imported_type = table.lookupInScope(target_scope_id, "Thing");
+    const imported_fn = table.lookupInScope(target_scope_id, "mk");
+    try std.testing.expect(imported_type != null);
+    try std.testing.expect(imported_fn != null);
+    try std.testing.expect(imported_type.?.kind == .import_alias);
+    try std.testing.expect(imported_fn.?.kind == .import_alias);
+
+    const previous_scope_id = table.current_scope_id;
+    defer table.setCurrentScope(previous_scope_id) catch {};
+    try table.setCurrentScope(target_scope_id);
+    _ = try table.enterScope(.function);
+    defer table.leaveScope() catch {};
+
+    try std.testing.expect(table.lookup("Thing") != null);
+    try std.testing.expect(table.lookup("mk") != null);
+}
+
+test "resolver import rejects private symbol and does not bind it" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 1, .offset = 0 },
+    };
+
+    var u64_type = ast.Type.init(.{ .primitive = .u64 }, span);
+
+    const source_scope_id = try table.enterScope(.module);
+    _ = try table.define(Symbol.typeDef(0, "Thing", .{
+        .generic_params = null,
+        .definition = .{ .alias = &u64_type },
+    }, false, span));
+    try table.leaveScope();
+    try table.registerModule("a", source_scope_id);
+
+    const target_scope_id = try table.enterScope(.module);
+    try table.leaveScope();
+
+    var import_path = [_][]const u8{"a"};
+    var import_items = [_]Declaration.ImportItem{
+        .{ .name = "Thing", .alias = null, .span = span },
+    };
+    const import_decl = Declaration.ImportDecl{
+        .path = &import_path,
+        .items = &import_items,
+    };
+
+    try resolver.resolveImportDecl(&import_decl, target_scope_id, span);
+    try std.testing.expect(resolver.hasErrors());
+    try std.testing.expect(table.lookupInScope(target_scope_id, "Thing") == null);
+}
+
+test "resolver import supports alias bindings" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 1, .offset = 0 },
+    };
+
+    var u64_type = ast.Type.init(.{ .primitive = .u64 }, span);
+
+    const source_scope_id = try table.enterScope(.module);
+    const fn_symbol = Symbol.FunctionSymbol{
+        .generic_params = null,
+        .parameter_types = &[_]*Type{},
+        .parameter_names = &[_][]const u8{},
+        .return_type = &u64_type,
+        .is_effect = false,
+        .has_body = true,
+    };
+    _ = try table.define(Symbol.function(0, "mk", fn_symbol, true, span));
+    _ = try table.define(Symbol.typeDef(0, "Thing", .{
+        .generic_params = null,
+        .definition = .{ .alias = &u64_type },
+    }, true, span));
+    try table.leaveScope();
+    try table.registerModule("a", source_scope_id);
+
+    const target_scope_id = try table.enterScope(.module);
+    try table.leaveScope();
+
+    var import_path = [_][]const u8{"a"};
+    var import_items = [_]Declaration.ImportItem{
+        .{ .name = "Thing", .alias = "T", .span = span },
+        .{ .name = "mk", .alias = "make", .span = span },
+    };
+    const import_decl = Declaration.ImportDecl{
+        .path = &import_path,
+        .items = &import_items,
+    };
+
+    try resolver.resolveImportDecl(&import_decl, target_scope_id, span);
+    try std.testing.expect(!resolver.hasErrors());
+    try std.testing.expect(table.lookupInScope(target_scope_id, "Thing") == null);
+    try std.testing.expect(table.lookupInScope(target_scope_id, "mk") == null);
+    try std.testing.expect(table.lookupInScope(target_scope_id, "T") != null);
+    try std.testing.expect(table.lookupInScope(target_scope_id, "make") != null);
+}
+
+test "resolver resolve() handles imported aliases in type and value positions" {
+    const allocator = std.testing.allocator;
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var resolver = Resolver.init(allocator, &table);
+    defer resolver.deinit();
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 1, .offset = 0 },
+    };
+
+    var u64_type = ast.Type.init(.{ .primitive = .u64 }, span);
+    var void_type = ast.Type.init(.{ .primitive = .void_type }, span);
+    var imported_alias_type = ast.Type.named("T", span);
+
+    const source_scope_id = try table.enterScope(.module);
+    const mk_symbol = Symbol.FunctionSymbol{
+        .generic_params = null,
+        .parameter_types = &[_]*Type{},
+        .parameter_names = &[_][]const u8{},
+        .return_type = &u64_type,
+        .is_effect = false,
+        .has_body = true,
+    };
+    _ = try table.define(Symbol.function(0, "mk", mk_symbol, true, span));
+    _ = try table.define(Symbol.typeDef(0, "Thing", .{
+        .generic_params = null,
+        .definition = .{ .alias = &u64_type },
+    }, true, span));
+    try table.leaveScope();
+    try table.registerModule("a", source_scope_id);
+
+    var module_path = [_][]const u8{"main"};
+    var import_path = [_][]const u8{"a"};
+    var import_items = [_]Declaration.ImportItem{
+        .{ .name = "Thing", .alias = "T", .span = span },
+        .{ .name = "mk", .alias = "make", .span = span },
+    };
+    const import_decl = Declaration.ImportDecl{
+        .path = &import_path,
+        .items = &import_items,
+    };
+
+    var make_ident = Expression.init(.{ .identifier = .{
+        .name = "make",
+        .generic_args = null,
+    } }, span);
+    var local_pattern = Pattern.init(.{ .identifier = .{
+        .name = "value",
+        .is_mutable = false,
+    } }, span);
+    const let_stmt = Statement.init(.{ .let_binding = .{
+        .pattern = &local_pattern,
+        .explicit_type = &imported_alias_type,
+        .initializer = &make_ident,
+        .is_public = false,
+    } }, span);
+    var body = [_]Statement{let_stmt};
+
+    const main_fn = Declaration.FunctionDecl{
+        .name = "main",
+        .generic_params = null,
+        .parameters = &[_]Declaration.Parameter{},
+        .return_type = &void_type,
+        .is_effect = false,
+        .is_public = false,
+        .body = &body,
+        .where_clause = null,
+    };
+    const main_decl = Declaration.init(.{ .function_decl = main_fn }, span);
+    var declarations = [_]Declaration{main_decl};
+    var imports = [_]Declaration.ImportDecl{import_decl};
+
+    const program = Program{
+        .module_decl = .{ .path = &module_path },
+        .imports = &imports,
+        .declarations = &declarations,
+        .module_doc = null,
+        .source_path = null,
+        .arena = null,
+    };
+
+    try resolver.resolve(&program);
+    try std.testing.expect(!resolver.hasErrors());
+}
