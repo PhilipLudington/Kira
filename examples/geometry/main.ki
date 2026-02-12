@@ -112,10 +112,10 @@ fn example_bounding_box() -> Vec2 {
 // Main computation - runs all examples
 fn main() -> f64 {
     let v: Vec2 = example_vectors()
-    let rect_area: f64 = example_rectangle()
-    let circle_area: f64 = example_circle()
+    let rect_area_value: f64 = example_rectangle()
+    let circle_area_value: f64 = example_circle()
     let center: Vec2 = example_bounding_box()
 
     // Return sum of areas as a simple result
-    return rect_area + circle_area
+    return rect_area_value + circle_area_value
 }
