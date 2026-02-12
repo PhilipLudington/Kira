@@ -26,6 +26,7 @@ pub const Span = ast.Span;
 
 pub const Symbol = symbols.Symbol;
 pub const SymbolId = symbols.SymbolId;
+pub const ScopeId = symbols.ScopeId;
 pub const SymbolTable = symbols.SymbolTable;
 
 pub const ResolvedType = types_mod.ResolvedType;
@@ -73,6 +74,8 @@ pub const TypeChecker = struct {
     type_var_substitutions: std.StringHashMapUnmanaged(ResolvedType),
     /// Current Self type (in impl blocks)
     self_type: ?ResolvedType,
+    /// Optional scope used as a fallback for resolving AST type names.
+    type_lookup_fallback_scope: ?ScopeId,
     /// Whether we're in an effect function
     in_effect_function: bool,
     /// Arena for temporary type allocations during type checking
@@ -89,6 +92,7 @@ pub const TypeChecker = struct {
             .current_effect = null,
             .type_var_substitutions = .{},
             .self_type = null,
+            .type_lookup_fallback_scope = null,
             .in_effect_function = false,
             .type_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -182,6 +186,12 @@ pub const TypeChecker = struct {
                     // Check if it's a type variable in scope
                     if (self.type_var_substitutions.get(n.name)) |resolved| {
                         return resolved;
+                    }
+                    if (self.type_lookup_fallback_scope) |scope_id| {
+                        if (self.lookupInScopeChain(scope_id, n.name)) |sym| {
+                            const resolved_sym = self.resolveImportAliasSymbol(sym) orelse sym;
+                            return ResolvedType.named(resolved_sym.id, n.name, ast_type.span);
+                        }
                     }
                     try self.addDiagnostic(try errors_mod.undefinedType(self.allocator, n.name, ast_type.span));
                     return ResolvedType.errorType(ast_type.span);
@@ -3250,6 +3260,59 @@ pub const TypeChecker = struct {
         };
     }
 
+    fn resolveAstTypeInSymbolScope(
+        self: *TypeChecker,
+        sym: *const Symbol,
+        ast_type: *const Type,
+    ) TypeCheckError!ResolvedType {
+        const previous_scope_id = self.symbol_table.current_scope_id;
+        const previous_fallback_scope = self.type_lookup_fallback_scope;
+        const maybe_scope_id = self.symbol_table.findSymbolScope(sym.id);
+        var restore_scope = false;
+        defer {
+            self.type_lookup_fallback_scope = previous_fallback_scope;
+            if (restore_scope) {
+                self.symbol_table.setCurrentScope(previous_scope_id) catch {
+                    if (builtin.mode == .Debug) {
+                        @panic("TypeChecker scope restore failed after symbol-scope type resolution");
+                    }
+                };
+            }
+        }
+
+        if (maybe_scope_id) |scope_id| {
+            self.type_lookup_fallback_scope = scope_id;
+            if (scope_id != previous_scope_id) {
+                self.symbol_table.setCurrentScope(scope_id) catch return error.TypeError;
+                restore_scope = true;
+            }
+        }
+        return try self.resolveAstType(ast_type);
+    }
+
+    fn lookupInScopeChain(self: *TypeChecker, start_scope_id: ScopeId, name: []const u8) ?*Symbol {
+        var scope_id: ?ScopeId = start_scope_id;
+        while (scope_id) |id| {
+            if (self.symbol_table.lookupInScope(id, name)) |sym| {
+                return sym;
+            }
+            const scope = self.symbol_table.getScope(id) orelse break;
+            scope_id = scope.parent_id;
+        }
+        return null;
+    }
+
+    fn moduleScopeFromPath(self: *TypeChecker, path: [][]const u8) ?ScopeId {
+        var path_builder = std.ArrayListUnmanaged(u8){};
+        const alloc = self.typeAllocator();
+        for (path, 0..) |segment, i| {
+            if (i > 0) path_builder.append(alloc, '.') catch return null;
+            path_builder.appendSlice(alloc, segment) catch return null;
+        }
+        const path_str = path_builder.toOwnedSlice(alloc) catch return null;
+        return self.symbol_table.getModuleScope(path_str);
+    }
+
     /// Get the type of a symbol
     fn getSymbolType(self: *TypeChecker, sym: *const Symbol, span: Span) TypeCheckError!ResolvedType {
         return switch (sym.kind) {
@@ -3258,17 +3321,17 @@ pub const TypeChecker = struct {
                 if (self.type_env.get(sym.id)) |resolved| {
                     return resolved;
                 }
-                return try self.resolveAstType(v.binding_type);
+                return try self.resolveAstTypeInSymbolScope(sym, v.binding_type);
             },
             .function => |f| {
                 const type_alloc = self.typeAllocator();
                 var param_types = std.ArrayListUnmanaged(ResolvedType){};
                 for (f.parameter_types) |pt| {
-                    try param_types.append(type_alloc, try self.resolveAstType(pt));
+                    try param_types.append(type_alloc, try self.resolveAstTypeInSymbolScope(sym, pt));
                 }
 
                 const return_type = try type_alloc.create(ResolvedType);
-                return_type.* = try self.resolveAstType(f.return_type);
+                return_type.* = try self.resolveAstTypeInSymbolScope(sym, f.return_type);
 
                 return .{
                     .kind = .{ .function = .{
@@ -3284,6 +3347,23 @@ pub const TypeChecker = struct {
             .import_alias => |ia| {
                 if (ia.resolved_id) |id| {
                     if (self.symbol_table.getSymbol(id)) |resolved_sym| {
+                        const previous_scope_id = self.symbol_table.current_scope_id;
+                        var restore_scope = false;
+                        defer {
+                            if (restore_scope) {
+                                self.symbol_table.setCurrentScope(previous_scope_id) catch {
+                                    if (builtin.mode == .Debug) {
+                                        @panic("TypeChecker scope restore failed after import-alias resolution");
+                                    }
+                                };
+                            }
+                        }
+                        if (self.moduleScopeFromPath(ia.source_path)) |source_scope_id| {
+                            if (source_scope_id != previous_scope_id) {
+                                self.symbol_table.setCurrentScope(source_scope_id) catch return error.TypeError;
+                                restore_scope = true;
+                            }
+                        }
                         return try self.getSymbolType(resolved_sym, span);
                     }
                 }

@@ -440,7 +440,7 @@ pub const SymbolTable = struct {
     }
 
     /// Find which scope contains a symbol
-    fn findSymbolScope(self: *SymbolTable, symbol_id: SymbolId) ?ScopeId {
+    pub fn findSymbolScope(self: *SymbolTable, symbol_id: SymbolId) ?ScopeId {
         for (self.scopes.items, 0..) |scope, i| {
             var it = scope.symbols.valueIterator();
             while (it.next()) |id| {
