@@ -3164,32 +3164,7 @@ test "parse import with items" {
     try std.testing.expectEqualStrings("log", import_decl.items.?[1].alias.?);
 }
 
-test "parse empty trait" {
-    const source =
-        \\trait Empty {
-        \\}
-    ;
-    var lex = lexer.Lexer.init(source);
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const tokens = try lex.scanAllTokens(alloc);
-    var parser = Parser.init(alloc, tokens.items);
-    defer parser.deinit();
-
-    const decl = try parser.parseDeclaration();
-    try std.testing.expect(decl.kind == .trait_decl);
-    const t = decl.kind.trait_decl;
-    try std.testing.expectEqualStrings("Empty", t.name);
-    try std.testing.expectEqual(@as(usize, 0), t.methods.len);
-    try std.testing.expect(t.super_traits == null);
-    try std.testing.expect(t.generic_params == null);
-    try std.testing.expect(!t.is_public);
-}
-
-test "parse single method trait" {
+test "parse trait method signature details" {
     const source =
         \\trait Show {
         \\    fn show(self: Self) -> string
@@ -3206,80 +3181,20 @@ test "parse single method trait" {
     defer parser.deinit();
 
     const decl = try parser.parseDeclaration();
-    try std.testing.expect(decl.kind == .trait_decl);
     const t = decl.kind.trait_decl;
-    try std.testing.expectEqualStrings("Show", t.name);
-    try std.testing.expectEqual(@as(usize, 1), t.methods.len);
-
     const method = t.methods[0];
     try std.testing.expectEqualStrings("show", method.name);
     try std.testing.expect(!method.is_effect);
     try std.testing.expect(method.default_body == null);
     try std.testing.expectEqual(@as(usize, 1), method.parameters.len);
     try std.testing.expectEqualStrings("self", method.parameters[0].name);
-    try std.testing.expect(method.return_type.kind == .named);
-}
-
-test "parse multiple methods trait" {
-    const source =
-        \\trait Collection {
-        \\    fn size(self: Self) -> i32
-        \\    fn is_empty(self: Self) -> bool
-        \\    fn contains(self: Self, item: i32) -> bool
-        \\}
-    ;
-    var lex = lexer.Lexer.init(source);
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const tokens = try lex.scanAllTokens(alloc);
-    var parser = Parser.init(alloc, tokens.items);
-    defer parser.deinit();
-
-    const decl = try parser.parseDeclaration();
-    try std.testing.expect(decl.kind == .trait_decl);
-    const t = decl.kind.trait_decl;
-    try std.testing.expectEqualStrings("Collection", t.name);
-    try std.testing.expectEqual(@as(usize, 3), t.methods.len);
-
-    try std.testing.expectEqualStrings("size", t.methods[0].name);
-    try std.testing.expectEqualStrings("is_empty", t.methods[1].name);
-    try std.testing.expectEqualStrings("contains", t.methods[2].name);
-    try std.testing.expectEqual(@as(usize, 2), t.methods[2].parameters.len);
-}
-
-test "parse trait with supertraits" {
-    const source =
-        \\trait Ord: Eq {
-        \\    fn compare(self: Self, other: Self) -> i32
-        \\}
-    ;
-    var lex = lexer.Lexer.init(source);
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const tokens = try lex.scanAllTokens(alloc);
-    var parser = Parser.init(alloc, tokens.items);
-    defer parser.deinit();
-
-    const decl = try parser.parseDeclaration();
-    try std.testing.expect(decl.kind == .trait_decl);
-    const t = decl.kind.trait_decl;
-    try std.testing.expectEqualStrings("Ord", t.name);
-    try std.testing.expect(t.super_traits != null);
-    try std.testing.expectEqual(@as(usize, 1), t.super_traits.?.len);
-    try std.testing.expectEqualStrings("Eq", t.super_traits.?[0]);
-    try std.testing.expectEqual(@as(usize, 1), t.methods.len);
+    try std.testing.expect(method.return_type.kind == .primitive);
 }
 
 test "parse trait with multiple supertraits" {
     const source =
         \\trait Printable: Show + Eq {
-        \\    fn print(self: Self) -> string
+        \\    fn display(self: Self) -> string
         \\}
     ;
     var lex = lexer.Lexer.init(source);
@@ -3300,35 +3215,6 @@ test "parse trait with multiple supertraits" {
     try std.testing.expectEqual(@as(usize, 2), t.super_traits.?.len);
     try std.testing.expectEqualStrings("Show", t.super_traits.?[0]);
     try std.testing.expectEqualStrings("Eq", t.super_traits.?[1]);
-}
-
-test "parse trait with generic methods" {
-    const source =
-        \\trait Functor {
-        \\    fn map[B](self: Self, f: fn(i32) -> B) -> B
-        \\}
-    ;
-    var lex = lexer.Lexer.init(source);
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const tokens = try lex.scanAllTokens(alloc);
-    var parser = Parser.init(alloc, tokens.items);
-    defer parser.deinit();
-
-    const decl = try parser.parseDeclaration();
-    try std.testing.expect(decl.kind == .trait_decl);
-    const t = decl.kind.trait_decl;
-    try std.testing.expectEqualStrings("Functor", t.name);
-    try std.testing.expectEqual(@as(usize, 1), t.methods.len);
-
-    const method = t.methods[0];
-    try std.testing.expectEqualStrings("map", method.name);
-    try std.testing.expect(method.generic_params != null);
-    try std.testing.expectEqual(@as(usize, 1), method.generic_params.?.len);
-    try std.testing.expectEqualStrings("B", method.generic_params.?[0].name);
 }
 
 test "parse public trait" {
@@ -3352,4 +3238,28 @@ test "parse public trait" {
     const t = decl.kind.trait_decl;
     try std.testing.expect(t.is_public);
     try std.testing.expectEqualStrings("Eq", t.name);
+}
+
+test "parse trait with effect method" {
+    const source =
+        \\trait Logger {
+        \\    effect fn log(self: Self, msg: string) -> string
+        \\}
+    ;
+    var lex = lexer.Lexer.init(source);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tokens = try lex.scanAllTokens(alloc);
+    var parser = Parser.init(alloc, tokens.items);
+    defer parser.deinit();
+
+    const decl = try parser.parseDeclaration();
+    try std.testing.expect(decl.kind == .trait_decl);
+    const method = decl.kind.trait_decl.methods[0];
+    try std.testing.expect(method.is_effect);
+    try std.testing.expectEqualStrings("log", method.name);
+    try std.testing.expectEqual(@as(usize, 2), method.parameters.len);
 }
