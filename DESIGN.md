@@ -8,55 +8,17 @@ Kira is a functional programming language designed for AI code generation. It ap
 
 ## Table of Contents
 
-1. [Design Philosophy](#design-philosophy)
-2. [Lexical Elements](#lexical-elements)
-3. [Syntax and Grammar](#syntax-and-grammar)
-4. [Type System](#type-system)
-5. [Effects System](#effects-system)
-6. [Pattern Matching](#pattern-matching)
-7. [Higher-Order Functions](#higher-order-functions)
-8. [Standard Library](#standard-library)
-9. [Module System](#module-system)
-10. [Comparison with Klar](#comparison-with-klar)
+1. [Lexical Elements](#lexical-elements)
+2. [Syntax and Grammar](#syntax-and-grammar)
+3. [Type System](#type-system)
+4. [Effects System](#effects-system)
+5. [Pattern Matching](#pattern-matching)
+6. [Higher-Order Functions](#higher-order-functions)
+7. [Standard Library](#standard-library)
+8. [Module System](#module-system)
+9. [Implementation Notes](#implementation-notes)
 
----
-
-## Design Philosophy
-
-### Core Principles
-
-1. **Pure by default** — all functions are pure unless marked `effect`
-2. **Explicit types everywhere** — no inference
-3. **Explicit effects** — IO, State, Error all visible in types
-4. **One obvious way** — single syntax for each construct
-5. **Strict evaluation** — no lazy surprises
-6. **No implicit currying** — call sites look like definitions
-7. **AI-first design** — optimized for AI code generation clarity
-
-### Kira vs Klar
-
-Kira is the functional sibling to Klar. Both share:
-- Explicit types everywhere
-- Explicit returns
-- Statement-based syntax (not expression-based)
-- No inference
-- No implicit behavior
-- One obvious syntax per construct
-
-They differ in:
-- **Klar**: Imperative with mutation, effects anywhere
-- **Kira**: Functional with purity, effects tracked in types
-
-### Problems Solved
-
-| Functional Language Problem | Kira Solution |
-|----------------------------|---------------|
-| Type inference errors | No inference — all types explicit |
-| Implicit currying confusion | No currying — all args explicit |
-| Lazy evaluation surprises | Strict by default |
-| Monad complexity | Simple effect types |
-| Expression-heavy syntax | Statement-based like Klar |
-| Multiple syntax forms | One way per construct |
+See [IDEA.md](IDEA.md) for the concept and motivation behind Kira, and [PHILOSOPHY.md](PHILOSOPHY.md) for the principles that guide its design.
 
 ---
 
@@ -880,62 +842,6 @@ pub effect fn main() -> IO[Result[void, Error]] {
 
 ---
 
-## Comparison with Klar
-
-| Aspect | Klar | Kira |
-|--------|------|------|
-| Paradigm | Imperative | Functional |
-| Mutation | `var` for mutable | Immutable only (in pure code) |
-| Default | Effectful | Pure |
-| Effects | Implicit | Explicit in types |
-| Data | Structs + mutation | Algebraic data types |
-| Control flow | Statements | Statements |
-| Type inference | None | None |
-| Returns | Explicit `return` | Explicit `return` |
-| Closures | Full annotations | Full annotations |
-| One way | Yes | Yes |
-| AI-optimized | Yes | Yes |
-
-### When to Use Which
-
-**Use Klar when:**
-- Building systems with inherent state (servers, GUIs)
-- Performance-critical code needing fine control
-- Interfacing with stateful external systems
-- Team more familiar with imperative style
-
-**Use Kira when:**
-- Data transformation pipelines
-- Parsers, compilers, interpreters
-- Business logic that benefits from purity
-- Code that needs formal verification
-- Team comfortable with functional style
-
-### Interoperability
-
-Klar and Kira can interoperate:
-
-```kira
-// Kira calling Klar (Klar code is treated as effectful)
-import klar.database.{ query }  // Klar module
-
-effect fn get_users() -> IO[Result[List[User], DbError]] {
-    return query("SELECT * FROM users")
-}
-```
-
-```klar
-// Klar calling Kira (Kira pure functions are just functions)
-import kira.validation.{ validate_email }  // Kira module
-
-fn process_user(email: string) -> Result[User, Error] {
-    let valid: bool = validate_email(email)  // Pure Kira function
-    // ...
-}
-```
-
----
-
 ## Implementation Notes
 
 ### Compiler Phases
@@ -946,15 +852,6 @@ fn process_user(email: string) -> Result[User, Error] {
 4. **Optimization** — Pure functions enable aggressive optimization
 5. **Code generation** — Target same backend as Klar
 
-### AI Benefits
-
-1. **Clear purity boundaries** — AI knows exactly which code is pure
-2. **Effect documentation** — Types tell AI what can happen
-3. **Safe transformation zones** — Pure code can be freely refactored
-4. **Formal verification targets** — Pure functions are provable
-5. **Optimization opportunities** — Memoization, parallelization for pure code
-
 ---
 
-*Document version: 1.0*
-*Kira: The functional sibling to Klar*
+*Document version: 1.1*
