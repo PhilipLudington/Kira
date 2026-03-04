@@ -1,0 +1,1307 @@
+## Your Task
+
+Implement hover (`textDocument/hover`) in `src/lsp/server.zig` — given a position, find the AST node at that location, look up its type from the type checker's records, return a Hover response with the type signature. (per DESIGN.md section "Implementation Notes") Tests should cover: hover on variable shows type, hover on function shows signature, hover on type name shows definition, hover on whitespace returns null.
+
+## Relevant DESIGN.md Sections
+
+## Implementation Notes
+
+### Compiler Phases
+
+1. **Parsing** — Build AST (shared infrastructure with Klar)
+2. **Type checking** — Verify all types explicit and correct
+3. **Effect checking** — Verify purity constraints
+4. **Optimization** — Pure functions enable aggressive optimization
+5. **Code generation** — Target same backend as Klar
+
+---
+
+*Document version: 1.1*
+
+## Project Configuration
+
+- **Project:** Kira
+- **Language:** zig
+- **Source directory:** src/
+- **Test directory:** src/tests/
+- **Build command:** `zig build`
+- **Test command:** `zig build test`
+- **Format command:** `zig fmt .`
+
+## Existing Source Code
+
+The following files already exist and are relevant to your task:
+
+### `DESIGN.md`
+
+```
+# Kira Programming Language Specification
+
+> **"Pure clarity."**
+
+Kira is a functional programming language designed for AI code generation. It applies Klar's "no ambiguity, no surprises" philosophy to the functional paradigm.
+
+---
+
+## Table of Contents
+
+1. [Lexical Elements](#lexical-elements)
+2. [Syntax and Grammar](#syntax-and-grammar)
+3. [Type System](#type-system)
+4. [Effects System](#effects-system)
+5. [Pattern Matching](#pattern-matching)
+6. [Higher-Order Functions](#higher-order-functions)
+7. [Standard Library](#standard-library)
+8. [Module System](#module-system)
+9. [Implementation Notes](#implementation-notes)
+
+See [IDEA.md](IDEA.md) for the concept and motivation behind Kira, and [PHILOSOPHY.md](PHILOSOPHY.md) for the principles that guide its design.
+
+---
+
+## Lexical Elements
+
+### File Extension
+
+`.ki`
+
+### Keywords
+
+```
+// Declarations
+fn       let      type     module   import   pub
+effect   trait    impl     const
+
+// Control flow
+if       else     match    for      return   break
+
+// Expressions
+true     false    self     Self
+
+// Operators (word-form)
+and      or       not      is       in       as
+
+// Special
+where
+```
+
+### Operators
+
+```
+// Arithmetic
++   -   *   /   %
+
+// Comparison
+==  !=  <   >   <=  >=
+
+// Logical
+and  or  not
+
+// Special
+?       ??      ..      ..=
+->      =>      :       ::
+```
+
+### Literals
+
+```kira
+// Integers
+42                  // i32 default
+42_000              // underscores allowed
+0xff                // hex
+0b1010              // binary
+42i64               // explicit type suffix
+
+// Floats
+3.14                // f64 default
+3.14f32             // explicit type
+
+// Strings
+"hello"             // regular string
+"line 1\nline 2"    // escape sequences
+
+// Boolean
+true
+false
+```
+
+### Comments
+
+```kira
+// Line comment
+
+/* Block comment */
+
+/// Documentation comment (for next item)
+/// Supports **markdown**
+
+//! Module-level documentation
+```
+
+---
+
+## Syntax and Grammar
+
+### Basic Syntax Rules
+
+- **No semicolons** — newline-terminated
+- **4-space indentation** (convention)
+- **Explicit types on all bindings**
+- **Explicit return statements**
+- **Statement-based control flow**
+
+### Bindings
+
+All bindings require explicit type annotations.
+
+```kira
+// Immutable binding (the only kind in pure Kira)
+let x: i32 = 42
+let name: string = "Alice"
+let items: List[i32] = List.empty()
+```
+
+### Functions
+
+Functions are values with explicit signatures. All functions use explicit `return`.
+
+```kira
+// Function binding with full type annotation
+let add: fn(i32, i32) -> i32 = fn(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+// Multi-line function
+let factorial: fn(i32) -> i32 = fn(n: i32) -> i32 {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+// Function that returns nothing
+let greet: fn(string) -> void = fn(name: string) -> void {
+    // This would be an effect function in practice
+    return
+}
+```
+
+### Algebraic Data Types
+
+```kira
+// Sum types (tagged unions)
+type Option[T] =
+    | Some(T)
+    | None
+
+type Result[T, E] =
+    | Ok(T)
+    | Err(E)
+
+type List[T] =
+    | Cons(T, List[T])
+    | Nil
+
+// Product types (records)
+type Point = {
+    x: f64,
+    y: f64
+}
+
+type User = {
+    id: i64,
+    name: string,
+    email: string
+}
+
+// Creating values
+let origin: Point = Point { x: 0.0, y: 0.0 }
+let maybe: Option[i32] = Some(42)
+let empty: Option[i32] = None
+let user: User = User { id: 1, name: "Alice", email: "alice@example.com" }
+```
+
+### Control Flow
+
+Control flow constructs are statements, not expressions.
+
+```kira
+// If statement
+let max: fn(i32, i32) -> i32 = fn(a: i32, b: i32) -> i32 {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// If-else statement
+let sign: fn(i32) -> string = fn(n: i32) -> string {
+    var result: string
+    if n > 0 {
+        result = "positive"
+    } else if n < 0 {
+        result = "negative"
+    } else {
+        result = "zero"
+    }
+    return result
+}
+
+// For loop (over iterables)
+let sum_list: fn(List[i32]) -> i32 = fn(items: List[i32]) -> i32 {
+    var total: i32 = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+```
+
+### Closures
+
+Closures follow the same rules as functions: explicit parameter types, explicit return types, and explicit `return` statements.
+
+```kira
+// Closure with full type annotations
+let double: fn(i32) -> i32 = fn(x: i32) -> i32 { return x * 2 }
+
+// Multi-line closure
+let process: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    let y: i32 = x * 2
+    return y + 1
+}
+
+// Closure capturing environment
+let make_adder: fn(i32) -> fn(i32) -> i32 = fn(n: i32) -> fn(i32) -> i32 {
+    return fn(x: i32) -> i32 { return x + n }
+}
+
+let add_five: fn(i32) -> i32 = make_adder(5)
+let result: i32 = add_five(10)  // 15
+```
+
+---
+
+## Type System
+
+### Primitive Types
+
+```kira
+// Integers
+i8, i16, i32, i64, i128    // signed
+u8, u16, u32, u64, u128    // unsigned
+
+// Floats
+f32, f64
+
+// Other
+bool
+char                        // Unicode scalar value
+string                      // UTF-8 string
+void                        // No value
+```
+
+### Composite Types
+
+```kira
+// Tuples
+let pair: (i32, string) = (42, "hello")
+let first: i32 = pair.0
+let second: string = pair.1
+
+// Arrays (fixed size)
+let arr: [i32; 5] = [1, 2, 3, 4, 5]
+
+// Function types
+let f: fn(i32, i32) -> i32 = add
+```
+
+### Generic Types
+
+```kira
+// Generic type definition
+type Pair[A, B] = {
+    first: A,
+    second: B
+}
+
+// Using generic types
+let p: Pair[i32, string] = Pair { first: 42, second: "hello" }
+
+// Generic functions
+let identity[T]: fn(T) -> T = fn(x: T) -> T {
+    return x
+}
+
+let n: i32 = identity[i32](42)
+let s: string = identity[string]("hello")
+```
+
+### No Implicit Conversions
+
+```kira
+let x: i32 = 5
+let y: i64 = x              // ERROR: type mismatch
+
+let y: i64 = x.as[i64]      // OK: explicit conversion
+```
+
+---
+
+## Effects System
+
+Effects are explicit in types. No function can perform effects unless declared with `effect`.
+
+### Pure Functions (Default)
+
+```kira
+// Pure functions cannot perform IO, mutation, or other effects
+// The compiler verifies this
+
+let add: fn(i32, i32) -> i32 = fn(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+let factorial: fn(i32) -> i32 = fn(n: i32) -> i32 {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+// This would be a compile error - pure function cannot do IO:
+// let bad: fn(i32) -> i32 = fn(x: i32) -> i32 {
+//     io.println("hello")  // ERROR: pure function cannot perform IO
+//     return x
+// }
+```
+
+### Effect Functions
+
+```kira
+// Effect functions can perform side effects
+// The effect is visible in the return type
+
+// IO effect - can read/write to world
+effect fn print_line(msg: string) -> IO[void] {
+    return io.println(msg)
+}
+
+// Functions that can fail
+effect fn parse_int(s: string) -> Result[i32, ParseError] {
+    // ... parsing logic
+}
+
+// IO + failure
+effect fn read_file(path: string) -> IO[Result[string, IoError]] {
+    return fs.read_string(path)
+}
+
+// Combining effects
+effect fn fetch_user(id: i64) -> IO[Result[User, ApiError]] {
+    let response: Result[Response, HttpError] = http.get("/users/{id}").await
+    match response {
+        Ok(r) => {
+            let user: Result[User, JsonError] = r.json[User]()
+            match user {
+                Ok(u) => { return Ok(u) }
+                Err(e) => { return Err(ApiError.Json(e)) }
+            }
+        }
+        Err(e) => { return Err(ApiError.Http(e)) }
+    }
+}
+```
+
+### Effect Propagation
+
+```kira
+// Pure code cannot call effectful code
+// This is a compile error:
+let bad: fn(i32) -> i32 = fn(x: i32) -> i32 {
+    print_line("hello")  // ERROR: pure function cannot call effect function
+    return x
+}
+
+// Effectful code can call both pure and effectful code
+effect fn process(x: i32) -> IO[i32] {
+    let doubled: i32 = x * 2        // OK: calling pure computation
+    print_line("processing {x}")     // OK: IO in IO context
+    return doubled
+}
+
+// The ? operator propagates errors in effect functions
+effect fn process_file() -> IO[Result[Data, Error]] {
+    let content: string = read_file("data.txt")?   // Propagates IoError
+    let data: Data = parse(content)?               // Propagates ParseError
+    return Ok(data)
+}
+```
+
+### Main Function
+
+The main function is always an effect function.
+
+```kira
+effect fn main() -> IO[void] {
+    let result: i32 = factorial(5)      // OK: calling pure from effect
+    print_line("Result: {result}")       // OK: IO in IO context
+    return
+}
+
+// Main with error handling
+effect fn main() -> IO[Result[void, Error]] {
+    let data: Data = load_config()?
+    run_application(data)?
+    return Ok(())
+}
+```
+
+---
+
+## Pattern Matching
+
+### Match Statement
+
+Match is a statement that assigns to a variable. All cases must be handled.
+
+```kira
+let describe_option: fn(Option[i32]) -> string = fn(opt: Option[i32]) -> string {
+    var result: string
+    match opt {
+        Some(n) => { result = "has value: {n}" }
+        None => { result = "empty" }
+    }
+    return result
+}
+
+let describe_result: fn(Result[i32, string]) -> string =
+    fn(res: Result[i32, string]) -> string {
+        var result: string
+        match res {
+            Ok(n) => { result = "success: {n}" }
+            Err(e) => { result = "error: {e}" }
+        }
+        return result
+    }
+```
+
+### Pattern Types
+
+```kira
+// Literal patterns
+match value {
+    0 => { result = "zero" }
+    1 => { result = "one" }
+    _ => { result = "other" }
+}
+
+// Constructor patterns
+match option {
+    Some(x) => { result = x }
+    None => { result = 0 }
+}
+
+// Record patterns
+match point {
+    Point { x: 0, y: 0 } => { result = "origin" }
+    Point { x: 0, y: y } => { result = "on y-axis at {y}" }
+    Point { x: x, y: 0 } => { result = "on x-axis at {x}" }
+    Point { x: x, y: y } => { result = "at ({x}, {y})" }
+}
+
+// Tuple patterns
+match pair {
+    (0, 0) => { result = "origin" }
+    (x, 0) => { result = "x = {x}" }
+    (0, y) => { result = "y = {y}" }
+    (x, y) => { result = "({x}, {y})" }
+}
+
+// Or patterns
+match value {
+    1 | 2 | 3 => { result = "small" }
+    _ => { result = "other" }
+}
+
+// Guard patterns
+match value {
+    n if n < 0 => { result = "negative" }
+    n if n > 100 => { result = "large" }
+    n => { result = "normal: {n}" }
+}
+```
+
+### Destructuring in Let
+
+```kira
+// Destructure records
+let p: Point = Point { x: 3.0, y: 4.0 }
+let Point { x: px, y: py }: Point = p
+
+// Destructure tuples
+let pair: (i32, string) = (42, "hello")
+let (n, s): (i32, string) = pair
+```
+
+---
+
+## Higher-Order Functions
+
+### Functions as Values
+
+```kira
+// Functions are first-class values
+let add: fn(i32, i32) -> i32 = fn(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+let subtract: fn(i32, i32) -> i32 = fn(a: i32, b: i32) -> i32 {
+    return a - b
+}
+
+// Passing functions as arguments
+let apply: fn(fn(i32, i32) -> i32, i32, i32) -> i32 =
+    fn(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+        return f(a, b)
+    }
+
+let sum: i32 = apply(add, 5, 3)        // 8
+let diff: i32 = apply(subtract, 5, 3)  // 2
+```
+
+### Map, Filter, Fold
+
+```kira
+// Map over a list
+let map[A, B]: fn(List[A], fn(A) -> B) -> List[B] =
+    fn(list: List[A], f: fn(A) -> B) -> List[B] {
+        match list {
+            Nil => { return Nil }
+            Cons(head, tail) => {
+                let new_head: B = f(head)
+                let new_tail: List[B] = map[A, B](tail, f)
+                return Cons(new_head, new_tail)
+            }
+        }
+    }
+
+// Filter a list
+let filter[A]: fn(List[A], fn(A) -> bool) -> List[A] =
+    fn(list: List[A], pred: fn(A) -> bool) -> List[A] {
+        match list {
+            Nil => { return Nil }
+            Cons(head, tail) => {
+                let rest: List[A] = filter[A](tail, pred)
+                if pred(head) {
+                    return Cons(head, rest)
+                }
+                return rest
+            }
+        }
+    }
+
+// Fold a list
+let fold[A, B]: fn(List[A], B, fn(B, A) -> B) -> B =
+    fn(list: List[A], init: B, f: fn(B, A) -> B) -> B {
+        match list {
+            Nil => { return init }
+            Cons(head, tail) => {
+                let acc: B = f(init, head)
+                return fold[A, B](tail, acc, f)
+            }
+        }
+    }
+```
+
+### Using Higher-Order Functions
+
+```kira
+let numbers: List[i32] = Cons(1, Cons(2, Cons(3, Cons(4, Cons(5, Nil)))))
+
+// Double all numbers
+let doubled: List[i32] = map[i32, i32](
+    numbers,
+    fn(x: i32) -> i32 { return x * 2 }
+)
+
+// Keep only even numbers
+let evens: List[i32] = filter[i32](
+    numbers,
+    fn(x: i32) -> bool { return x % 2 == 0 }
+)
+
+// Sum all numbers
+let total: i32 = fold[i32, i32](
+    numbers,
+    0,
+    fn(acc: i32, x: i32) -> i32 { return acc + x }
+)
+```
+
+### Composition (Explicit)
+
+```kira
+// No implicit composition operators
+// Composition is explicit
+
+let compose[A, B, C]: fn(fn(B) -> C, fn(A) -> B) -> fn(A) -> C =
+    fn(f: fn(B) -> C, g: fn(A) -> B) -> fn(A) -> C {
+        return fn(x: A) -> C {
+            let intermediate: B = g(x)
+            return f(intermediate)
+        }
+    }
+
+// Usage
+let add_one: fn(i32) -> i32 = fn(x: i32) -> i32 { return x + 1 }
+let double: fn(i32) -> i32 = fn(x: i32) -> i32 { return x * 2 }
+
+let add_then_double: fn(i32) -> i32 = compose[i32, i32, i32](double, add_one)
+let result: i32 = add_then_double(5)  // (5 + 1) * 2 = 12
+
+// Or just call directly (often clearer for AI)
+let result2: i32 = double(add_one(5))
+```
+
+---
+
+## Standard Library
+
+### Core Types (Auto-imported)
+
+```kira
+// Primitive types
+bool, i8, i16, i32, i64, i128
+u8, u16, u32, u64, u128
+f32, f64
+char, string, void
+
+// Core types
+type Option[T] = Some(T) | None
+type Result[T, E] = Ok(T) | Err(E)
+type List[T] = Cons(T, List[T]) | Nil
+
+// Core traits
+trait Eq {
+    fn eq(self: Self, other: Self) -> bool
+}
+
+trait Ord: Eq {
+    fn compare(self: Self, other: Self) -> Ordering
+}
+
+trait Show {
+    fn show(self: Self) -> string
+}
+```
+
+### std.list
+
+```kira
+module std.list
+
+pub let empty[A]: fn() -> List[A]
+pub let singleton[A]: fn(A) -> List[A]
+pub let cons[A]: fn(A, List[A]) -> List[A]
+
+pub let map[A, B]: fn(List[A], fn(A) -> B) -> List[B]
+pub let filter[A]: fn(List[A], fn(A) -> bool) -> List[A]
+pub let fold[A, B]: fn(List[A], B, fn(B, A) -> B) -> B
+pub let fold_right[A, B]: fn(List[A], B, fn(A, B) -> B) -> B
+
+pub let find[A]: fn(List[A], fn(A) -> bool) -> Option[A]
+pub let any[A]: fn(List[A], fn(A) -> bool) -> bool
+pub let all[A]: fn(List[A], fn(A) -> bool) -> bool
+
+pub let length[A]: fn(List[A]) -> i32
+pub let reverse[A]: fn(List[A]) -> List[A]
+pub let concat[A]: fn(List[A], List[A]) -> List[A]
+pub let flatten[A]: fn(List[List[A]]) -> List[A]
+
+pub let take[A]: fn(List[A], i32) -> List[A]
+pub let drop[A]: fn(List[A], i32) -> List[A]
+pub let zip[A, B]: fn(List[A], List[B]) -> List[(A, B)]
+```
+
+### std.option
+
+```kira
+module std.option
+
+pub let map[A, B]: fn(Option[A], fn(A) -> B) -> Option[B]
+pub let and_then[A, B]: fn(Option[A], fn(A) -> Option[B]) -> Option[B]
+pub let unwrap_or[A]: fn(Option[A], A) -> A
+pub let is_some[A]: fn(Option[A]) -> bool
+pub let is_none[A]: fn(Option[A]) -> bool
+```
+
+### std.result
+
+```kira
+module std.result
+
+pub let map[T, E, U]: fn(Result[T, E], fn(T) -> U) -> Result[U, E]
+pub let map_err[T, E, F]: fn(Result[T, E], fn(E) -> F) -> Result[T, F]
+pub let and_then[T, E, U]: fn(Result[T, E], fn(T) -> Result[U, E]) -> Result[U, E]
+pub let unwrap_or[T, E]: fn(Result[T, E], T) -> T
+pub let is_ok[T, E]: fn(Result[T, E]) -> bool
+pub let is_err[T, E]: fn(Result[T, E]) -> bool
+```
+
+### std.io (Effect Module)
+
+```kira
+module std.io
+
+pub effect fn print(msg: string) -> IO[void]
+pub effect fn println(msg: string) -> IO[void]
+pub effect fn read_line() -> IO[string]
+```
+
+### std.fs (Effect Module)
+
+```kira
+module std.fs
+
+pub effect fn read_file(path: string) -> IO[Result[string, IoError]]
+pub effect fn write_file(path: string, content: string) -> IO[Result[void, IoError]]
+pub effect fn exists(path: string) -> IO[bool]
+pub effect fn remove(path: string) -> IO[Result[void, IoError]]
+```
+
+---
+
+## Module System
+
+### Module Declaration
+
+```kira
+// src/math/vector.ki
+module math.vector
+
+pub type Vec2 = {
+    x: f64,
+    y: f64
+}
+
+pub let add: fn(Vec2, Vec2) -> Vec2 = fn(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2 { x: a.x + b.x, y: a.y + b.y }
+}
+
+pub let scale: fn(Vec2, f64) -> Vec2 = fn(v: Vec2, s: f64) -> Vec2 {
+    return Vec2 { x: v.x * s, y: v.y * s }
+}
+
+// Private function (no pub)
+let helper: fn(f64) -> f64 = fn(x: f64) -> f64 {
+    return x * x
+}
+```
+
+### Imports
+
+```kira
+import std.list
+import std.list.{ map, filter, fold }
+import std.option.{ Option, Some, None }
+import math.vector.{ Vec2, add as vec_add }
+```
+
+### Visibility
+
+```kira
+pub type PublicType = { ... }      // Public type
+type PrivateType = { ... }          // Private type
+
+pub let public_fn: fn(...) = ...    // Public function
+let private_fn: fn(...) = ...       // Private function
+```
+
+---
+
+## Complete Example
+
+```kira
+// word_count.ki
+module word_count
+
+import std.list.{ map, filter, fold }
+import std.string.{ split, trim, length }
+import std.io.{ println }
+import std.fs.{ read_file }
+
+type WordCount = {
+    word: string,
+    count: i32
+}
+
+// Pure function - counts words
+let count_words: fn(string) -> List[WordCount] = fn(text: string) -> List[WordCount] {
+    let words: List[string] = split(text, " ")
+    let trimmed: List[string] = map[string, string](
+        words,
+        fn(w: string) -> string { return trim(w) }
+    )
+    let non_empty: List[string] = filter[string](
+        trimmed,
+        fn(w: string) -> bool { return length(w) > 0 }
+    )
+    // Count logic would go here
+    return count_unique(non_empty)
+}
+
+// Pure function - formats output
+let format_counts: fn(List[WordCount]) -> string = fn(counts: List[WordCount]) -> string {
+    let lines: List[string] = map[WordCount, string](
+        counts,
+        fn(wc: WordCount) -> string {
+            return "{wc.word}: {wc.count}"
+        }
+    )
+    return join(lines, "\n")
+}
+
+// Effect function - entry point
+pub effect fn main() -> IO[Result[void, Error]] {
+    let content: string = read_file("input.txt")?
+
+    // Pure computation - AI can reason about this completely
+    let counts: List[WordCount] = count_words(content)
+    let output: string = format_counts(counts)
+
+    // Effect - clearly marked
+    println(output)
+
+    return Ok(())
+}
+```
+
+---
+
+## Implementation Notes
+
+### Compiler Phases
+
+1. **Parsing** — Build AST (shared infrastructure with Klar)
+2. **Type checking** — Verify all types explicit and correct
+3. **Effect checking** — Verify purity constraints
+4. **Optimization** — Pure functions enable aggressive optimization
+5. **Code generation** — Target same backend as Klar
+
+---
+
+*Document version: 1.1*
+
+```
+
+## Project Conventions (CLAUDE.md)
+
+The following are the project coding conventions:
+
+```markdown
+# Kira Project Instructions
+
+CarbideZig is used in this project for Zig development standards. See `carbide/CARBIDE.md` and `carbide/STANDARDS.md`.
+
+## Running Tests
+
+Always use the AirTower wrapper script to run tests:
+```bash
+./run-tests.sh
+```
+Do NOT run `zig build test` directly - use the wrapper script to preserve AirTower integration and result tracking.
+
+## Building
+
+Always use the AirTower wrapper script to build:
+```bash
+./run-build.sh
+```
+Do NOT run `zig build` directly - use the wrapper script to preserve AirTower integration.
+```
+
+## Known Issues (BUG.md)
+
+These bugs are currently open and may be relevant to your task:
+
+```markdown
+## [ ] Bug 1: Task 24 stuck — Extend the lexer to tokenize string interpolation — when scanning a string literal, detect `{` and emit a sequence of tokens: `StringFragment`, `InterpolationStart`, then lex the expression normally, then `InterpolationEnd`, continuing until the closing `"`. Add new token types in `src/token.zig`. (per DESIGN.md section "Lexical Elements") Tests should cover: plain strings unchanged, single interpolation, multiple interpolations, nested braces, escaped braces, adjacent interpolations, empty interpolation error.
+
+**Task:** 24
+**Logged:** 2026-03-04T17:20:55Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 2: Task 25 stuck — Add an `InterpolatedString` AST node in `src/ast.zig` containing a list of segments (either literal string fragments or expression nodes). Update the parser in `src/parser.zig` to build this node when `StringFragment`/`InterpolationStart` tokens are encountered. (per DESIGN.md section "Lexical Elements") Tests should cover: parsing `"hello {name}"`, parsing `"{a} and {b}"`, parsing pure string (no interpolation) still works, parsing expression with operators inside interpolation.
+
+**Task:** 25
+**Logged:** 2026-03-04T17:21:01Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 3: Task 26 stuck — Type-check interpolated strings in `src/type_checker.zig` — each interpolated expression must type-check successfully; the overall expression has type `string`. Ensure expressions inside interpolations can be any type that has a string representation (primitives and types implementing Show). (per DESIGN.md sections "Lexical Elements" and "Type System") Tests should cover: interpolating i32, string, bool, f64; type error for non-showable types; nested function calls inside interpolation.
+
+**Task:** 26
+**Logged:** 2026-03-04T17:21:06Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 4: Task 27 stuck — Evaluate interpolated strings in the interpreter (`src/interpreter.zig`) — concatenate literal fragments with stringified expression results. Implement `toString` conversion for all primitive types and common ADTs. (per DESIGN.md section "Lexical Elements") Tests should cover: runtime evaluation of `"x is {x}"` with integer, string interpolation with function call results, interpolation in effect functions, empty string segments.
+
+**Task:** 27
+**Logged:** 2026-03-04T17:21:11Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 5: Task 53 stuck — Parse trait declarations — extend `src/parser.zig` to handle `trait Name { fn method(self: Self, ...) -> T }` syntax. Add `TraitDecl` AST node in `src/ast.zig` with name, method signatures, and optional supertraits (`: Eq`). (per DESIGN.md section "Standard Library" — core traits Eq, Ord, Show) Tests should cover: empty trait, trait with one method, trait with multiple methods, trait with supertrait, parsing errors for malformed traits.
+
+**Task:** 53
+**Logged:** 2026-03-04T17:21:16Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 6: Task 54 stuck — Parse impl blocks — extend `src/parser.zig` to handle `impl TraitName for TypeName { ... }` blocks containing function definitions. Add `ImplBlock` AST node in `src/ast.zig`. (per DESIGN.md section "Standard Library") Tests should cover: impl with one method, impl with multiple methods, impl for generic type, parsing errors for missing methods.
+
+**Task:** 54
+**Logged:** 2026-03-04T17:21:21Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 7: Task 55 stuck — Resolve trait and impl declarations in `src/resolver.zig` — register trait names in the symbol table, register impl blocks associated with their target type, resolve method names within impl bodies. (per DESIGN.md section "Standard Library") Tests should cover: trait name registered in scope, duplicate trait error, impl block links to correct trait, method names resolved within impl.
+
+**Task:** 55
+**Logged:** 2026-03-04T17:21:26Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 8: Task 56 stuck — Type-check trait declarations in `src/type_checker.zig` — verify method signatures are well-formed, check that Self type is used correctly. Type-check impl blocks: verify all required methods are implemented, signatures match trait declaration, method bodies type-check. (per DESIGN.md section "Standard Library") Tests should cover: impl missing a method, impl with wrong signature, impl with correct signatures, Self type resolution, supertrait method requirements.
+
+**Task:** 56
+**Logged:** 2026-03-04T17:21:32Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 9: Task 57 stuck — Implement method resolution and dispatch in `src/interpreter.zig` — when a method is called on a value, look up the impl block for that value's type and the relevant trait, then dispatch to the correct function. Support dot-syntax method calls. (per DESIGN.md section "Standard Library") Tests should cover: calling `.eq()` on two values, calling `.show()` to get string, method on generic type, dispatch to correct impl when multiple impls exist.
+
+**Task:** 57
+**Logged:** 2026-03-04T17:21:37Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 10: Task 58 stuck — Add trait bounds on generic parameters — extend parser and type checker to handle `where T: Eq` or inline `[T: Eq]` syntax. Verify that generic functions only call trait methods when the bound is declared. (per DESIGN.md sections "Type System" and "Standard Library") Tests should cover: generic function with trait bound compiles, generic function calling trait method without bound errors, multiple bounds, bound satisfaction at call site.
+
+**Task:** 58
+**Logged:** 2026-03-04T17:21:42Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 11: Task 83 stuck — Extend the parser to recognize assignment to field access expressions (`expr.field = expr`) and index expressions (`expr[expr] = expr`) in `src/parser.zig`. Currently only simple variable assignment is supported. (per DESIGN.md section "Effects System" — mutation in effect functions) Tests should cover: parsing `point.x = 5.0`, parsing `arr[0] = 42`, parsing nested field assignment `user.address.city = "NYC"`, rejecting assignment to non-lvalue expressions.
+
+**Task:** 83
+**Logged:** 2026-03-04T17:21:47Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 12: Task 84 stuck — Type-check mutable assignments in `src/type_checker.zig` — verify the assigned value matches the field/element type. Track whether we are inside an effect function; emit an error if mutation occurs in a pure function. (per DESIGN.md section "Effects System") Tests should cover: field assignment type mismatch error, index assignment type mismatch, mutation in pure function rejected, mutation in effect function allowed, nested field mutation type checks.
+
+**Task:** 84
+**Logged:** 2026-03-04T17:21:52Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 13: Task 85 stuck — Evaluate mutable field and index assignments in `src/interpreter.zig` — update the runtime representation of records and arrays in place. Ensure the interpreter respects mutable vs immutable bindings. (per DESIGN.md section "Effects System") Tests should cover: mutating a record field and reading it back, mutating an array element, mutation persists through function calls, nested field mutation works.
+
+**Task:** 85
+**Logged:** 2026-03-04T17:21:57Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 14: Task 110 stuck — Build a diagnostic rendering engine — create `src/diagnostics.zig` that takes an error, source text, and source location, and renders a formatted error message with the relevant source line, a caret/underline pointing to the error span, and line numbers. (per DESIGN.md section "Implementation Notes") Tests should cover: single-line error, multi-line span, error at start of line, error at end of line, error on first/last line of file, tab handling.
+
+**Task:** 110
+**Logged:** 2026-03-04T17:22:03Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 15: Task 111 stuck — Add "Did you mean?" suggestions — implement Levenshtein distance or similar edit-distance algorithm in `src/diagnostics.zig`. When an undefined identifier is encountered, search the current scope for names within edit distance ≤ 2 and suggest them. (per DESIGN.md section "Implementation Notes") Tests should cover: exact match (no suggestion), single-char typo, transposition, suggestion from imported names, no suggestion when nothing is close.
+
+**Task:** 111
+**Logged:** 2026-03-04T17:22:08Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 16: Task 112 stuck — Add ANSI color output — create a small color-formatting utility in `src/diagnostics.zig` that wraps text in ANSI escape codes. Color error labels red, warnings yellow, notes blue, source code white, carets/underlines green. Detect `NO_COLOR` env var and tty to disable when appropriate. (per DESIGN.md section "Implementation Notes") Tests should cover: color codes present when enabled, no color codes when `NO_COLOR` set, no color codes when not a tty.
+
+**Task:** 112
+**Logged:** 2026-03-04T17:22:13Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 17: Task 113 stuck — Integrate diagnostics into the compiler pipeline — update error handling in `src/parser.zig`, `src/resolver.zig`, `src/type_checker.zig`, and `src/main.zig` to pass source locations through to the diagnostic renderer. Add support for "related info" (secondary spans) and "notes" (additional context lines). (per DESIGN.md section "Implementation Notes") Tests should cover: parser error shows source snippet, type error shows source snippet with types, resolver error suggests similar name, multiple related spans on one error.
+
+**Task:** 113
+**Logged:** 2026-03-04T17:22:18Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 18: Task 141 stuck — Implement LSP transport layer — create `src/lsp/server.zig` that handles JSON-RPC over stdin/stdout. Parse `initialize`, `shutdown`, `exit`, and `textDocument/didOpen`/`didChange`/`didSave` messages. Respond to `initialize` with server capabilities. (per DESIGN.md section "Implementation Notes") Tests should cover: parse initialize request, send initialize response with capabilities, handle shutdown/exit cleanly, parse didOpen notification.
+
+**Task:** 141
+**Logged:** 2026-03-04T17:22:23Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 19: Task 142 stuck — Implement diagnostics publishing — on `textDocument/didSave`, run the full compiler pipeline (parse → resolve → type-check) on the file content, collect errors, and publish them as LSP diagnostics via `textDocument/publishDiagnostics`. Map compiler source locations to LSP line/character positions. (per DESIGN.md section "Implementation Notes") Tests should cover: no errors produces empty diagnostics, parse error produces diagnostic with correct range, type error produces diagnostic, multiple errors in one file.
+
+**Task:** 142
+**Logged:** 2026-03-04T17:22:28Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 20: Task 143 stuck — Implement hover support — on `textDocument/hover`, find the AST node at the given position. For identifiers, look up their type in the symbol table and return it as markdown. For function calls, show the function signature. (per DESIGN.md section "Implementation Notes") Tests should cover: hover over variable shows type, hover over function shows signature, hover over type name shows definition, hover over keyword returns null.
+
+**Task:** 143
+**Logged:** 2026-03-04T17:22:34Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 21: Task 144 stuck — Implement go-to-definition — on `textDocument/definition`, find the identifier at the cursor position, look up its definition location in the symbol table, and return the target location. Support cross-file navigation for imported symbols. (per DESIGN.md section "Module System") Tests should cover: go-to-definition for local variable, for function, for imported symbol, for type name, returns null for keywords.
+
+**Task:** 144
+**Logged:** 2026-03-04T17:22:39Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 22: Task 145 stuck — Implement find-references and completion — for `textDocument/references`, collect all uses of a symbol by walking the AST. For `textDocument/completion`, offer identifiers in scope, keywords, and type names based on cursor position context. (per DESIGN.md section "Implementation Notes") Tests should cover: find all references to a variable, references across functions, completion suggests local variables, completion suggests imported names, completion suggests keywords in appropriate context.
+
+**Task:** 145
+**Logged:** 2026-03-04T17:22:44Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 23: Task 146 stuck — Add `kira lsp` subcommand — extend `src/main.zig` CLI to launch the LSP server when `kira lsp` is invoked. Wire up the server to the existing compiler pipeline. (per DESIGN.md section "Implementation Notes") Tests should cover: `kira lsp` starts and responds to initialize, integration test with a mock editor session.
+
+**Task:** 146
+**Logged:** 2026-03-04T17:22:49Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 24: Task 172 stuck — Implement the formatter core — create `src/formatter.zig` that takes an AST and emits formatted source code. Follow language conventions: 4-space indent, newline-terminated statements, consistent spacing around operators, aligned record fields. (per DESIGN.md section "Syntax and Grammar") Tests should cover: function formatting, type declaration formatting, match statement formatting, nested expressions, already-formatted code is unchanged (idempotency).
+
+**Task:** 172
+**Logged:** 2026-03-04T17:22:54Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 25: Task 173 stuck — Add `kira fmt` CLI command — extend `src/main.zig` to accept `fmt` subcommand. Parse the file, format the AST, write back. Support `--check` mode (exit non-zero if changes needed) and stdin/stdout mode. Handle multiple files and directory recursion for `.ki` files. (per DESIGN.md section "Syntax and Grammar") Tests should cover: format a single file, format with --check detects changes, format with --check passes on formatted file, format directory recursion finds .ki files.
+
+**Task:** 173
+**Logged:** 2026-03-04T17:22:59Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 26: Task 174 stuck — Improve REPL with `:type` command and multiline input — in `src/repl.zig` (or equivalent), add `:type expr` that type-checks an expression and prints its type without evaluating. Detect incomplete expressions (unclosed braces/parens) and continue reading on the next line with a continuation prompt. (per DESIGN.md section "Syntax and Grammar") Tests should cover: `:type 42` shows `i32`, `:type fn(x: i32) -> i32 { return x }` shows function type, multiline function entry, multiline match expression.
+
+**Task:** 174
+**Logged:** 2026-03-04T17:23:05Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 27: Task 175 stuck — Add REPL history persistence and tab completion — save REPL history to `~/.kira_history`. On startup, load previous history. Implement tab completion that suggests identifiers in the current REPL scope and keywords. (per DESIGN.md section "Syntax and Grammar") Tests should cover: history file created on first use, history persists across sessions, tab completion suggests defined variables, tab completion suggests keywords.
+
+**Task:** 175
+**Logged:** 2026-03-04T17:23:10Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 28: Task 200 stuck — Design IR data structures — create `src/ir/ir.zig` with IR node types: basic blocks, instructions (arithmetic, comparison, call, branch, return, alloc, load, store), function definitions, type representations for ADTs and closures. Use SSA (static single assignment) form. (per DESIGN.md section "Implementation Notes") Tests should cover: construct IR for simple arithmetic function, IR for function call, IR for conditional, IR for pattern match.
+
+**Task:** 200
+**Logged:** 2026-03-04T17:23:15Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 29: Task 201 stuck — Implement AST-to-IR lowering for expressions and simple functions — create `src/ir/lower.zig` that walks the typed AST and emits IR instructions. Handle: literals, variable references, binary/unary ops, function calls, let bindings, return statements. Generate SSA temporaries. (per DESIGN.md section "Implementation Notes") Tests should cover: lower integer literal, lower binary operation, lower function with params, lower let binding, lower nested expressions.
+
+**Task:** 201
+**Logged:** 2026-03-04T17:23:20Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 30: Task 202 stuck — Implement IR lowering for control flow and pattern matching — extend `src/ir/lower.zig` to handle if/else (branch instructions), match statements (decision trees or switch lowering), for loops, and closures (closure allocation + capture). (per DESIGN.md sections "Pattern Matching" and "Higher-Order Functions") Tests should cover: lower if/else to branches, lower match with literal patterns, lower match with constructor patterns, lower closure capturing variables, lower for loop.
+
+**Task:** 202
+**Logged:** 2026-03-04T17:23:25Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 31: Task 203 stuck — Implement IR-level optimizations — create `src/ir/optimize.zig` with passes: constant folding (evaluate pure operations on known constants), dead code elimination (remove unused instructions), simple inlining (inline small pure functions at call sites). (per DESIGN.md section "Implementation Notes") Tests should cover: constant fold `2 + 3` to `5`, eliminate dead variable, inline single-expression pure function, don't inline effect functions.
+
+**Task:** 203
+**Logged:** 2026-03-04T17:23:30Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 32: Task 204 stuck — Add IR pretty-printer and `--ir` debug flag — create `src/ir/printer.zig` that renders IR in a readable text format. Add `--ir` flag to `kira run` and `kira check` that dumps the IR after lowering. (per DESIGN.md section "Implementation Notes") Tests should cover: print simple function IR, print IR with branches, round-trip: lower then print produces readable output.
+
+**Task:** 204
+**Logged:** 2026-03-04T17:23:36Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 33: Task 230 stuck — Choose and integrate code generation backend — evaluate options (LLVM-C API, QBE, or custom x86-64 emitter). Create `src/codegen/codegen.zig` with a `CodeGen` struct that takes IR and produces object code. Implement the minimal interface: initialize, emit function, emit global, finalize to object file. (per DESIGN.md section "Implementation Notes") Tests should cover: emit empty function, emit function returning constant, link and run trivial program.
+
+**Task:** 230
+**Logged:** 2026-03-04T17:23:41Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 34: Task 231 stuck — Implement codegen for arithmetic, control flow, and function calls — extend `src/codegen/codegen.zig` to handle IR instructions: arithmetic ops, comparisons, branches, function calls (calling convention), return values. (per DESIGN.md section "Implementation Notes") Tests should cover: compile and run arithmetic expression, compile conditional, compile function calling another function, compile recursive function.
+
+**Task:** 231
+**Logged:** 2026-03-04T17:23:46Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 35: Task 232 stuck — Build runtime system for ADTs and closures — create `src/runtime/` with: tagged union representation for sum types, record layout for product types, closure struct (function pointer + captured environment), simple reference-counting or arena-based memory management. (per DESIGN.md sections "Syntax and Grammar" and "Higher-Order Functions") Tests should cover: create and match Option[i32], create and access record fields, create and call closure, closure captures variable correctly.
+
+**Task:** 232
+**Logged:** 2026-03-04T17:23:51Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 36: Task 233 stuck — Implement tail-call optimization — detect tail-position calls in IR (or during codegen) and emit jumps instead of calls for self-recursive functions. Extend to mutual tail calls if feasible. (per DESIGN.md section "Implementation Notes") Tests should cover: tail-recursive factorial doesn't stack overflow, non-tail recursive function still works, tail call in match arm detected.
+
+**Task:** 233
+**Logged:** 2026-03-04T17:23:56Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 37: Task 234 stuck — Add `kira build` CLI command — extend `src/main.zig` to accept `build` subcommand. Run the full pipeline: parse → resolve → type-check → lower to IR → optimize → codegen → link. Produce an executable in the current directory. Support `-o` for output path. (per DESIGN.md section "Implementation Notes") Tests should cover: `kira build hello.ki` produces executable, executable runs and produces correct output, build with `-o custom_name` works, build error on type-check failure.
+
+**Task:** 234
+**Logged:** 2026-03-04T17:24:01Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 38: Task 261 stuck — Design and implement package manifest — define `kira.toml` format with fields: name, version, dependencies (name + version/path), source directory. Create `src/package.zig` to parse the manifest, resolve dependency paths, and build a module search path. (per DESIGN.md section "Module System") Tests should cover: parse minimal manifest, parse with dependencies, missing required field error, dependency resolution finds local path.
+
+**Task:** 261
+**Logged:** 2026-03-04T17:24:07Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 39: Task 262 stuck — Implement `kira init` scaffolding — extend `src/main.zig` with `init` subcommand that creates: `kira.toml`, `src/main.ki` with hello-world effect function, `.gitignore`. Support `--lib` flag for library projects (creates `src/lib.ki` instead). (per DESIGN.md section "Module System") Tests should cover: init creates expected files, init --lib creates lib.ki, init in non-empty directory warns, generated main.ki runs successfully.
+
+**Task:** 262
+**Logged:** 2026-03-04T17:24:12Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 40: Task 263 stuck — Implement `kira doc` documentation generator — create `src/doc_gen.zig` that walks the AST, extracts `///` doc comments, and produces HTML or Markdown documentation. Group by module, show type signatures, link cross-references. (per DESIGN.md section "Lexical Elements" — documentation comments) Tests should cover: extract doc comment from function, extract from type, module-level docs, markdown formatting preserved, function signatures shown.
+
+**Task:** 263
+**Logged:** 2026-03-04T17:24:17Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 41: Task 264 stuck — Add property-based testing support to `kira test` — extend the test runner to recognize `prop` test declarations that take generated inputs. Implement basic generators for primitive types (random i32, random string, etc.). Shrink failing inputs to minimal counterexamples. (per DESIGN.md section "Standard Library") Tests should cover: property test passes on valid property, property test finds counterexample, shrinking reduces input size, custom generator works.
+
+**Task:** 264
+**Logged:** 2026-03-04T17:24:22Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 42: Task 265 stuck — Implement C FFI — add `extern` function declarations to the parser and type checker. In codegen, emit calls to C functions with the C calling convention. Support basic C types mapping (i32↔int, f64↔double, string↔const char*). (per DESIGN.md sections "Type System" and "Implementation Notes") Tests should cover: declare extern C function, call extern function from effect function, type mismatch on extern call rejected, link with C library and call function.
+
+**Task:** 265
+**Logged:** 2026-03-04T17:24:27Z
+
+No blocker report available.
+
+---
+```
+

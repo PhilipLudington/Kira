@@ -629,15 +629,14 @@ test "lexer keywords" {
     defer tokens.deinit(std.testing.allocator);
 
     const expected = [_]TokenType{
-        .fn_keyword,    .let,           .type_keyword,  .module,
-        .import,        .pub_keyword,   .effect,        .trait,
-        .impl,          .const_keyword, .var_keyword,   .shadow_keyword,
-        .if_keyword,
-        .else_keyword,  .match,         .for_keyword,   .return_keyword,
-        .break_keyword, .true_keyword,  .false_keyword, .self_keyword,
-        .self_type,     .and_keyword,   .or_keyword,    .not_keyword,
-        .is_keyword,    .in_keyword,    .as_keyword,    .where,
-        .eof,
+        .fn_keyword,     .let,           .type_keyword, .module,
+        .import,         .pub_keyword,   .effect,       .trait,
+        .impl,           .const_keyword, .var_keyword,  .shadow_keyword,
+        .if_keyword,     .else_keyword,  .match,        .for_keyword,
+        .return_keyword, .break_keyword, .true_keyword, .false_keyword,
+        .self_keyword,   .self_type,     .and_keyword,  .or_keyword,
+        .not_keyword,    .is_keyword,    .in_keyword,   .as_keyword,
+        .where,          .eof,
     };
 
     try std.testing.expectEqual(expected.len, tokens.items.len);
