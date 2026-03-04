@@ -1,0 +1,40 @@
+# RESUME.md — Task 52 Checkpoint
+
+## Metadata
+
+- **Task:** 52
+- **TaskText:** Parse trait declarations — add AST nodes for `trait Name { fn method(self: Self) -> T }` and parse method signatures. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Standard Library") Tests should cover: empty trait, single method trait, multiple methods, trait with supertraits (`trait Ord: Eq`), trait with generic methods.
+- **Step:** qa_review
+- **Session:** 1
+- **Timestamp:** 2026-03-04T19:45:14Z
+
+## Completed Steps
+
+- install_deps
+- implement
+- shift_left
+- test
+- qa_review
+
+## Remaining Steps
+
+- qa_fix
+- post_qa_test
+- commit
+- push
+
+## Files Modified
+
+- carbide/examples/c-binding/build.zig
+- carbide/templates/build.zig.zon
+- carbide/templates/project/build.zig.zon
+- src/lexer/lexer.zig
+- src/main.zig
+- src/parser/parser.zig
+- src/stdlib/bytes.zig
+- .forge/task-52.prompt
+- RESUME.md
+
+## Context Notes
+
+No additional context.
