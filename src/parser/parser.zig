@@ -3188,7 +3188,7 @@ test "parse trait method signature details" {
     try std.testing.expect(method.default_body == null);
     try std.testing.expectEqual(@as(usize, 1), method.parameters.len);
     try std.testing.expectEqualStrings("self", method.parameters[0].name);
-    try std.testing.expect(method.return_type.kind == .primitive);
+    try std.testing.expectEqual(Type.TypeKind{ .primitive = .string }, method.return_type.kind);
 }
 
 test "parse trait with multiple supertraits" {

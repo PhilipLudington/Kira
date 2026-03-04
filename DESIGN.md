@@ -654,6 +654,11 @@ trait Ord: Eq {
     fn compare(self: Self, other: Self) -> Ordering
 }
 
+// Multiple supertraits use `+` separator
+trait Printable: Show + Eq {
+    fn display(self: Self) -> string
+}
+
 trait Show {
     fn show(self: Self) -> string
 }
