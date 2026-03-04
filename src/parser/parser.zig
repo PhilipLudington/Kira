@@ -1644,16 +1644,21 @@ pub const Parser = struct {
             } }, tok.span);
         }
 
-        // String literal
+        // String literal (possibly interpolated)
         if (self.check(.string_literal)) {
             const tok = self.advance();
-            // TODO: Check for interpolated string
             // Strip the surrounding quotes from the lexeme
             const raw_lexeme = tok.lexeme;
             const string_content = if (raw_lexeme.len >= 2 and raw_lexeme[0] == '"' and raw_lexeme[raw_lexeme.len - 1] == '"')
                 raw_lexeme[1 .. raw_lexeme.len - 1]
             else
                 raw_lexeme;
+
+            // Check if this is an interpolated string (contains unescaped '{')
+            if (Parser.containsInterpolation(string_content)) {
+                return self.parseInterpolatedString(string_content, tok.span);
+            }
+
             // Process escape sequences
             const processed_content = self.processStringEscapes(string_content) catch |err| {
                 return switch (err) {
@@ -2528,6 +2533,102 @@ pub const Parser = struct {
         const suffix: ?[]const u8 = if (end < lexeme.len) lexeme[end..] else null;
 
         return ParsedFloat{ .value = value, .suffix = suffix };
+    }
+
+    /// Check if string content contains unescaped interpolation braces
+    fn containsInterpolation(content: []const u8) bool {
+        var i: usize = 0;
+        while (i < content.len) {
+            if (content[i] == '\\') {
+                i += 2; // skip escaped char
+                continue;
+            }
+            if (content[i] == '{') return true;
+            i += 1;
+        }
+        return false;
+    }
+
+    /// Parse an interpolated string into literal fragments and expression parts
+    fn parseInterpolatedString(self: *Parser, content: []const u8, span: Span) ParseError!Expression {
+        var parts = std.ArrayListUnmanaged(Expression.InterpolatedPart){};
+
+        var i: usize = 0;
+        var literal_start: usize = 0;
+
+        while (i < content.len) {
+            if (content[i] == '\\') {
+                i += 2; // skip escaped char
+                continue;
+            }
+            if (content[i] == '{') {
+                // Emit any literal text before this interpolation
+                if (i > literal_start) {
+                    const lit = self.processStringEscapes(content[literal_start..i]) catch return error.OutOfMemory;
+                    parts.append(self.allocator, .{ .literal = lit }) catch return error.OutOfMemory;
+                }
+
+                // Find matching closing brace (handling nested braces)
+                const expr_start = i + 1;
+                var depth: usize = 1;
+                var j = expr_start;
+                while (j < content.len and depth > 0) {
+                    if (content[j] == '{') depth += 1;
+                    if (content[j] == '}') depth -= 1;
+                    if (depth > 0) j += 1;
+                }
+
+                if (depth != 0) {
+                    // Unclosed interpolation brace — treat rest as literal
+                    const lit = self.processStringEscapes(content[literal_start..]) catch return error.OutOfMemory;
+                    parts.append(self.allocator, .{ .literal = lit }) catch return error.OutOfMemory;
+                    break;
+                }
+
+                const expr_text = content[expr_start..j];
+
+                // Lex and parse the expression
+                const expr = self.parseEmbeddedExpression(expr_text) catch {
+                    // On parse failure, treat as literal text
+                    const lit = self.processStringEscapes(content[literal_start .. j + 1]) catch return error.OutOfMemory;
+                    parts.append(self.allocator, .{ .literal = lit }) catch return error.OutOfMemory;
+                    i = j + 1;
+                    literal_start = i;
+                    continue;
+                };
+
+                parts.append(self.allocator, .{ .expression = expr }) catch return error.OutOfMemory;
+                i = j + 1; // skip past '}'
+                literal_start = i;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Emit any trailing literal text
+        if (literal_start < content.len and i >= content.len) {
+            const lit = self.processStringEscapes(content[literal_start..]) catch return error.OutOfMemory;
+            parts.append(self.allocator, .{ .literal = lit }) catch return error.OutOfMemory;
+        }
+
+        return Expression.init(.{ .interpolated_string = .{
+            .parts = parts.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+        } }, span);
+    }
+
+    /// Parse an embedded expression from interpolation (e.g., the `x + 1` in `"{x + 1}"`)
+    fn parseEmbeddedExpression(self: *Parser, expr_text: []const u8) ParseError!*Expression {
+        // Lex the expression text
+        var lex = lexer.Lexer.init(expr_text);
+        var tokens = lex.scanAllTokens(self.allocator) catch return error.OutOfMemory;
+        defer tokens.deinit(self.allocator);
+
+        // Parse the expression with a sub-parser
+        var sub_parser = Parser.init(self.allocator, tokens.items);
+        defer sub_parser.deinit();
+
+        const expr = try sub_parser.parseExpression();
+        return self.allocExpr(expr);
     }
 
     /// Process escape sequences in a string literal content (without surrounding quotes)

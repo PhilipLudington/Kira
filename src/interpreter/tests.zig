@@ -9,6 +9,50 @@ const Kira = @import("../root.zig");
 
 const Value = Kira.Value;
 
+/// Result that keeps the interpreter alive so arena-allocated values remain valid.
+const EvalResult = struct {
+    value: ?Value,
+    interp: Kira.Interpreter,
+    program: Kira.Program,
+    table: Kira.SymbolTable,
+
+    pub fn deinit(self: *EvalResult) void {
+        self.interp.deinit();
+        self.table.deinit();
+        self.program.deinit();
+    }
+};
+
+/// Helper to parse, resolve, type check, and interpret Kira source code.
+/// Returns an EvalResult that keeps the interpreter alive for arena-allocated values.
+fn evalSourceFull(allocator: std.mem.Allocator, source: []const u8) !EvalResult {
+    var program = try Kira.parse(allocator, source);
+    errdefer program.deinit();
+
+    var table = Kira.SymbolTable.init(allocator);
+    errdefer table.deinit();
+
+    Kira.resolve(allocator, &program, &table) catch |err| {
+        std.debug.print("Resolve error: {}\n", .{err});
+        return err;
+    };
+
+    var interp = Kira.Interpreter.init(allocator, &table);
+    errdefer interp.deinit();
+
+    const arena_alloc = interp.arenaAlloc();
+    try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
+    try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+
+    const value = try interp.interpret(&program);
+    return EvalResult{
+        .value = value,
+        .interp = interp,
+        .program = program,
+        .table = table,
+    };
+}
+
 /// Helper to parse, resolve, type check, and interpret Kira source code.
 fn evalSource(allocator: std.mem.Allocator, source: []const u8) !?Value {
     // Parse
@@ -911,4 +955,122 @@ test "resolver with module loader should catch undefined identifier" {
     // Resolve - should fail with undefined identifier
     const result = resolver.resolve(&program);
     try testing.expectError(error.ResolutionFailed, result);
+}
+
+// ============================================================================
+// Interpolated String Tests
+// ============================================================================
+
+test "interpreter: basic string interpolation" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    let name: string = "world"
+        \\    return "hello {name}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("hello world", r.value.?.string);
+}
+
+test "interpreter: interpolation with multiple expressions" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    let a: string = "foo"
+        \\    let b: string = "bar"
+        \\    return "{a} and {b}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("foo and bar", r.value.?.string);
+}
+
+test "interpreter: interpolation with arithmetic expression" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    let x: i32 = 6
+        \\    let y: i32 = 7
+        \\    return "result is {x * y}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("result is 42", r.value.?.string);
+}
+
+test "interpreter: interpolation equivalent to string concatenation" {
+    const allocator = testing.allocator;
+
+    // An interpolation with just a string variable should produce
+    // the same result as the variable itself
+    const source =
+        \\fn main() -> string {
+        \\    let greeting: string = "hello"
+        \\    return "{greeting}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("hello", r.value.?.string);
+}
+
+test "interpreter: interpolation with integer value" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    let n: i32 = 42
+        \\    return "the answer is {n}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("the answer is 42", r.value.?.string);
+}
+
+test "interpreter: interpolation with boolean value" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    let flag: bool = true
+        \\    return "value is {flag}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("value is true", r.value.?.string);
+}
+
+test "interpreter: plain string without interpolation unchanged" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    return "no interpolation here"
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("no interpolation here", result.?.string);
 }

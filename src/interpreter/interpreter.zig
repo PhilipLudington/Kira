@@ -1435,26 +1435,22 @@ pub const Interpreter = struct {
     /// Evaluate an interpolated string
     fn evalInterpolatedString(self: *Interpreter, is: Expression.InterpolatedString, env: *Environment) InterpreterError!Value {
         var result = std.ArrayListUnmanaged(u8){};
+        const alloc = self.arenaAlloc();
 
         for (is.parts) |part| {
             switch (part) {
                 .literal => |lit| {
-                    result.appendSlice(self.arenaAlloc(), lit) catch return error.OutOfMemory;
+                    result.appendSlice(alloc, lit) catch return error.OutOfMemory;
                 },
                 .expression => |expr| {
                     const value = try self.evalExpression(expr, env);
-                    const str = value.toString(self.arenaAlloc()) catch return error.OutOfMemory;
-                    // Remove quotes from string representation for interpolation
-                    const clean = if (str.len >= 2 and str[0] == '"' and str[str.len - 1] == '"')
-                        str[1 .. str.len - 1]
-                    else
-                        str;
-                    result.appendSlice(self.arenaAlloc(), clean) catch return error.OutOfMemory;
+                    const str = value.toString(alloc) catch return error.OutOfMemory;
+                    result.appendSlice(alloc, str) catch return error.OutOfMemory;
                 },
             }
         }
 
-        return Value{ .string = result.toOwnedSlice(self.arenaAlloc()) catch return error.OutOfMemory };
+        return Value{ .string = result.toOwnedSlice(alloc) catch return error.OutOfMemory };
     }
 
     /// Evaluate a try expression (?)
