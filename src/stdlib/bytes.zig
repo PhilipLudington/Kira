@@ -416,10 +416,12 @@ test "bytes to_string invalid UTF-8 truncated" {
     const ctx = testCtx(allocator);
 
     // Create bytes with truncated UTF-8 sequence (0xC3 starts 2-byte seq)
-    const invalid_bytes = try bytesFromArray(ctx, &.{Value{ .array = &[_]Value{
-        Value{ .integer = 0xC3 }, // Start of 2-byte sequence
-        // Missing continuation byte
-    } }});
+    const invalid_bytes = try bytesFromArray(ctx, &.{Value{
+        .array = &[_]Value{
+            Value{ .integer = 0xC3 }, // Start of 2-byte sequence
+            // Missing continuation byte
+        },
+    }});
 
     const result = try bytesToString(ctx, &.{invalid_bytes});
     try std.testing.expect(result == .err);
