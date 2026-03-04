@@ -15,12 +15,24 @@ pub const Lexer = struct {
     /// (i.e., can be followed by a statement terminator)
     allow_newline_terminator: bool,
 
+    /// Tracks nesting depth of string interpolations (0 = not in interpolation)
+    interp_depth: u8,
+    /// Tracks brace nesting depth at each interpolation level.
+    /// The array length defines the maximum interpolation nesting depth.
+    brace_depth_stack: [max_interp_depth]u32,
+
+    /// Maximum supported nesting depth for string interpolations.
+    /// Exceeding this produces an `.invalid` token.
+    const max_interp_depth = 8;
+
     pub fn init(source: []const u8) Lexer {
         return .{
             .source = source,
             .current = 0,
             .location = Location.start,
             .allow_newline_terminator = false,
+            .interp_depth = 0,
+            .brace_depth_stack = [_]u32{0} ** max_interp_depth,
         };
     }
 
@@ -53,8 +65,6 @@ pub const Lexer = struct {
         const single_char_token: ?TokenType = switch (c) {
             '(' => .left_paren,
             ')' => .right_paren,
-            '{' => .left_brace,
-            '}' => .right_brace,
             '[' => .left_bracket,
             ']' => .right_bracket,
             ',' => .comma,
@@ -144,6 +154,25 @@ pub const Lexer = struct {
                 self.updateNewlineState(.question);
                 return self.makeTokenAt(.question, "?", start_location);
             },
+            '{' => {
+                if (self.interp_depth > 0) {
+                    self.brace_depth_stack[self.interp_depth - 1] += 1;
+                }
+                self.updateNewlineState(.left_brace);
+                return self.makeTokenAt(.left_brace, "{", start_location);
+            },
+            '}' => {
+                if (self.interp_depth > 0 and self.brace_depth_stack[self.interp_depth - 1] == 0) {
+                    // Closing an interpolation — resume string scanning
+                    self.interp_depth -= 1;
+                    return self.resumeString();
+                }
+                if (self.interp_depth > 0) {
+                    self.brace_depth_stack[self.interp_depth - 1] -= 1;
+                }
+                self.updateNewlineState(.right_brace);
+                return self.makeTokenAt(.right_brace, "}", start_location);
+            },
             '|' => {
                 self.updateNewlineState(.pipe);
                 return self.makeTokenAt(.pipe, "|", start_location);
@@ -221,9 +250,32 @@ pub const Lexer = struct {
 
     fn scanString(self: *Lexer, start_location: Location) Token {
         while (!self.isAtEnd() and self.peek() != '"') {
-            if (self.peek() == '\\' and !self.isAtEnd()) {
+            if (self.peek() == '\\') {
                 _ = self.advance(); // consume backslash
-                _ = self.advance(); // consume escaped char
+                if (!self.isAtEnd()) _ = self.advance(); // consume escaped char
+            } else if (self.peek() == '{') {
+                // String interpolation start
+                const lexeme_end = self.current;
+                _ = self.advance(); // consume '{'
+
+                // Check for empty interpolation
+                if (!self.isAtEnd() and self.peek() == '}') {
+                    _ = self.advance(); // consume '}'
+                    // Skip to end of string for error recovery
+                    self.skipToEndOfString();
+                    return self.makeTokenAt(.invalid, self.source[start_location.offset..self.current], start_location);
+                }
+
+                if (self.interp_depth >= self.brace_depth_stack.len) {
+                    // Too deeply nested
+                    self.skipToEndOfString();
+                    return self.makeTokenAt(.invalid, self.source[start_location.offset..self.current], start_location);
+                }
+
+                self.interp_depth += 1;
+                self.brace_depth_stack[self.interp_depth - 1] = 0;
+                self.updateNewlineState(.string_begin);
+                return self.makeTokenAt(.string_begin, self.source[start_location.offset..lexeme_end], start_location);
             } else {
                 _ = self.advance();
             }
@@ -236,6 +288,61 @@ pub const Lexer = struct {
         _ = self.advance(); // consume closing quote
         self.updateNewlineState(.string_literal);
         return self.makeTokenAt(.string_literal, self.source[start_location.offset..self.current], start_location);
+    }
+
+    fn resumeString(self: *Lexer) Token {
+        const fragment_start = self.current;
+        const fragment_start_loc = self.location;
+
+        while (!self.isAtEnd() and self.peek() != '"') {
+            if (self.peek() == '\\') {
+                _ = self.advance(); // consume backslash
+                if (!self.isAtEnd()) _ = self.advance(); // consume escaped char
+            } else if (self.peek() == '{') {
+                // Another interpolation
+                const lexeme_end = self.current;
+                _ = self.advance(); // consume '{'
+
+                // Check for empty interpolation
+                if (!self.isAtEnd() and self.peek() == '}') {
+                    _ = self.advance(); // consume '}'
+                    self.skipToEndOfString();
+                    return self.makeTokenAt(.invalid, self.source[fragment_start..self.current], fragment_start_loc);
+                }
+
+                if (self.interp_depth >= self.brace_depth_stack.len) {
+                    self.skipToEndOfString();
+                    return self.makeTokenAt(.invalid, self.source[fragment_start..self.current], fragment_start_loc);
+                }
+
+                self.interp_depth += 1;
+                self.brace_depth_stack[self.interp_depth - 1] = 0;
+                self.updateNewlineState(.string_middle);
+                return self.makeTokenAt(.string_middle, self.source[fragment_start..lexeme_end], fragment_start_loc);
+            } else {
+                _ = self.advance();
+            }
+        }
+
+        if (self.isAtEnd()) {
+            return self.makeTokenAt(.invalid, self.source[fragment_start..self.current], fragment_start_loc);
+        }
+
+        _ = self.advance(); // consume closing '"'
+        self.updateNewlineState(.string_end);
+        return self.makeTokenAt(.string_end, self.source[fragment_start..self.current], fragment_start_loc);
+    }
+
+    fn skipToEndOfString(self: *Lexer) void {
+        while (!self.isAtEnd() and self.peek() != '"') {
+            if (self.peek() == '\\') {
+                _ = self.advance();
+                if (!self.isAtEnd()) _ = self.advance();
+            } else {
+                _ = self.advance();
+            }
+        }
+        if (!self.isAtEnd()) _ = self.advance(); // consume closing '"'
     }
 
     fn scanChar(self: *Lexer, start_location: Location) Token {
@@ -345,6 +452,7 @@ pub const Lexer = struct {
             .integer_literal,
             .float_literal,
             .string_literal,
+            .string_end,
             .char_literal,
             .true_keyword,
             .false_keyword,
@@ -629,15 +737,14 @@ test "lexer keywords" {
     defer tokens.deinit(std.testing.allocator);
 
     const expected = [_]TokenType{
-        .fn_keyword,    .let,           .type_keyword,  .module,
-        .import,        .pub_keyword,   .effect,        .trait,
-        .impl,          .const_keyword, .var_keyword,   .shadow_keyword,
-        .if_keyword,
-        .else_keyword,  .match,         .for_keyword,   .return_keyword,
-        .break_keyword, .true_keyword,  .false_keyword, .self_keyword,
-        .self_type,     .and_keyword,   .or_keyword,    .not_keyword,
-        .is_keyword,    .in_keyword,    .as_keyword,    .where,
-        .eof,
+        .fn_keyword,     .let,           .type_keyword, .module,
+        .import,         .pub_keyword,   .effect,       .trait,
+        .impl,           .const_keyword, .var_keyword,  .shadow_keyword,
+        .if_keyword,     .else_keyword,  .match,        .for_keyword,
+        .return_keyword, .break_keyword, .true_keyword, .false_keyword,
+        .self_keyword,   .self_type,     .and_keyword,  .or_keyword,
+        .not_keyword,    .is_keyword,    .in_keyword,   .as_keyword,
+        .where,          .eof,
     };
 
     try std.testing.expectEqual(expected.len, tokens.items.len);
@@ -678,4 +785,160 @@ test "lexer significant newlines" {
         }
     }
     try std.testing.expect(found_newline);
+}
+
+test "plain strings unchanged with interpolation support" {
+    var lexer = Lexer.init("\"hello world\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), tokens.items.len);
+    try std.testing.expectEqual(TokenType.string_literal, tokens.items[0].type);
+    try std.testing.expectEqualStrings("\"hello world\"", tokens.items[0].lexeme);
+    try std.testing.expectEqual(TokenType.eof, tokens.items[1].type);
+}
+
+test "single string interpolation" {
+    // "hello {name}"
+    var lexer = Lexer.init("\"hello {name}\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 4), tokens.items.len);
+    try std.testing.expectEqual(TokenType.string_begin, tokens.items[0].type);
+    try std.testing.expectEqualStrings("\"hello ", tokens.items[0].lexeme);
+    try std.testing.expectEqual(TokenType.identifier, tokens.items[1].type);
+    try std.testing.expectEqualStrings("name", tokens.items[1].lexeme);
+    try std.testing.expectEqual(TokenType.string_end, tokens.items[2].type);
+    try std.testing.expectEqualStrings("\"", tokens.items[2].lexeme);
+    try std.testing.expectEqual(TokenType.eof, tokens.items[3].type);
+}
+
+test "multiple string interpolations" {
+    // "a {x} b {y} c"
+    var lexer = Lexer.init("\"a {x} b {y} c\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 6), tokens.items.len);
+    try std.testing.expectEqual(TokenType.string_begin, tokens.items[0].type);
+    try std.testing.expectEqualStrings("\"a ", tokens.items[0].lexeme);
+    try std.testing.expectEqual(TokenType.identifier, tokens.items[1].type);
+    try std.testing.expectEqualStrings("x", tokens.items[1].lexeme);
+    try std.testing.expectEqual(TokenType.string_middle, tokens.items[2].type);
+    try std.testing.expectEqualStrings(" b ", tokens.items[2].lexeme);
+    try std.testing.expectEqual(TokenType.identifier, tokens.items[3].type);
+    try std.testing.expectEqualStrings("y", tokens.items[3].lexeme);
+    try std.testing.expectEqual(TokenType.string_end, tokens.items[4].type);
+    try std.testing.expectEqualStrings(" c\"", tokens.items[4].lexeme);
+    try std.testing.expectEqual(TokenType.eof, tokens.items[5].type);
+}
+
+test "nested braces in interpolation" {
+    // "a { { 1 } }" — inner braces are tracked, not confused with interp end
+    var lexer = Lexer.init("\"a { { 1 } }\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    const expected = [_]TokenType{
+        .string_begin, // "a
+        .left_brace, // {
+        .integer_literal, // 1
+        .right_brace, // }
+        .string_end, // "
+        .eof,
+    };
+
+    try std.testing.expectEqual(expected.len, tokens.items.len);
+    for (expected, 0..) |exp, i| {
+        try std.testing.expectEqual(exp, tokens.items[i].type);
+    }
+}
+
+test "escaped braces not interpolated" {
+    // "literal \{not interpolation\}" — escaped braces stay as string content
+    var lexer = Lexer.init("\"literal \\{not\\}\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), tokens.items.len);
+    try std.testing.expectEqual(TokenType.string_literal, tokens.items[0].type);
+    try std.testing.expectEqualStrings("\"literal \\{not\\}\"", tokens.items[0].lexeme);
+}
+
+test "empty interpolation is error" {
+    // "{}" inside string is an error
+    var lexer = Lexer.init("\"hello {}\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    // Should produce an invalid token
+    try std.testing.expectEqual(TokenType.invalid, tokens.items[0].type);
+}
+
+test "interpolation at string boundaries" {
+    // "{x}" — interpolation at start and end
+    var lexer = Lexer.init("\"{x}\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 4), tokens.items.len);
+    try std.testing.expectEqual(TokenType.string_begin, tokens.items[0].type);
+    try std.testing.expectEqualStrings("\"", tokens.items[0].lexeme);
+    try std.testing.expectEqual(TokenType.identifier, tokens.items[1].type);
+    try std.testing.expectEqual(TokenType.string_end, tokens.items[2].type);
+    try std.testing.expectEqualStrings("\"", tokens.items[2].lexeme);
+}
+
+test "interpolation with complex expression" {
+    // "result: {a + b}"
+    var lexer = Lexer.init("\"result: {a + b}\"");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    const expected = [_]TokenType{
+        .string_begin, // "result:
+        .identifier, // a
+        .plus, // +
+        .identifier, // b
+        .string_end, // "
+        .eof,
+    };
+
+    try std.testing.expectEqual(expected.len, tokens.items.len);
+    for (expected, 0..) |exp, i| {
+        try std.testing.expectEqual(exp, tokens.items[i].type);
+    }
+}
+
+test "unclosed interpolation at EOF" {
+    // "hello {name  — interpolation never closed, string never closed
+    var lexer = Lexer.init("\"hello {name");
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    // Should produce string_begin, identifier, then eof without panic
+    try std.testing.expectEqual(TokenType.string_begin, tokens.items[0].type);
+    try std.testing.expectEqual(TokenType.identifier, tokens.items[1].type);
+    try std.testing.expectEqualStrings("name", tokens.items[1].lexeme);
+    try std.testing.expectEqual(TokenType.eof, tokens.items[tokens.items.len - 1].type);
+}
+
+test "max interpolation nesting depth exceeded" {
+    // Build a string with 9 levels of nested interpolation to trigger overflow.
+    // Each level is: "...{  and the innermost has x, then closing }..."
+    const input = "\"{\"{\"{\"{\"{\"{\"{\"{\"{x}\"}\"}\"}\"}\"}\"}\"}\"}\"";
+    var lexer = Lexer.init(input);
+    var tokens = try lexer.scanAllTokens(std.testing.allocator);
+    defer tokens.deinit(std.testing.allocator);
+
+    // At some point we should see an .invalid token from the overflow
+    var found_invalid = false;
+    for (tokens.items) |tok| {
+        if (tok.type == .invalid) {
+            found_invalid = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_invalid);
 }

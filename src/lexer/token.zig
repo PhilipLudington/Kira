@@ -110,6 +110,9 @@ pub const TokenType = enum {
     integer_literal,
     float_literal,
     string_literal,
+    string_begin, // Start of interpolated string: "text{
+    string_middle, // Middle of interpolated string: }text{
+    string_end, // End of interpolated string: }text"
     char_literal,
 
     // Identifier
@@ -263,6 +266,9 @@ pub const TokenType = enum {
             .integer_literal => "integer",
             .float_literal => "float",
             .string_literal => "string",
+            .string_begin => "string_begin",
+            .string_middle => "string_middle",
+            .string_end => "string_end",
             .char_literal => "char",
             .identifier => "identifier",
             .line_comment => "// comment",
