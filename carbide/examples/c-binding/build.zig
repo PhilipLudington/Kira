@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
 
     tests.addCSourceFiles(.{
         .files = &.{"vendor/mathlib.c"},
-        .flags = &.{ "-std=c11" },
+        .flags = &.{"-std=c11"},
     });
     tests.addIncludePath(b.path("vendor"));
     tests.linkLibC();
