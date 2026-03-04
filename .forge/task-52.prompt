@@ -1,3 +1,132 @@
+## Your Task
+
+Parse trait declarations — add AST nodes for `trait Name { fn method(self: Self) -> T }` and parse method signatures. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Standard Library") Tests should cover: empty trait, single method trait, multiple methods, trait with supertraits (`trait Ord: Eq`), trait with generic methods.
+
+## Relevant DESIGN.md Sections
+
+## Standard Library
+
+### Core Types (Auto-imported)
+
+```kira
+// Primitive types
+bool, i8, i16, i32, i64, i128
+u8, u16, u32, u64, u128
+f32, f64
+char, string, void
+
+// Core types
+type Option[T] = Some(T) | None
+type Result[T, E] = Ok(T) | Err(E)
+type List[T] = Cons(T, List[T]) | Nil
+
+// Core traits
+trait Eq {
+    fn eq(self: Self, other: Self) -> bool
+}
+
+trait Ord: Eq {
+    fn compare(self: Self, other: Self) -> Ordering
+}
+
+trait Show {
+    fn show(self: Self) -> string
+}
+```
+
+### std.list
+
+```kira
+module std.list
+
+pub let empty[A]: fn() -> List[A]
+pub let singleton[A]: fn(A) -> List[A]
+pub let cons[A]: fn(A, List[A]) -> List[A]
+
+pub let map[A, B]: fn(List[A], fn(A) -> B) -> List[B]
+pub let filter[A]: fn(List[A], fn(A) -> bool) -> List[A]
+pub let fold[A, B]: fn(List[A], B, fn(B, A) -> B) -> B
+pub let fold_right[A, B]: fn(List[A], B, fn(A, B) -> B) -> B
+
+pub let find[A]: fn(List[A], fn(A) -> bool) -> Option[A]
+pub let any[A]: fn(List[A], fn(A) -> bool) -> bool
+pub let all[A]: fn(List[A], fn(A) -> bool) -> bool
+
+pub let length[A]: fn(List[A]) -> i32
+pub let reverse[A]: fn(List[A]) -> List[A]
+pub let concat[A]: fn(List[A], List[A]) -> List[A]
+pub let flatten[A]: fn(List[List[A]]) -> List[A]
+
+pub let take[A]: fn(List[A], i32) -> List[A]
+pub let drop[A]: fn(List[A], i32) -> List[A]
+pub let zip[A, B]: fn(List[A], List[B]) -> List[(A, B)]
+```
+
+### std.option
+
+```kira
+module std.option
+
+pub let map[A, B]: fn(Option[A], fn(A) -> B) -> Option[B]
+pub let and_then[A, B]: fn(Option[A], fn(A) -> Option[B]) -> Option[B]
+pub let unwrap_or[A]: fn(Option[A], A) -> A
+pub let is_some[A]: fn(Option[A]) -> bool
+pub let is_none[A]: fn(Option[A]) -> bool
+```
+
+### std.result
+
+```kira
+module std.result
+
+pub let map[T, E, U]: fn(Result[T, E], fn(T) -> U) -> Result[U, E]
+pub let map_err[T, E, F]: fn(Result[T, E], fn(E) -> F) -> Result[T, F]
+pub let and_then[T, E, U]: fn(Result[T, E], fn(T) -> Result[U, E]) -> Result[U, E]
+pub let unwrap_or[T, E]: fn(Result[T, E], T) -> T
+pub let is_ok[T, E]: fn(Result[T, E]) -> bool
+pub let is_err[T, E]: fn(Result[T, E]) -> bool
+```
+
+### std.io (Effect Module)
+
+```kira
+module std.io
+
+pub effect fn print(msg: string) -> IO[void]
+pub effect fn println(msg: string) -> IO[void]
+pub effect fn read_line() -> IO[string]
+```
+
+### std.fs (Effect Module)
+
+```kira
+module std.fs
+
+pub effect fn read_file(path: string) -> IO[Result[string, IoError]]
+pub effect fn write_file(path: string, content: string) -> IO[Result[void, IoError]]
+pub effect fn exists(path: string) -> IO[bool]
+pub effect fn remove(path: string) -> IO[Result[void, IoError]]
+```
+
+---
+
+## Project Configuration
+
+- **Project:** Kira
+- **Language:** zig
+- **Source directory:** src/
+- **Test directory:** src/tests/
+- **Build command:** `zig build`
+- **Test command:** `zig build test`
+- **Format command:** `zig fmt .`
+
+## Existing Source Code
+
+The following files already exist and are relevant to your task:
+
+### `DESIGN.md`
+
+```
 # Kira Programming Language Specification
 
 > **"Pure clarity."**
@@ -654,11 +783,6 @@ trait Ord: Eq {
     fn compare(self: Self, other: Self) -> Ordering
 }
 
-// Multiple supertraits use `+` separator
-trait Printable: Show + Eq {
-    fn display(self: Self) -> string
-}
-
 trait Show {
     fn show(self: Self) -> string
 }
@@ -860,3 +984,74 @@ pub effect fn main() -> IO[Result[void, Error]] {
 ---
 
 *Document version: 1.1*
+
+```
+
+## Project Conventions (CLAUDE.md)
+
+The following are the project coding conventions:
+
+```markdown
+# Kira Project Instructions
+
+CarbideZig is used in this project for Zig development standards. See `carbide/CARBIDE.md` and `carbide/STANDARDS.md`.
+
+## Running Tests
+
+Always use the AirTower wrapper script to run tests:
+```bash
+./run-tests.sh
+```
+Do NOT run `zig build test` directly - use the wrapper script to preserve AirTower integration and result tracking.
+
+## Building
+
+Always use the AirTower wrapper script to build:
+```bash
+./run-build.sh
+```
+Do NOT run `zig build` directly - use the wrapper script to preserve AirTower integration.
+```
+
+## Known Issues (BUG.md)
+
+These bugs are currently open and may be relevant to your task:
+
+```markdown
+## [ ] Bug 1: Task 24 stuck — Add `StringInterpolation` AST node and parser support — parse interpolated strings as a list of literal fragments and expression nodes. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Literals") Tests should cover: parsing `"hello {name}"`, `"a {x} b {y} c"`, plain strings produce regular string literal, expression inside interpolation.
+
+**Task:** 24
+**Logged:** 2026-03-04T19:21:00Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 2: Task 25 stuck — Type-check interpolated strings — verify each interpolated expression has a type that implements `Show` or is a primitive type convertible to string. Update `src/type_checker.zig`. (per DESIGN.md section "Literals") Tests should cover: interpolating i32, string, bool, interpolating non-showable type produces error, nested function calls in interpolation.
+
+**Task:** 25
+**Logged:** 2026-03-04T19:27:26Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 3: Task 26 stuck — Resolve interpolated strings — ensure the resolver visits expressions inside interpolated strings for symbol resolution. Update `src/resolver.zig`. (per DESIGN.md section "Literals") Tests should cover: interpolated variable references resolve correctly, undefined variable in interpolation produces error.
+
+**Task:** 26
+**Logged:** 2026-03-04T19:29:57Z
+
+No blocker report available.
+
+---
+
+## [ ] Bug 4: Task 27 stuck — Interpret interpolated strings — evaluate each fragment and expression, convert to string, concatenate. Update `src/interpreter.zig`. (per DESIGN.md section "Literals") Tests should cover: basic interpolation output, multiple expressions, expressions with arithmetic, string concatenation equivalence.
+
+**Task:** 27
+**Logged:** 2026-03-04T19:43:20Z
+
+No blocker report available.
+
+---
+```
+
