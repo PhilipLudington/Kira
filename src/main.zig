@@ -292,7 +292,7 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
                     // Print caret pointing to the column
                     if (err.column > 0 and err.column <= line_content.len + 1) {
                         var caret_buf: [512]u8 = undefined;
-                        @memset(caret_buf[0..err.column + 1], ' ');
+                        @memset(caret_buf[0 .. err.column + 1], ' ');
                         caret_buf[err.column + 1] = '^';
                         caret_buf[err.column + 2] = '\n';
                         stderr.writeAll(caret_buf[0 .. err.column + 3]) catch {};
@@ -473,7 +473,6 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
         }
     }
 
-
     // Interpret the main program
     const result = interp.interpret(&program) catch |err| {
         var buf: [512]u8 = undefined;
@@ -581,7 +580,7 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
                     // Print caret pointing to the column
                     if (err.column > 0 and err.column <= line_content.len + 1) {
                         var caret_buf: [512]u8 = undefined;
-                        @memset(caret_buf[0..err.column + 1], ' ');
+                        @memset(caret_buf[0 .. err.column + 1], ' ');
                         caret_buf[err.column + 1] = '^';
                         caret_buf[err.column + 2] = '\n';
                         stderr.writeAll(caret_buf[0 .. err.column + 3]) catch {};
