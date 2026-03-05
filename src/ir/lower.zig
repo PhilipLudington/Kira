@@ -39,8 +39,10 @@ pub const Lowerer = struct {
     /// Name -> ValueRef mapping for the current function scope.
     /// Pushed/popped on scope entry/exit.
     scope_stack: std.ArrayListUnmanaged(Scope),
-    /// Current function being lowered.
-    current_func: ?*Function,
+    /// Index of the current function in module.functions (null when not lowering a function).
+    /// Stored as an index rather than a pointer so that module.functions can grow
+    /// (e.g. when a nested closure adds a function) without invalidating our handle.
+    current_func_idx: ?u32,
     /// Current basic block where instructions are appended.
     current_block: BlockId,
     /// Target block for `break` statements (set by loop lowering).
@@ -53,10 +55,18 @@ pub const Lowerer = struct {
             .allocator = allocator,
             .module = Module.init(allocator),
             .scope_stack = .{},
-            .current_func = null,
+            .current_func_idx = null,
             .current_block = ir.no_block,
             .break_target = null,
         };
+    }
+
+    /// Get a mutable pointer to the current function being lowered.
+    /// The pointer is derived from the index on each call, so it remains
+    /// valid even after the module's function list has been reallocated.
+    fn currentFunc(self: *Lowerer) ?*Function {
+        const idx = self.current_func_idx orelse return null;
+        return &self.module.functions.items[idx];
     }
 
     pub fn deinit(self: *Lowerer) void {
@@ -105,12 +115,14 @@ pub const Lowerer = struct {
         func.name = fd.name;
         func.is_effect = fd.is_effect;
 
-        // Create entry block first (so param instructions can be emitted into it)
-        self.current_func = &func;
-        self.current_block = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        errdefer {
-            self.current_func = null;
-        }
+        // Add to module first; all subsequent mutations go through the stored copy
+        // via currentFunc(), which is safe even if the functions list reallocates.
+        const func_idx = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        self.current_func_idx = func_idx;
+        errdefer self.current_func_idx = null;
+
+        // Create entry block (so param instructions can be emitted into it)
+        self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         // Set up params as instructions (C5 fix: params get proper ValueRefs)
         var params = std.ArrayListUnmanaged(Function.Param){};
@@ -124,20 +136,19 @@ pub const Lowerer = struct {
             }) catch return LowerError.OutOfMemory;
             try self.defineVar(param.name, vref);
         }
-        func.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
 
         // Lower body statements
         try self.lowerStatements(body);
 
         // If block has no terminator yet, add implicit void return
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             const void_ref = try self.emit(.{ .const_void = {} });
             self.setTerminator(.{ .ret = void_ref });
         }
 
         self.popScope();
-        self.current_func = null;
-        _ = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        self.current_func_idx = null;
     }
 
     fn lowerConstDecl(self: *Lowerer, cd: *const Declaration.ConstDecl) LowerError!void {
@@ -209,20 +220,23 @@ pub const Lowerer = struct {
         func.name = name_buf.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
         func.is_effect = true;
 
+        // Add to module first, mutate through index
+        const func_idx = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        self.current_func_idx = func_idx;
+        errdefer self.current_func_idx = null;
+
         try self.pushScope();
-        self.current_func = &func;
-        self.current_block = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         try self.lowerStatements(td.body);
 
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             const void_ref = try self.emit(.{ .const_void = {} });
             self.setTerminator(.{ .ret = void_ref });
         }
 
         self.popScope();
-        self.current_func = null;
-        _ = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        self.current_func_idx = null;
     }
 
     // ----------------------------------------------------------------
@@ -312,7 +326,7 @@ pub const Lowerer = struct {
     }
 
     fn lowerIfStatement(self: *Lowerer, ifs: *const Statement.IfStatement) LowerError!void {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const cond = try self.lowerExpression(ifs.condition);
 
@@ -356,7 +370,7 @@ pub const Lowerer = struct {
     }
 
     fn lowerWhileLoop(self: *Lowerer, wl: *const Statement.WhileLoop) LowerError!void {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
 
         const cond_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
@@ -391,7 +405,7 @@ pub const Lowerer = struct {
     }
 
     fn lowerLoopStatement(self: *Lowerer, ls: *const Statement.LoopStatement) LowerError!void {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
 
         const body_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
@@ -417,7 +431,7 @@ pub const Lowerer = struct {
 
     fn lowerForLoop(self: *Lowerer, fl: *const Statement.ForLoop) LowerError!void {
         // C4 fix: create proper loop structure with header, body, and exit blocks
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const iterable = try self.lowerExpression(fl.iterable);
 
@@ -428,7 +442,10 @@ pub const Lowerer = struct {
         // Jump to loop header
         self.setTerminator(.{ .jump = header_blk });
 
-        // Header: iterator has-next check (placeholder — full iterator protocol is future work)
+        // TODO(Phase 8): Full iterator protocol. Currently emits an always-true
+        // condition and a void loop variable, so for-loops will infinite-loop if
+        // this IR is ever executed. The iterable value is intentionally discarded
+        // until iterator lowering is implemented.
         self.current_block = header_blk;
         const has_next = try self.emit(.{ .const_bool = true });
         _ = iterable;
@@ -460,7 +477,7 @@ pub const Lowerer = struct {
     }
 
     fn lowerMatchStatement(self: *Lowerer, ms: *const Statement.MatchStatement) LowerError!void {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const subject = try self.lowerExpression(ms.subject);
 
@@ -602,7 +619,7 @@ pub const Lowerer = struct {
     }
 
     fn lowerLogicalAnd(self: *Lowerer, bin: *const Expression.BinaryOp) LowerError!ValueRef {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(bin.left);
 
@@ -623,15 +640,14 @@ pub const Lowerer = struct {
 
         // L1 fix: removed dead false_val emission
         self.current_block = merge_blk;
-        const incoming = [_]Instruction.PhiIncoming{
-            .{ .block = left_blk, .value = left },
-            .{ .block = right_end_blk, .value = right },
-        };
-        return self.emit(.{ .phi = .{ .incoming = &incoming } });
+        const incoming = try alloc.alloc(Instruction.PhiIncoming, 2);
+        incoming[0] = .{ .block = left_blk, .value = left };
+        incoming[1] = .{ .block = right_end_blk, .value = right };
+        return self.emit(.{ .phi = .{ .incoming = incoming } });
     }
 
     fn lowerLogicalOr(self: *Lowerer, bin: *const Expression.BinaryOp) LowerError!ValueRef {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(bin.left);
 
@@ -651,11 +667,10 @@ pub const Lowerer = struct {
         self.setTerminator(.{ .jump = merge_blk });
 
         self.current_block = merge_blk;
-        const incoming = [_]Instruction.PhiIncoming{
-            .{ .block = left_blk, .value = left },
-            .{ .block = right_end_blk, .value = right },
-        };
-        return self.emit(.{ .phi = .{ .incoming = &incoming } });
+        const incoming = try alloc.alloc(Instruction.PhiIncoming, 2);
+        incoming[0] = .{ .block = left_blk, .value = left };
+        incoming[1] = .{ .block = right_end_blk, .value = right };
+        return self.emit(.{ .phi = .{ .incoming = incoming } });
     }
 
     fn lowerUnaryOp(self: *Lowerer, un: *const Expression.UnaryOp) LowerError!ValueRef {
@@ -777,12 +792,15 @@ pub const Lowerer = struct {
         var func = Function.init(alloc);
         func.is_effect = cl.is_effect;
 
-        const saved_func = self.current_func;
+        // Add to module first, mutate through index. This is safe even if nested
+        // closures cause the functions list to reallocate.
+        const func_idx = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+
+        const saved_func_idx = self.current_func_idx;
         const saved_block = self.current_block;
 
-        // Create entry block first
-        self.current_func = &func;
-        self.current_block = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        self.current_func_idx = func_idx;
+        self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         // C5 fix: use param instructions instead of freshValue
         var params = std.ArrayListUnmanaged(Function.Param){};
@@ -796,13 +814,13 @@ pub const Lowerer = struct {
             }) catch return LowerError.OutOfMemory;
             try self.defineVar(param.name, vref);
         }
-        func.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
 
         // H8: collect captures from outer scope references
         // Walk through closure body and identify free variables
         var capture_names = std.ArrayListUnmanaged([]const u8){};
         var capture_refs = std.ArrayListUnmanaged(ValueRef){};
-        self.collectFreeVariables(cl.body, &capture_names, &capture_refs);
+        try self.collectFreeVariables(cl.body, &capture_names, &capture_refs);
 
         // Define captures in the closure's scope
         var captures = std.ArrayListUnmanaged(Function.Capture){};
@@ -814,20 +832,18 @@ pub const Lowerer = struct {
             }) catch return LowerError.OutOfMemory;
             try self.defineVar(name, cap_ref);
         }
-        func.captures = captures.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        self.currentFunc().?.captures = captures.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
 
         try self.lowerStatements(cl.body);
 
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             const void_ref = try self.emit(.{ .const_void = {} });
             self.setTerminator(.{ .ret = void_ref });
         }
 
         self.popScope();
-        self.current_func = saved_func;
+        self.current_func_idx = saved_func_idx;
         self.current_block = saved_block;
-
-        const func_idx = self.module.addFunction(func) catch return LowerError.OutOfMemory;
 
         // Emit capture value refs from the outer scope
         const outer_capture_slice = capture_refs.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
@@ -838,7 +854,7 @@ pub const Lowerer = struct {
     }
 
     fn lowerIfExpr(self: *Lowerer, ie: *const Expression.IfExpr) LowerError!ValueRef {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const cond = try self.lowerExpression(ie.condition);
 
@@ -864,17 +880,16 @@ pub const Lowerer = struct {
         const else_end = self.current_block;
         self.setTerminator(.{ .jump = merge_blk });
 
-        // Merge with phi
+        // Merge with phi (arena-allocated so the slice outlives this stack frame)
         self.current_block = merge_blk;
-        const incoming = [_]Instruction.PhiIncoming{
-            .{ .block = then_end, .value = then_val },
-            .{ .block = else_end, .value = else_val },
-        };
-        return self.emit(.{ .phi = .{ .incoming = &incoming } });
+        const incoming = alloc.alloc(Instruction.PhiIncoming, 2) catch return LowerError.OutOfMemory;
+        incoming[0] = .{ .block = then_end, .value = then_val };
+        incoming[1] = .{ .block = else_end, .value = else_val };
+        return self.emit(.{ .phi = .{ .incoming = incoming } });
     }
 
     fn lowerMatchExpr(self: *Lowerer, me: *const Expression.MatchExpr) LowerError!ValueRef {
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const subject = try self.lowerExpression(me.subject);
 
@@ -983,7 +998,7 @@ pub const Lowerer = struct {
 
     fn lowerNullCoalesce(self: *Lowerer, nc: *const Expression.NullCoalesce) LowerError!ValueRef {
         // Lower as: if (left != None) unwrap(left) else default
-        const func = self.current_func.?;
+        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(nc.left);
 
@@ -1014,11 +1029,10 @@ pub const Lowerer = struct {
         self.setTerminator(.{ .jump = merge_blk });
 
         self.current_block = merge_blk;
-        const incoming = [_]Instruction.PhiIncoming{
-            .{ .block = some_end, .value = unwrapped },
-            .{ .block = none_end, .value = default_val },
-        };
-        return self.emit(.{ .phi = .{ .incoming = &incoming } });
+        const incoming = alloc.alloc(Instruction.PhiIncoming, 2) catch return LowerError.OutOfMemory;
+        incoming[0] = .{ .block = some_end, .value = unwrapped };
+        incoming[1] = .{ .block = none_end, .value = default_val };
+        return self.emit(.{ .phi = .{ .incoming = incoming } });
     }
 
     // ----------------------------------------------------------------
@@ -1104,7 +1118,7 @@ pub const Lowerer = struct {
 
     /// Check if a ValueRef produces a float value (C1/C2 fix).
     fn isFloatValue(self: *Lowerer, ref: ValueRef) bool {
-        const func = self.current_func orelse return false;
+        const func = self.currentFunc() orelse return false;
         if (ref >= func.instructions.items.len) return false;
         return switch (func.instructions.items[ref].op) {
             .const_float, .float_binop, .float_neg, .int_to_float => true,
@@ -1113,6 +1127,9 @@ pub const Lowerer = struct {
     }
 
     /// Look up a variant's numeric tag from the module's type declarations (C6/L4 fix).
+    /// TODO: This returns the first matching variant name across ALL sum types. If two
+    /// types define a variant with the same name, the wrong tag may be returned. A real
+    /// fix requires threading the expected type through pattern/expression lowering.
     fn lookupVariantTag(self: *Lowerer, variant_name: []const u8) ?i128 {
         for (self.module.type_decls.items) |td| {
             switch (td.kind) {
@@ -1137,10 +1154,10 @@ pub const Lowerer = struct {
         stmts: []const Statement,
         names: *std.ArrayListUnmanaged([]const u8),
         refs: *std.ArrayListUnmanaged(ValueRef),
-    ) void {
+    ) LowerError!void {
         const alloc = self.irAlloc();
         for (stmts) |*stmt| {
-            self.collectFreeVarsInStmt(stmt, names, refs, alloc);
+            try self.collectFreeVarsInStmt(stmt, names, refs, alloc);
         }
     }
 
@@ -1150,37 +1167,37 @@ pub const Lowerer = struct {
         names: *std.ArrayListUnmanaged([]const u8),
         refs: *std.ArrayListUnmanaged(ValueRef),
         alloc: Allocator,
-    ) void {
+    ) LowerError!void {
         switch (stmt.kind) {
-            .expression_statement => |expr| self.collectFreeVarsInExpr(expr, names, refs, alloc),
-            .let_binding => |*lb| self.collectFreeVarsInExpr(lb.initializer, names, refs, alloc),
+            .expression_statement => |expr| try self.collectFreeVarsInExpr(expr, names, refs, alloc),
+            .let_binding => |*lb| try self.collectFreeVarsInExpr(lb.initializer, names, refs, alloc),
             .var_binding => |*vb| {
-                if (vb.initializer) |init_expr| self.collectFreeVarsInExpr(init_expr, names, refs, alloc);
+                if (vb.initializer) |init_expr| try self.collectFreeVarsInExpr(init_expr, names, refs, alloc);
             },
             .return_statement => |*rs| {
-                if (rs.value) |val| self.collectFreeVarsInExpr(val, names, refs, alloc);
+                if (rs.value) |val| try self.collectFreeVarsInExpr(val, names, refs, alloc);
             },
-            .assignment => |*a| self.collectFreeVarsInExpr(a.value, names, refs, alloc),
+            .assignment => |*a| try self.collectFreeVarsInExpr(a.value, names, refs, alloc),
             .block => |stmts| {
-                for (stmts) |*s| self.collectFreeVarsInStmt(s, names, refs, alloc);
+                for (stmts) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
             },
             .if_statement => |*ifs| {
-                self.collectFreeVarsInExpr(ifs.condition, names, refs, alloc);
-                for (ifs.then_branch) |*s| self.collectFreeVarsInStmt(s, names, refs, alloc);
+                try self.collectFreeVarsInExpr(ifs.condition, names, refs, alloc);
+                for (ifs.then_branch) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
             },
             .for_loop => |*fl| {
-                self.collectFreeVarsInExpr(fl.iterable, names, refs, alloc);
-                for (fl.body) |*s| self.collectFreeVarsInStmt(s, names, refs, alloc);
+                try self.collectFreeVarsInExpr(fl.iterable, names, refs, alloc);
+                for (fl.body) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
             },
             .while_loop => |*wl| {
-                self.collectFreeVarsInExpr(wl.condition, names, refs, alloc);
-                for (wl.body) |*s| self.collectFreeVarsInStmt(s, names, refs, alloc);
+                try self.collectFreeVarsInExpr(wl.condition, names, refs, alloc);
+                for (wl.body) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
             },
             .loop_statement => |*ls| {
-                for (ls.body) |*s| self.collectFreeVarsInStmt(s, names, refs, alloc);
+                for (ls.body) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
             },
             .match_statement => |*ms| {
-                self.collectFreeVarsInExpr(ms.subject, names, refs, alloc);
+                try self.collectFreeVarsInExpr(ms.subject, names, refs, alloc);
             },
             .break_statement => {},
         }
@@ -1192,7 +1209,7 @@ pub const Lowerer = struct {
         names: *std.ArrayListUnmanaged([]const u8),
         refs: *std.ArrayListUnmanaged(ValueRef),
         alloc: Allocator,
-    ) void {
+    ) LowerError!void {
         switch (expr.kind) {
             .identifier => |id| {
                 // Check if this name is in an OUTER scope (not the current closure scope)
@@ -1207,25 +1224,25 @@ pub const Lowerer = struct {
                             for (names.items) |n| {
                                 if (std.mem.eql(u8, n, id.name)) return;
                             }
-                            names.append(alloc, id.name) catch return;
-                            refs.append(alloc, ref) catch return;
+                            names.append(alloc, id.name) catch return LowerError.OutOfMemory;
+                            refs.append(alloc, ref) catch return LowerError.OutOfMemory;
                             return;
                         }
                     }
                 }
             },
             .binary => |*bin| {
-                self.collectFreeVarsInExpr(bin.left, names, refs, alloc);
-                self.collectFreeVarsInExpr(bin.right, names, refs, alloc);
+                try self.collectFreeVarsInExpr(bin.left, names, refs, alloc);
+                try self.collectFreeVarsInExpr(bin.right, names, refs, alloc);
             },
-            .unary => |*un| self.collectFreeVarsInExpr(un.operand, names, refs, alloc),
+            .unary => |*un| try self.collectFreeVarsInExpr(un.operand, names, refs, alloc),
             .function_call => |*call| {
-                self.collectFreeVarsInExpr(call.callee, names, refs, alloc);
-                for (call.arguments) |arg| self.collectFreeVarsInExpr(arg, names, refs, alloc);
+                try self.collectFreeVarsInExpr(call.callee, names, refs, alloc);
+                for (call.arguments) |arg| try self.collectFreeVarsInExpr(arg, names, refs, alloc);
             },
             .method_call => |*mc| {
-                self.collectFreeVarsInExpr(mc.object, names, refs, alloc);
-                for (mc.arguments) |arg| self.collectFreeVarsInExpr(arg, names, refs, alloc);
+                try self.collectFreeVarsInExpr(mc.object, names, refs, alloc);
+                for (mc.arguments) |arg| try self.collectFreeVarsInExpr(arg, names, refs, alloc);
             },
             else => {},
         }
@@ -1267,12 +1284,12 @@ pub const Lowerer = struct {
     // ----------------------------------------------------------------
 
     fn emit(self: *Lowerer, op: Instruction.Op) LowerError!ValueRef {
-        const func = self.current_func orelse return LowerError.OutOfMemory;
+        const func = self.currentFunc() orelse return LowerError.OutOfMemory;
         return func.addInstruction(self.irAlloc(), self.current_block, .{ .op = op }) catch return LowerError.OutOfMemory;
     }
 
     fn setTerminator(self: *Lowerer, term: Terminator) void {
-        const func = self.current_func orelse return;
+        const func = self.currentFunc() orelse return;
         func.setTerminator(self.current_block, term);
     }
 
@@ -1301,11 +1318,12 @@ test "lower integer literal" {
 
     const alloc = lowerer.irAlloc();
 
-    // Manually set up a function context
+    // Set up a function context via module (same pattern as production code)
     var func = Function.init(alloc);
     func.name = "test_fn";
-    const blk = func.addBlock(alloc) catch unreachable;
-    lowerer.current_func = &func;
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
     lowerer.current_block = blk;
     lowerer.pushScope() catch unreachable;
 
@@ -1319,7 +1337,7 @@ test "lower integer literal" {
     const ref = try lowerer.lowerExpression(&expr);
     try std.testing.expectEqual(@as(ValueRef, 0), ref);
 
-    const inst = func.getInstruction(ref);
+    const inst = lowerer.currentFunc().?.getInstruction(ref);
     try std.testing.expect(inst.op == .const_int);
     try std.testing.expectEqual(@as(i128, 42), inst.op.const_int.value);
 
@@ -1336,8 +1354,9 @@ test "lower binary operation" {
 
     var func = Function.init(alloc);
     func.name = "test_add";
-    const blk = func.addBlock(alloc) catch unreachable;
-    lowerer.current_func = &func;
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
     lowerer.current_block = blk;
     lowerer.pushScope() catch unreachable;
 
@@ -1361,7 +1380,7 @@ test "lower binary operation" {
     // %0 = const_int 10, %1 = const_int 20, %2 = int_add %0 %1
     try std.testing.expectEqual(@as(ValueRef, 2), ref);
 
-    const inst = func.getInstruction(ref);
+    const inst = lowerer.currentFunc().?.getInstruction(ref);
     try std.testing.expect(inst.op == .int_binop);
     try std.testing.expect(inst.op.int_binop.op == .add);
 
@@ -1377,8 +1396,9 @@ test "lower float binary operation" {
 
     var func = Function.init(alloc);
     func.name = "test_float_add";
-    const blk = func.addBlock(alloc) catch unreachable;
-    lowerer.current_func = &func;
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
     lowerer.current_block = blk;
     lowerer.pushScope() catch unreachable;
 
@@ -1399,7 +1419,7 @@ test "lower float binary operation" {
     }, span);
 
     const ref = try lowerer.lowerExpression(&add_expr);
-    const inst = func.getInstruction(ref);
+    const inst = lowerer.currentFunc().?.getInstruction(ref);
     // C1 fix: should produce float_binop, not int_binop
     try std.testing.expect(inst.op == .float_binop);
     try std.testing.expect(inst.op.float_binop.op == .add);
@@ -1416,8 +1436,9 @@ test "lower let binding" {
 
     var func = Function.init(alloc);
     func.name = "test_let";
-    const blk = func.addBlock(alloc) catch unreachable;
-    lowerer.current_func = &func;
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
     lowerer.current_block = blk;
     lowerer.pushScope() catch unreachable;
 
@@ -1456,8 +1477,9 @@ test "lower function call" {
 
     var func = Function.init(alloc);
     func.name = "test_call";
-    const blk = func.addBlock(alloc) catch unreachable;
-    lowerer.current_func = &func;
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
     lowerer.current_block = blk;
     lowerer.pushScope() catch unreachable;
 
@@ -1467,7 +1489,7 @@ test "lower function call" {
     };
 
     // Define "f" in scope
-    const f_ref = func.addInstruction(alloc, blk, .{
+    const f_ref = lowerer.currentFunc().?.addInstruction(alloc, blk, .{
         .op = .{ .const_int = .{ .value = 0 } },
     }) catch unreachable;
     lowerer.defineVar("f", f_ref) catch unreachable;
@@ -1485,7 +1507,7 @@ test "lower function call" {
     }, span);
 
     const ref = try lowerer.lowerExpression(&call_expr);
-    const inst = func.getInstruction(ref);
+    const inst = lowerer.currentFunc().?.getInstruction(ref);
     try std.testing.expect(inst.op == .call);
     try std.testing.expectEqual(@as(usize, 1), inst.op.call.args.len);
 
@@ -1503,8 +1525,9 @@ test "lower nested expressions" {
 
     var func = Function.init(alloc);
     func.name = "test_nested";
-    const blk = func.addBlock(alloc) catch unreachable;
-    lowerer.current_func = &func;
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
     lowerer.current_block = blk;
     lowerer.pushScope() catch unreachable;
 
@@ -1524,7 +1547,7 @@ test "lower nested expressions" {
     // %0=1, %1=2, %2=add, %3=3, %4=mul
     try std.testing.expectEqual(@as(ValueRef, 4), ref);
 
-    const inst = func.getInstruction(ref);
+    const inst = lowerer.currentFunc().?.getInstruction(ref);
     try std.testing.expect(inst.op == .int_binop);
     try std.testing.expect(inst.op.int_binop.op == .mul);
 

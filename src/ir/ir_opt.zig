@@ -194,6 +194,8 @@ fn eliminateDeadCode(allocator: Allocator, func: *Function) OptError!void {
                 write_idx += 1;
             }
         }
+        // Truncate in-place rather than rebuilding — equivalent to shrinkRetainingCapacity
+        // but operates on the items slice directly since we've already compacted.
         blk.instructions.items.len = write_idx;
     }
 }
