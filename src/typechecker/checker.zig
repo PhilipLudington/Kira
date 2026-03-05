@@ -888,6 +888,22 @@ pub const TypeChecker = struct {
             return std_type;
         }
 
+        // If generic args are present, try to resolve the callee symbol for
+        // trait bounds checking and type variable instantiation.
+        if (fc.generic_args) |generic_args| {
+            if (try self.resolveCalleeSymbol(fc.callee)) |sym| {
+                const resolved_sym = self.resolveImportAliasSymbol(sym) orelse sym;
+                if (resolved_sym.kind == .function) {
+                    return try self.checkGenericFunctionCall(
+                        resolved_sym,
+                        generic_args,
+                        fc.arguments,
+                        span,
+                    );
+                }
+            }
+        }
+
         const callee_type = try self.checkExpression(fc.callee);
 
         if (callee_type.isError()) {
@@ -1493,16 +1509,91 @@ pub const TypeChecker = struct {
             return ResolvedType.errorType(span);
         }
 
-        // Look up method on the type
-        // For now, just check that arguments are valid expressions
+        // Type-check all arguments first
+        const type_alloc = self.typeAllocator();
+        var arg_types = std.ArrayListUnmanaged(ResolvedType){};
         for (mc.arguments) |arg| {
-            _ = try self.checkExpression(arg);
+            try arg_types.append(type_alloc, try self.checkExpression(arg));
         }
 
-        // TODO: Proper method resolution through impl blocks
+        // Extract the type name for impl lookup
+        const type_name: ?[]const u8 = switch (object_type.kind) {
+            .primitive => |p| p.toString(),
+            .named => |n| n.name,
+            .instantiated => |inst| inst.base_name,
+            else => null,
+        };
+
+        if (type_name) |tn| {
+            // Look up all implementations for this type
+            const impls = self.symbol_table.findImplementations(type_alloc, tn) catch {
+                return error.OutOfMemory;
+            };
+
+            // Search for the method across all impls
+            var found_method: ?*const Symbol = null;
+            var found_count: usize = 0;
+            for (impls) |impl_info| {
+                for (impl_info.methods) |method_id| {
+                    if (self.symbol_table.getSymbol(method_id)) |method_sym| {
+                        if (std.mem.eql(u8, method_sym.name, mc.method)) {
+                            found_method = method_sym;
+                            found_count += 1;
+                        }
+                    }
+                }
+            }
+
+            if (found_count > 1) {
+                try self.addDiagnostic(try errors_mod.simpleError(
+                    self.allocator,
+                    "ambiguous method call: multiple trait implementations provide this method",
+                    span,
+                ));
+                return ResolvedType.errorType(span);
+            }
+
+            if (found_method) |method_sym| {
+                if (method_sym.kind == .function) {
+                    const func_sym = method_sym.kind.function;
+
+                    // The first parameter is `self: Self`, so effective params start at index 1
+                    const self_param_offset: usize = if (func_sym.parameter_types.len > 0) blk: {
+                        const first_param_type = func_sym.parameter_types[0];
+                        if (first_param_type.kind == .self_type or
+                            (first_param_type.kind == .named and std.mem.eql(u8, first_param_type.kind.named.name, "Self")))
+                        {
+                            break :blk 1;
+                        }
+                        break :blk 0;
+                    } else 0;
+
+                    const expected_arg_count = func_sym.parameter_types.len - self_param_offset;
+                    if (mc.arguments.len != expected_arg_count) {
+                        try self.addDiagnostic(try errors_mod.simpleError(
+                            self.allocator,
+                            "wrong number of arguments in method call",
+                            span,
+                        ));
+                        return ResolvedType.errorType(span);
+                    }
+
+                    // Resolve the return type, substituting Self with the concrete type
+                    const saved_self_type = self.self_type;
+                    self.self_type = object_type;
+                    defer self.self_type = saved_self_type;
+
+                    const return_type = try self.resolveAstType(func_sym.return_type);
+
+                    return return_type;
+                }
+            }
+        }
+
+        // Method not found
         try self.addDiagnostic(try errors_mod.simpleError(
             self.allocator,
-            "method call type checking not fully implemented",
+            "method not found",
             span,
         ));
         return ResolvedType.errorType(span);
@@ -3505,6 +3596,167 @@ pub const TypeChecker = struct {
         return found;
     }
 
+    // ========== Trait Bounds Enforcement ==========
+
+    /// Resolve a callee expression to its symbol, if possible.
+    fn resolveCalleeSymbol(self: *TypeChecker, expr: *const Expression) TypeCheckError!?*Symbol {
+        return switch (expr.kind) {
+            .identifier => |ident| self.symbol_table.lookup(ident.name),
+            .field_access => blk: {
+                // Handle path-based lookups like module.func
+                const path = try self.extractExpressionPath(expr) orelse break :blk null;
+                break :blk self.symbol_table.lookupPath(path);
+            },
+            else => null,
+        };
+    }
+
+    /// Check a generic function call with explicit type arguments.
+    /// Verifies trait bounds on generic params and instantiates the function type.
+    fn checkGenericFunctionCall(
+        self: *TypeChecker,
+        func_sym: *const Symbol,
+        generic_args: []*Type,
+        arguments: []*Expression,
+        span: Span,
+    ) TypeCheckError!ResolvedType {
+        const func = func_sym.kind.function;
+        const generic_params = func.generic_params orelse {
+            try self.addDiagnostic(try errors_mod.simpleError(
+                self.allocator,
+                "function does not have generic parameters",
+                span,
+            ));
+            return ResolvedType.errorType(span);
+        };
+
+        if (generic_args.len != generic_params.len) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+            try builder.print("expected {d} type argument(s), found {d}", .{ generic_params.len, generic_args.len });
+            try self.addDiagnostic(try builder.build());
+            return ResolvedType.errorType(span);
+        }
+
+        // Resolve generic args to ResolvedTypes
+        const type_alloc = self.typeAllocator();
+        var resolved_args = std.ArrayListUnmanaged(ResolvedType){};
+        for (generic_args) |arg| {
+            try resolved_args.append(type_alloc, try self.resolveAstType(arg));
+        }
+
+        // Check trait bounds on each generic parameter
+        for (generic_params, resolved_args.items) |param, resolved_arg| {
+            if (param.constraints) |constraints| {
+                for (constraints) |trait_name| {
+                    try self.checkTraitBound(resolved_arg, trait_name, span);
+                }
+            }
+        }
+
+        // TODO: Also check where clause constraints.
+        // The where clause is stored in the AST, not the symbol.
+        // For now, constraints from generic_params are the primary path.
+
+        // Build substitution and instantiate function type
+        var subst = instantiate_mod.TypeSubstitution{};
+        defer subst.deinit(type_alloc);
+        for (generic_params, resolved_args.items) |param, resolved_arg| {
+            try subst.put(type_alloc, param.name, resolved_arg);
+        }
+
+        // Get the uninstantiated function type
+        const func_type = try self.getSymbolType(func_sym, span);
+        if (func_type.kind != .function) {
+            return ResolvedType.errorType(span);
+        }
+
+        // Instantiate parameter and return types
+        const f = func_type.kind.function;
+        var inst_params = std.ArrayListUnmanaged(ResolvedType){};
+        for (f.parameter_types) |pt| {
+            try inst_params.append(type_alloc, try instantiate_mod.instantiate(type_alloc, pt, &subst));
+        }
+
+        const inst_return = try type_alloc.create(ResolvedType);
+        inst_return.* = try instantiate_mod.instantiate(type_alloc, f.return_type.*, &subst);
+
+        // Check argument count
+        if (arguments.len != inst_params.items.len) {
+            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                self.allocator,
+                inst_params.items.len,
+                arguments.len,
+                span,
+            ));
+            return ResolvedType.errorType(span);
+        }
+
+        // Check argument types against instantiated parameter types
+        for (arguments, inst_params.items) |arg, param| {
+            const arg_type = try self.checkExpression(arg);
+            if (!unify.isAssignable(param, arg_type)) {
+                try self.addDiagnostic(try errors_mod.typeMismatch(
+                    self.allocator,
+                    param,
+                    arg_type,
+                    arg.span,
+                ));
+            }
+        }
+
+        // Check effect
+        if (f.effect) |eff| {
+            if (eff != .pure and !self.in_effect_function) {
+                try self.addDiagnostic(try errors_mod.effectViolation(
+                    self.allocator,
+                    "cannot call effect function from pure function",
+                    span,
+                ));
+            }
+        }
+
+        return inst_return.*;
+    }
+
+    /// Check that a concrete type satisfies a trait bound.
+    /// Reports a diagnostic if the type does not implement the required trait.
+    fn checkTraitBound(
+        self: *TypeChecker,
+        concrete_type: ResolvedType,
+        trait_name: []const u8,
+        span: Span,
+    ) TypeCheckError!void {
+        // Get the type name string for looking up implementations
+        const type_name: []const u8 = switch (concrete_type.kind) {
+            .primitive => |p| p.toString(),
+            .named => |n| n.name,
+            .instantiated => |inst| inst.base_name,
+            .type_var => return, // Type variables are checked at their own instantiation site
+            .error_type => return, // Don't report cascading errors
+            else => {
+                var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+                try builder.write("type '");
+                try builder.writeType(concrete_type);
+                try builder.write("' does not implement trait '");
+                try builder.write(trait_name);
+                try builder.write("'");
+                try self.addDiagnostic(try builder.build());
+                return;
+            },
+        };
+
+        // Check if there's a registered impl for this trait + type
+        if (self.symbol_table.findTraitImpl(trait_name, type_name) == null) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+            try builder.write("type '");
+            try builder.writeType(concrete_type);
+            try builder.write("' does not implement trait '");
+            try builder.write(trait_name);
+            try builder.write("'");
+            try self.addDiagnostic(try builder.build());
+        }
+    }
+
     /// Add a diagnostic
     fn addDiagnostic(self: *TypeChecker, diagnostic: Diagnostic) !void {
         try self.diagnostics.append(self.allocator, diagnostic);
@@ -4405,4 +4657,673 @@ test "expand alias type reports indirect alias cycles" {
         }
     }
     try std.testing.expect(found_cycle);
+}
+
+// ========== Trait Bounds Enforcement Tests ==========
+
+test "trait bounds: checkTraitBound passes when impl exists" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Eq trait is registered as a builtin — no need to define it
+
+    // Register type MyType
+    var my_type_ast = Type.named("MyType", span);
+    const my_type_id = try table.define(Symbol.typeDef(unassigned_symbol_id, "MyType", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Register impl Eq for MyType
+    try table.registerImpl(.{
+        .trait_name = "Eq",
+        .target_type = &my_type_ast,
+        .methods = &[_]symbols.SymbolId{},
+        .scope_id = 0,
+        .span = span,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Check that MyType satisfies Eq — should produce no error
+    const resolved = ResolvedType.named(my_type_id, "MyType", span);
+    try checker.checkTraitBound(resolved, "Eq", span);
+
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait bounds: checkTraitBound fails when impl missing" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register a custom trait "Serialize" with no impls for anything
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Serialize", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = &[_]Symbol.TraitMethodInfo{},
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Check i32 against Serialize — should produce an error (no impl registered)
+    const i32_type = ResolvedType.primitive(.i32, span);
+    try checker.checkTraitBound(i32_type, "Serialize", span);
+
+    try std.testing.expect(checker.hasErrors());
+    try std.testing.expect(checker.diagnostics.items.len == 1);
+    const msg = checker.diagnostics.items[0].message;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "does not implement trait 'Serialize'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "i32") != null);
+}
+
+test "trait bounds: primitive type with impl satisfies bound" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Eq, Ord, Show are registered as builtins with impls for all primitive types
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // i32 should satisfy Eq (builtin impl)
+    const i32_type = ResolvedType.primitive(.i32, span);
+    try checker.checkTraitBound(i32_type, "Eq", span);
+
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait bounds: all builtin traits satisfied by primitives" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    const traits = [_][]const u8{ "Eq", "Ord", "Show" };
+    const prim_types = [_]Type.PrimitiveType{ .i32, .i64, .f64, .string, .bool, .char };
+
+    for (prim_types) |prim| {
+        for (traits) |trait_name| {
+            const prim_type = ResolvedType.primitive(prim, span);
+            try checker.checkTraitBound(prim_type, trait_name, span);
+        }
+    }
+
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait bounds: multiple bounds checked" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Eq, Ord, Show are builtin traits with impls for primitives.
+    // Register a custom trait "Serialize" with no impls.
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Serialize", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = &[_]Symbol.TraitMethodInfo{},
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // i32 satisfies Eq (builtin)
+    const i32_type = ResolvedType.primitive(.i32, span);
+    try checker.checkTraitBound(i32_type, "Eq", span);
+    try std.testing.expect(!checker.hasErrors());
+
+    // i32 satisfies Ord (builtin)
+    try checker.checkTraitBound(i32_type, "Ord", span);
+    try std.testing.expect(!checker.hasErrors());
+
+    // i32 does NOT satisfy Serialize
+    try checker.checkTraitBound(i32_type, "Serialize", span);
+    try std.testing.expect(checker.hasErrors());
+    try std.testing.expect(checker.diagnostics.items.len == 1);
+    const msg = checker.diagnostics.items[0].message;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "does not implement trait 'Serialize'") != null);
+}
+
+test "trait bounds: type variable skips bound check" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Type variables should not produce errors (checked at instantiation site)
+    const tv = ResolvedType.typeVar("T", null, span);
+    try checker.checkTraitBound(tv, "Eq", span);
+
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait bounds: generic function call with satisfied bound" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Eq is a builtin trait with impl for i32 — no need to define or register
+
+    // Create a generic function: fn is_equal[T: Eq](a: T, b: T) -> bool
+    // Must heap-allocate slices because Symbol.deinit frees them.
+    var bool_return_type = Type.primitive(.bool, span);
+    var t_param_type = Type{
+        .kind = .{ .type_variable = .{ .name = "T", .constraints = null } },
+        .span = span,
+    };
+
+    const param_types = try allocator.alloc(*Type, 2);
+    param_types[0] = &t_param_type;
+    param_types[1] = &t_param_type;
+
+    const param_names = try allocator.alloc([]const u8, 2);
+    param_names[0] = "a";
+    param_names[1] = "b";
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    var eq_constraints = [_][]const u8{"Eq"};
+    generic_params[0] = .{ .name = "T", .constraints = &eq_constraints };
+
+    const func_sym = Symbol.function(unassigned_symbol_id, "is_equal", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &bool_return_type,
+        .is_effect = false,
+        .has_body = true,
+    }, true, span);
+
+    _ = try table.define(func_sym);
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Create generic call: is_equal[i32](1, 2)
+    var callee_expr = Expression{
+        .kind = .{ .identifier = .{ .name = "is_equal", .generic_args = null } },
+        .span = span,
+    };
+    var arg1 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
+        .span = span,
+    };
+    var arg2 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 2, .suffix = null } },
+        .span = span,
+    };
+    var generic_arg = Type.primitive(.i32, span);
+    var generic_args_arr = [_]*Type{&generic_arg};
+    var args_arr = [_]*Expression{ &arg1, &arg2 };
+
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &callee_expr,
+            .generic_args = &generic_args_arr,
+            .arguments = &args_arr,
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&call_expr);
+
+    // Should succeed with bool return type
+    try std.testing.expect(!checker.hasErrors());
+    try std.testing.expect(result.isBool());
+}
+
+test "trait bounds: generic function call with unsatisfied bound" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register a custom trait "Serialize" with no impls
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Serialize", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = &[_]Symbol.TraitMethodInfo{},
+    }, true, span));
+
+    // Create a generic function: fn serialize[T: Serialize](a: T, b: T) -> bool
+    // Must heap-allocate slices because Symbol.deinit frees them.
+    var bool_return_type = Type.primitive(.bool, span);
+    var t_param_type = Type{
+        .kind = .{ .type_variable = .{ .name = "T", .constraints = null } },
+        .span = span,
+    };
+
+    const param_types = try allocator.alloc(*Type, 2);
+    param_types[0] = &t_param_type;
+    param_types[1] = &t_param_type;
+
+    const param_names = try allocator.alloc([]const u8, 2);
+    param_names[0] = "a";
+    param_names[1] = "b";
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    var serialize_constraints = [_][]const u8{"Serialize"};
+    generic_params[0] = .{ .name = "T", .constraints = &serialize_constraints };
+
+    const func_sym = Symbol.function(unassigned_symbol_id, "serialize", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &bool_return_type,
+        .is_effect = false,
+        .has_body = true,
+    }, true, span);
+
+    _ = try table.define(func_sym);
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Create generic call: serialize[i32](1, 2) — should fail because i32 has no Serialize impl
+    var callee_expr = Expression{
+        .kind = .{ .identifier = .{ .name = "serialize", .generic_args = null } },
+        .span = span,
+    };
+    var arg1 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
+        .span = span,
+    };
+    var arg2 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 2, .suffix = null } },
+        .span = span,
+    };
+    var generic_arg = Type.primitive(.i32, span);
+    var generic_args_arr = [_]*Type{&generic_arg};
+    var args_arr = [_]*Expression{ &arg1, &arg2 };
+
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &callee_expr,
+            .generic_args = &generic_args_arr,
+            .arguments = &args_arr,
+        } },
+        .span = span,
+    };
+
+    _ = try checker.checkExpression(&call_expr);
+
+    // Should have an error about i32 not implementing Serialize
+    try std.testing.expect(checker.hasErrors());
+    var found_bound_error = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "does not implement trait 'Serialize'") != null) {
+            found_bound_error = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_bound_error);
+}
+
+test "method resolution: trait method on concrete type resolves return type" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register type Point
+    var point_type_ast = Type.named("Point", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Point", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Show is a builtin trait — no need to define it
+
+    // Create the `show` method: fn show(self: Self) -> string
+    // Must heap-allocate slices because Symbol.deinit frees them.
+    var self_type = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type = Type.primitive(.string, span);
+
+    const param_types = try allocator.alloc(*Type, 1);
+    param_types[0] = &self_type;
+    const param_names = try allocator.alloc([]const u8, 1);
+    param_names[0] = "self";
+
+    const show_sym = try table.define(Symbol.function(unassigned_symbol_id, "show", .{
+        .generic_params = null,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &string_type,
+        .is_effect = false,
+        .has_body = true,
+    }, true, span));
+
+    // Register impl Show for Point with the show method
+    const method_ids = try allocator.alloc(symbols.SymbolId, 1);
+    method_ids[0] = show_sym;
+    try table.registerImpl(.{
+        .trait_name = "Show",
+        .target_type = &point_type_ast,
+        .methods = method_ids,
+        .scope_id = 0,
+        .span = span,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Register variable p: Point
+    var point_type_ast2 = Type.named("Point", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "p", &point_type_ast2, false, false, span));
+
+    // Create expression: p.show()
+    var p_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "p", .generic_args = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &p_ident,
+            .method = "show",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+
+    // Should resolve to string type
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .string), result.kind.primitive);
+
+    // Verify no "method not found" error
+    var found_method_not_found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "method not found") != null) {
+            found_method_not_found = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_method_not_found);
+}
+
+test "method resolution: method not found produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register type Point (no impls)
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Point", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Register a variable of type Point
+    var point_type_ast = Type.named("Point", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "p", &point_type_ast, false, false, span));
+
+    // Create expression: p.nonexistent()
+    var p_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "p", .generic_args = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &p_ident,
+            .method = "nonexistent",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+    try std.testing.expect(result.isError());
+
+    // Verify "method not found" error
+    var found_error = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "method not found") != null) {
+            found_error = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_error);
+}
+
+test "method resolution: wrong argument count produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register type Point
+    var point_type_ast = Type.named("Point", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Point", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Create method `show(self: Self) -> string` (takes only self, no extra args)
+    // Must heap-allocate slices because Symbol.deinit frees them.
+    var self_type = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type = Type.primitive(.string, span);
+
+    const param_types = try allocator.alloc(*Type, 1);
+    param_types[0] = &self_type;
+    const param_names = try allocator.alloc([]const u8, 1);
+    param_names[0] = "self";
+
+    const show_sym = try table.define(Symbol.function(unassigned_symbol_id, "show", .{
+        .generic_params = null,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &string_type,
+        .is_effect = false,
+        .has_body = true,
+    }, true, span));
+
+    const method_ids = try allocator.alloc(symbols.SymbolId, 1);
+    method_ids[0] = show_sym;
+    try table.registerImpl(.{
+        .trait_name = "Show",
+        .target_type = &point_type_ast,
+        .methods = method_ids,
+        .scope_id = 0,
+        .span = span,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Register variable p: Point
+    var point_type_ast2 = Type.named("Point", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "p", &point_type_ast2, false, false, span));
+
+    // Create expression: p.show(42) — wrong number of arguments (expects 0 extra, got 1)
+    var p_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "p", .generic_args = null } },
+        .span = span,
+    };
+    var extra_arg = Expression{
+        .kind = .{ .integer_literal = .{ .value = 42, .suffix = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &p_ident,
+            .method = "show",
+            .generic_args = null,
+            .arguments = @constCast(&[_]*Expression{&extra_arg}),
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+    try std.testing.expect(result.isError());
+
+    // Verify wrong argument count error
+    var found_error = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "wrong number of arguments") != null) {
+            found_error = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_error);
+}
+
+test "method resolution: inherent method (impl without trait)" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register type Point
+    var point_type_ast = Type.named("Point", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Point", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Create inherent method `magnitude(self: Self) -> f64`
+    // Must heap-allocate slices because Symbol.deinit frees them.
+    var self_type = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var f64_type = Type.primitive(.f64, span);
+
+    const param_types = try allocator.alloc(*Type, 1);
+    param_types[0] = &self_type;
+    const param_names = try allocator.alloc([]const u8, 1);
+    param_names[0] = "self";
+
+    const mag_sym = try table.define(Symbol.function(unassigned_symbol_id, "magnitude", .{
+        .generic_params = null,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &f64_type,
+        .is_effect = false,
+        .has_body = true,
+    }, true, span));
+
+    // Register inherent impl (trait_name = null)
+    const method_ids = try allocator.alloc(symbols.SymbolId, 1);
+    method_ids[0] = mag_sym;
+    try table.registerImpl(.{
+        .trait_name = null,
+        .target_type = &point_type_ast,
+        .methods = method_ids,
+        .scope_id = 0,
+        .span = span,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Register variable p: Point
+    var point_type_ast2 = Type.named("Point", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "p", &point_type_ast2, false, false, span));
+
+    // Create expression: p.magnitude()
+    var p_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "p", .generic_args = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &p_ident,
+            .method = "magnitude",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+
+    // Should resolve to f64 without errors
+    var found_method_error = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "method not found") != null or
+            std.mem.indexOf(u8, diag.message, "method call type checking not fully implemented") != null)
+        {
+            found_method_error = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_method_error);
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .f64), result.kind.primitive);
 }

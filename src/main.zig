@@ -398,6 +398,7 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
     const arena_alloc = interp.arenaAlloc();
     try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+    interp.registerBuiltinMethods();
 
     // Set environment arguments for std.env.args()
     if (user_args.len > 0) {
@@ -787,6 +788,7 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     const arena_alloc = interp.arenaAlloc();
     try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+    interp.registerBuiltinMethods();
 
     // Set environment arguments for std.env.args()
     if (user_args.len > 0) {
@@ -1098,6 +1100,7 @@ fn evalLine(
     const interp_arena = interp.arenaAlloc();
     try Kira.interpreter_mod.registerBuiltins(interp_arena, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(interp_arena, &interp.global_env);
+    interp.registerBuiltinMethods();
 
     // Copy user-defined bindings
     var binding_iter = env.bindings.iterator();
@@ -1269,6 +1272,7 @@ fn loadFile(
     const interp_arena = interp.arenaAlloc();
     try Kira.interpreter_mod.registerBuiltins(interp_arena, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(interp_arena, &interp.global_env);
+    interp.registerBuiltinMethods();
 
     _ = interp.interpret(&program) catch |err| {
         var buf: [256]u8 = undefined;

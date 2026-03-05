@@ -8,3 +8,6 @@ zig-out/
 # GitStat results
 .test-results.json
 .build-results.json
+
+# Tool configs
+.forge/

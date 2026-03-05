@@ -261,6 +261,9 @@ pub fn interpret(allocator: std.mem.Allocator, program: *const Program, table: *
     // Register standard library
     try interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
 
+    // Register built-in trait methods (Eq, Ord, Show) for primitive types
+    interp.registerBuiltinMethods();
+
     return interp.interpret(program);
 }
 
