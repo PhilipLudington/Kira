@@ -88,7 +88,7 @@ fn tryFoldFloatBinOp(func: *const Function, bin: Instruction.BinOp) ?Instruction
         .sub => left_val - right_val,
         .mul => left_val * right_val,
         .div => if (right_val != 0.0) left_val / right_val else return null,
-        .mod => @rem(left_val, right_val),
+        .mod => if (right_val != 0.0) @rem(left_val, right_val) else return null,
     };
 
     return .{ .op = .{ .const_float = result } };
@@ -381,6 +381,53 @@ test "constant fold does not fold expressions with variables" {
     // %2 should still be int_binop (not folded)
     const inst = func.getInstruction(c);
     try std.testing.expect(inst.op == .int_binop);
+}
+
+test "constant fold float mod by zero returns null" {
+    const allocator = std.testing.allocator;
+
+    var func = Function.init(allocator);
+    defer func.deinit(allocator);
+
+    const blk = try func.addBlock(allocator);
+
+    // %0 = const_float 5.0
+    const a = try func.addInstruction(allocator, blk, .{ .op = .{ .const_float = 5.0 } });
+    // %1 = const_float 0.0
+    const b = try func.addInstruction(allocator, blk, .{ .op = .{ .const_float = 0.0 } });
+    // %2 = float_binop mod %0, %1
+    const c = try func.addInstruction(allocator, blk, .{
+        .op = .{ .float_binop = .{ .op = .mod, .left = a, .right = b } },
+    });
+    func.setTerminator(blk, .{ .ret = c });
+
+    try constantFold(allocator, &func);
+
+    // %2 should NOT be folded (mod by zero) — remains float_binop
+    const inst = func.getInstruction(c);
+    try std.testing.expect(inst.op == .float_binop);
+}
+
+test "constant fold float div by zero returns null" {
+    const allocator = std.testing.allocator;
+
+    var func = Function.init(allocator);
+    defer func.deinit(allocator);
+
+    const blk = try func.addBlock(allocator);
+
+    const a = try func.addInstruction(allocator, blk, .{ .op = .{ .const_float = 5.0 } });
+    const b = try func.addInstruction(allocator, blk, .{ .op = .{ .const_float = 0.0 } });
+    const c = try func.addInstruction(allocator, blk, .{
+        .op = .{ .float_binop = .{ .op = .div, .left = a, .right = b } },
+    });
+    func.setTerminator(blk, .{ .ret = c });
+
+    try constantFold(allocator, &func);
+
+    // %2 should NOT be folded (div by zero) — remains float_binop
+    const inst = func.getInstruction(c);
+    try std.testing.expect(inst.op == .float_binop);
 }
 
 test "constant fold boolean logic" {

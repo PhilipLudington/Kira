@@ -16,6 +16,7 @@ const Statement = ast.Statement;
 const Declaration = ast.Declaration;
 const Pattern = ast.Pattern;
 const Program = ast.Program;
+const Type = ast.Type;
 
 const Module = ir.Module;
 const Function = ir.Function;
@@ -47,6 +48,8 @@ pub const Lowerer = struct {
     current_block: BlockId,
     /// Target block for `break` statements (set by loop lowering).
     break_target: ?BlockId,
+    /// ValueRefs known to produce float values (from param/capture type info).
+    float_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
 
     const Scope = std.StringArrayHashMapUnmanaged(ValueRef);
 
@@ -58,6 +61,7 @@ pub const Lowerer = struct {
             .current_func_idx = null,
             .current_block = ir.no_block,
             .break_target = null,
+            .float_refs = .{},
         };
     }
 
@@ -72,6 +76,7 @@ pub const Lowerer = struct {
     pub fn deinit(self: *Lowerer) void {
         for (self.scope_stack.items) |*s| s.deinit(self.allocator);
         self.scope_stack.deinit(self.allocator);
+        self.float_refs.deinit(self.allocator);
         self.module.deinit();
     }
 
@@ -121,6 +126,9 @@ pub const Lowerer = struct {
         self.current_func_idx = func_idx;
         errdefer self.current_func_idx = null;
 
+        // Clear per-function float tracking (ValueRefs are function-local indices)
+        self.float_refs.clearRetainingCapacity();
+
         // Create entry block (so param instructions can be emitted into it)
         self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
@@ -130,6 +138,7 @@ pub const Lowerer = struct {
 
         for (fd.parameters, 0..) |param, i| {
             const vref = try self.emit(.{ .param = @intCast(i) });
+            if (isAstTypeFloat(param.param_type)) try self.markFloat(vref);
             params.append(alloc, .{
                 .name = param.name,
                 .value_ref = vref,
@@ -430,50 +439,11 @@ pub const Lowerer = struct {
     }
 
     fn lowerForLoop(self: *Lowerer, fl: *const Statement.ForLoop) LowerError!void {
-        // C4 fix: create proper loop structure with header, body, and exit blocks
-        const func = self.currentFunc().?;
-        const alloc = self.irAlloc();
-        const iterable = try self.lowerExpression(fl.iterable);
-
-        const header_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const body_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const exit_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-
-        // Jump to loop header
-        self.setTerminator(.{ .jump = header_blk });
-
-        // TODO(Phase 8): Full iterator protocol. Currently emits an always-true
-        // condition and a void loop variable, so for-loops will infinite-loop if
-        // this IR is ever executed. The iterable value is intentionally discarded
-        // until iterator lowering is implemented.
-        self.current_block = header_blk;
-        const has_next = try self.emit(.{ .const_bool = true });
-        _ = iterable;
-        self.setTerminator(.{ .branch = .{
-            .condition = has_next,
-            .then_block = body_blk,
-            .else_block = exit_blk,
-        } });
-
-        // Body: bind loop variable and execute body
-        const saved_break = self.break_target;
-        self.break_target = exit_blk;
-
-        self.current_block = body_blk;
-        try self.pushScope();
-        // Bind loop variable (placeholder value — real iterator.next() is future work)
-        const element = try self.emit(.{ .const_void = {} });
-        try self.lowerPatternBindings(fl.pattern, element);
-        try self.lowerStatements(fl.body);
-        self.popScope();
-
-        self.break_target = saved_break;
-
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
-            self.setTerminator(.{ .jump = header_blk });
-        }
-
-        self.current_block = exit_blk;
+        // Iterator protocol is not yet implemented. Return an explicit error
+        // rather than silently producing an infinite loop.
+        _ = self;
+        _ = fl;
+        return LowerError.UnsupportedStatement;
     }
 
     fn lowerMatchStatement(self: *Lowerer, ms: *const Statement.MatchStatement) LowerError!void {
@@ -799,54 +769,85 @@ pub const Lowerer = struct {
         const saved_func_idx = self.current_func_idx;
         const saved_block = self.current_block;
 
-        self.current_func_idx = func_idx;
-        self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
-
-        // C5 fix: use param instructions instead of freshValue
-        var params = std.ArrayListUnmanaged(Function.Param){};
-        try self.pushScope();
-
-        for (cl.parameters, 0..) |param, i| {
-            const vref = try self.emit(.{ .param = @intCast(i) });
-            params.append(alloc, .{
-                .name = param.name,
-                .value_ref = vref,
-            }) catch return LowerError.OutOfMemory;
-            try self.defineVar(param.name, vref);
-        }
-        self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
-
-        // H8: collect captures from outer scope references
-        // Walk through closure body and identify free variables
+        // H8: collect captures BEFORE switching function context, so we can
+        // check outer float_refs for capture propagation.
         var capture_names = std.ArrayListUnmanaged([]const u8){};
+        defer capture_names.deinit(self.allocator);
         var capture_refs = std.ArrayListUnmanaged(ValueRef){};
         try self.collectFreeVariables(cl.body, &capture_names, &capture_refs);
 
-        // Define captures in the closure's scope
-        var captures = std.ArrayListUnmanaged(Function.Capture){};
-        for (capture_names.items, 0..) |name, i| {
-            const cap_ref = try self.emit(.{ .capture = @intCast(i) });
-            captures.append(alloc, .{
-                .name = name,
-                .value_ref = cap_ref,
-            }) catch return LowerError.OutOfMemory;
-            try self.defineVar(name, cap_ref);
-        }
-        self.currentFunc().?.captures = captures.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
-
-        try self.lowerStatements(cl.body);
-
-        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
-            const void_ref = try self.emit(.{ .const_void = {} });
-            self.setTerminator(.{ .ret = void_ref });
+        // Record which captures are float-typed (from outer scope) before clearing
+        var capture_is_float = std.ArrayListUnmanaged(bool){};
+        defer capture_is_float.deinit(self.allocator);
+        for (capture_refs.items) |outer_ref| {
+            capture_is_float.append(self.allocator, self.float_refs.contains(outer_ref)) catch return LowerError.OutOfMemory;
         }
 
+        // Switch to closure function context with fresh float tracking.
+        // Use a nested block so errdefer cleanup is scoped to closure lowering only.
+        const saved_float_refs = self.float_refs;
+        self.float_refs = .{};
+
+        self.current_func_idx = func_idx;
+
+        const outer_capture_slice = closure_body: {
+            errdefer {
+                self.float_refs.deinit(self.allocator);
+                self.float_refs = saved_float_refs;
+                self.current_func_idx = saved_func_idx;
+                self.current_block = saved_block;
+            }
+
+            self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+
+            // C5 fix: use param instructions instead of freshValue
+            var params = std.ArrayListUnmanaged(Function.Param){};
+            try self.pushScope();
+            errdefer self.popScope();
+
+            for (cl.parameters, 0..) |param, i| {
+                const vref = try self.emit(.{ .param = @intCast(i) });
+                if (isAstTypeFloat(param.param_type)) try self.markFloat(vref);
+                params.append(alloc, .{
+                    .name = param.name,
+                    .value_ref = vref,
+                }) catch return LowerError.OutOfMemory;
+                try self.defineVar(param.name, vref);
+            }
+            self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+
+            // Define captures in the closure's scope, propagating float status
+            var captures = std.ArrayListUnmanaged(Function.Capture){};
+            for (capture_names.items, 0..) |name, i| {
+                const cap_ref = try self.emit(.{ .capture = @intCast(i) });
+                if (capture_is_float.items[i]) try self.markFloat(cap_ref);
+                captures.append(alloc, .{
+                    .name = name,
+                    .value_ref = cap_ref,
+                }) catch return LowerError.OutOfMemory;
+                try self.defineVar(name, cap_ref);
+            }
+            self.currentFunc().?.captures = captures.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+
+            try self.lowerStatements(cl.body);
+
+            if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
+                const void_ref = try self.emit(.{ .const_void = {} });
+                self.setTerminator(.{ .ret = void_ref });
+            }
+
+            // Prepare capture slice before leaving the errdefer scope
+            break :closure_body capture_refs.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        };
+
+        // Success: restore outer function context (errdefer is out of scope here)
         self.popScope();
+        self.float_refs.deinit(self.allocator);
+        self.float_refs = saved_float_refs;
         self.current_func_idx = saved_func_idx;
         self.current_block = saved_block;
 
-        // Emit capture value refs from the outer scope
-        const outer_capture_slice = capture_refs.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        // Emit make_closure into the outer function
         return self.emit(.{ .make_closure = .{
             .function_index = func_idx,
             .captures = outer_capture_slice,
@@ -1118,12 +1119,26 @@ pub const Lowerer = struct {
 
     /// Check if a ValueRef produces a float value (C1/C2 fix).
     fn isFloatValue(self: *Lowerer, ref: ValueRef) bool {
+        if (self.float_refs.contains(ref)) return true;
         const func = self.currentFunc() orelse return false;
         if (ref >= func.instructions.items.len) return false;
         return switch (func.instructions.items[ref].op) {
             .const_float, .float_binop, .float_neg, .int_to_float => true,
             else => false,
         };
+    }
+
+    /// Check if an AST type is a float primitive.
+    fn isAstTypeFloat(param_type: *const Type) bool {
+        return switch (param_type.kind) {
+            .primitive => |p| p.isFloat(),
+            else => false,
+        };
+    }
+
+    /// Register a ValueRef as float-typed (for params/captures with float types).
+    fn markFloat(self: *Lowerer, ref: ValueRef) LowerError!void {
+        self.float_refs.put(self.allocator, ref, {}) catch return LowerError.OutOfMemory;
     }
 
     /// Look up a variant's numeric tag from the module's type declarations (C6/L4 fix).
@@ -1184,6 +1199,12 @@ pub const Lowerer = struct {
             .if_statement => |*ifs| {
                 try self.collectFreeVarsInExpr(ifs.condition, names, refs, alloc);
                 for (ifs.then_branch) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
+                if (ifs.else_branch) |eb| switch (eb) {
+                    .block => |stmts| {
+                        for (stmts) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
+                    },
+                    .else_if => |elif| try self.collectFreeVarsInStmt(elif, names, refs, alloc),
+                };
             },
             .for_loop => |*fl| {
                 try self.collectFreeVarsInExpr(fl.iterable, names, refs, alloc);
@@ -1198,6 +1219,10 @@ pub const Lowerer = struct {
             },
             .match_statement => |*ms| {
                 try self.collectFreeVarsInExpr(ms.subject, names, refs, alloc);
+                for (ms.arms) |*arm| {
+                    if (arm.guard) |guard| try self.collectFreeVarsInExpr(guard, names, refs, alloc);
+                    for (arm.body) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
+                }
             },
             .break_statement => {},
         }
@@ -1244,7 +1269,78 @@ pub const Lowerer = struct {
                 try self.collectFreeVarsInExpr(mc.object, names, refs, alloc);
                 for (mc.arguments) |arg| try self.collectFreeVarsInExpr(arg, names, refs, alloc);
             },
-            else => {},
+            .if_expr => |*ie| {
+                try self.collectFreeVarsInExpr(ie.condition, names, refs, alloc);
+                try self.collectFreeVarsInMatchBody(&ie.then_branch, names, refs, alloc);
+                try self.collectFreeVarsInMatchBody(&ie.else_branch, names, refs, alloc);
+            },
+            .match_expr => |*me| {
+                try self.collectFreeVarsInExpr(me.subject, names, refs, alloc);
+                for (me.arms) |*arm| {
+                    if (arm.guard) |guard| try self.collectFreeVarsInExpr(guard, names, refs, alloc);
+                    try self.collectFreeVarsInMatchBody(&arm.body, names, refs, alloc);
+                }
+            },
+            .closure => |*cl| {
+                for (cl.body) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
+            },
+            .field_access => |*fa| try self.collectFreeVarsInExpr(fa.object, names, refs, alloc),
+            .index_access => |*ia| {
+                try self.collectFreeVarsInExpr(ia.object, names, refs, alloc);
+                try self.collectFreeVarsInExpr(ia.index, names, refs, alloc);
+            },
+            .tuple_access => |*ta| try self.collectFreeVarsInExpr(ta.tuple, names, refs, alloc),
+            .tuple_literal => |*tl| {
+                for (tl.elements) |elem| try self.collectFreeVarsInExpr(elem, names, refs, alloc);
+            },
+            .array_literal => |*al| {
+                for (al.elements) |elem| try self.collectFreeVarsInExpr(elem, names, refs, alloc);
+            },
+            .record_literal => |*rl| {
+                if (rl.type_name) |tn| try self.collectFreeVarsInExpr(tn, names, refs, alloc);
+                for (rl.fields) |field| try self.collectFreeVarsInExpr(field.value, names, refs, alloc);
+            },
+            .variant_constructor => |*vc| {
+                if (vc.arguments) |args| {
+                    for (args) |arg| try self.collectFreeVarsInExpr(arg, names, refs, alloc);
+                }
+            },
+            .type_cast => |*tc| try self.collectFreeVarsInExpr(tc.expression, names, refs, alloc),
+            .range => |*r| {
+                if (r.start) |start| try self.collectFreeVarsInExpr(start, names, refs, alloc);
+                if (r.end) |end| try self.collectFreeVarsInExpr(end, names, refs, alloc);
+            },
+            .grouped => |inner| try self.collectFreeVarsInExpr(inner, names, refs, alloc),
+            .interpolated_string => |*is| {
+                for (is.parts) |part| {
+                    switch (part) {
+                        .expression => |e| try self.collectFreeVarsInExpr(e, names, refs, alloc),
+                        .literal => {},
+                    }
+                }
+            },
+            .try_expr => |inner| try self.collectFreeVarsInExpr(inner, names, refs, alloc),
+            .null_coalesce => |*nc| {
+                try self.collectFreeVarsInExpr(nc.left, names, refs, alloc);
+                try self.collectFreeVarsInExpr(nc.default, names, refs, alloc);
+            },
+            // Literals and self have no sub-expressions
+            .integer_literal, .float_literal, .string_literal, .char_literal, .bool_literal, .self_expr, .self_type_expr => {},
+        }
+    }
+
+    fn collectFreeVarsInMatchBody(
+        self: *Lowerer,
+        body: *const Expression.MatchBody,
+        names: *std.ArrayListUnmanaged([]const u8),
+        refs: *std.ArrayListUnmanaged(ValueRef),
+        alloc: Allocator,
+    ) LowerError!void {
+        switch (body.*) {
+            .expression => |e| try self.collectFreeVarsInExpr(e, names, refs, alloc),
+            .block => |stmts| {
+                for (stmts) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
+            },
         }
     }
 
