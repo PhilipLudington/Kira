@@ -9,5 +9,3 @@ zig-out/
 .test-results.json
 .build-results.json
 
-# Tool configs
-.forge/
