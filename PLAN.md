@@ -4,12 +4,13 @@
 
 Kira is a functional programming language with explicit types, algebraic data types, and a compiler-enforced effects system. The compiler is written in Zig (0.15+) with a pipeline of Parser → Resolver → TypeChecker → Interpreter. Phase 0 (foundation) is complete at v0.11.1 with 285 passing tests. This plan covers Phases 1–4 from ROADMAP.md, taking Kira from a working interpreter to a complete, compiled language with tooling and ecosystem.
 
-Current status: Phase 1 in progress / Not started.
+Current status: Phase 1 complete. Phase 2 next.
 
 ---
 
-## Phase 1: String Interpolation
+## Phase 1: String Interpolation ✅
 
+**Status:** Complete (2026-03-04)
 **Goal:** Add string interpolation syntax (`"hello {name}"`) across all compiler phases.
 **Estimated Effort:** 2 days
 
@@ -21,24 +22,25 @@ Current status: Phase 1 in progress / Not started.
 
 ### Tasks
 - [x] Add string interpolation lexing — extend the lexer to recognize `{` inside string literals and emit tokens for string fragments and interpolation boundaries. Update `src/lexer.zig`. (per DESIGN.md section "Literals") Tests should cover: plain strings unchanged, single interpolation, multiple interpolations, nested braces, escaped braces, empty interpolation error. (completed 2026-03-04)
-- [ ] Add `StringInterpolation` AST node and parser support — parse interpolated strings as a list of literal fragments and expression nodes. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Literals") Tests should cover: parsing `"hello {name}"`, `"a {x} b {y} c"`, plain strings produce regular string literal, expression inside interpolation.
-- [ ] Type-check interpolated strings — verify each interpolated expression has a type that implements `Show` or is a primitive type convertible to string. Update `src/type_checker.zig`. (per DESIGN.md section "Literals") Tests should cover: interpolating i32, string, bool, interpolating non-showable type produces error, nested function calls in interpolation.
-- [ ] Resolve interpolated strings — ensure the resolver visits expressions inside interpolated strings for symbol resolution. Update `src/resolver.zig`. (per DESIGN.md section "Literals") Tests should cover: interpolated variable references resolve correctly, undefined variable in interpolation produces error.
-- [ ] Interpret interpolated strings — evaluate each fragment and expression, convert to string, concatenate. Update `src/interpreter.zig`. (per DESIGN.md section "Literals") Tests should cover: basic interpolation output, multiple expressions, expressions with arithmetic, string concatenation equivalence.
+- [x] Add `StringInterpolation` AST node and parser support — parse interpolated strings as a list of literal fragments and expression nodes. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Literals") Tests should cover: parsing `"hello {name}"`, `"a {x} b {y} c"`, plain strings produce regular string literal, expression inside interpolation. (completed 2026-03-04)
+- [x] Type-check interpolated strings — verify each interpolated expression has a type that implements `Show` or is a primitive type convertible to string. Update `src/type_checker.zig`. (per DESIGN.md section "Literals") Tests should cover: interpolating i32, string, bool, interpolating non-showable type produces error, nested function calls in interpolation. (completed 2026-03-04)
+- [x] Resolve interpolated strings — ensure the resolver visits expressions inside interpolated strings for symbol resolution. Update `src/resolver.zig`. (per DESIGN.md section "Literals") Tests should cover: interpolated variable references resolve correctly, undefined variable in interpolation produces error. (completed 2026-03-04)
+- [x] Interpret interpolated strings — evaluate each fragment and expression, convert to string, concatenate. Update `src/interpreter.zig`. (per DESIGN.md section "Literals") Tests should cover: basic interpolation output, multiple expressions, expressions with arithmetic, string concatenation equivalence. (completed 2026-03-04)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Write `.ki` test files that use string interpolation in let bindings, function arguments, and match arms. Verify output matches expected concatenated strings.
 
 ### Phase 1 Readiness Gate
 Before Phase 2, these must be true:
-- [ ] `"hello {name}"` parses, type-checks, and evaluates correctly
-- [ ] All existing 285+ tests still pass
-- [ ] Interpolation works inside all expression contexts (let, fn args, match arms)
+- [x] `"hello {name}"` parses, type-checks, and evaluates correctly
+- [x] All existing 285+ tests still pass (292 passing)
+- [x] Interpolation works inside all expression contexts (let, fn args, match arms)
 
 ---
 
-## Phase 2: Trait System
+## Phase 2: Trait System ✅
 
+**Status:** Complete (2026-03-04)
 **Goal:** Implement trait declarations, impl blocks, method resolution, and trait bounds on generics.
 **Estimated Effort:** 4 days
 
@@ -50,23 +52,23 @@ Before Phase 2, these must be true:
 
 ### Tasks
 - [x] Parse trait declarations — add AST nodes for `trait Name { fn method(self: Self) -> T }` and parse method signatures. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Standard Library") Tests should cover: empty trait, single method trait, multiple methods, trait with supertraits (`trait Ord: Eq`), trait with generic methods. (completed 2026-03-04)
-- [ ] Parse impl blocks — add AST nodes for `impl TraitName for TypeName { ... }` with method bodies. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Standard Library") Tests should cover: impl with one method, multiple methods, impl for generic type, impl without trait (inherent methods).
-- [ ] Resolve traits and impl blocks — register trait names and impl blocks in the symbol table during resolution. Verify impl method names match trait requirements. Update `src/resolver.zig`. (per DESIGN.md section "Standard Library") Tests should cover: duplicate trait error, impl for undefined trait error, impl for undefined type error, method name resolution within impl.
-- [ ] Type-check trait declarations and impl blocks — verify impl method signatures match trait declarations exactly. Check Self type substitution. Update `src/type_checker.zig`. (per DESIGN.md section "Standard Library") Tests should cover: signature mismatch error, missing method error, extra method warning, correct Self substitution, return type mismatch.
-- [ ] Implement trait bounds on generics — parse and enforce `where T: Eq` or `[T: Eq]` syntax on generic functions and types. Update `src/parser.zig` and `src/type_checker.zig`. (per DESIGN.md sections "Generic Types" and "Standard Library") Tests should cover: calling generic fn with type satisfying bound, calling with type missing bound produces error, multiple bounds, bound with supertrait.
-- [ ] Implement method resolution and dispatch — when a method is called on a value, find the appropriate impl block and dispatch. Update `src/type_checker.zig` and `src/interpreter.zig`. (per DESIGN.md section "Standard Library") Tests should cover: calling trait method on concrete type, ambiguous impl error, method on generic with trait bound, chained method calls.
-- [ ] Implement core trait instances — add impl blocks for `Eq`, `Ord`, `Show` on primitive types (i32, string, bool, etc.) in the standard library. Update relevant stdlib files. (per DESIGN.md section "Standard Library") Tests should cover: `==` on i32 uses Eq, Show on i32 produces string, Ord comparison on strings.
+- [x] Parse impl blocks — add AST nodes for `impl TraitName for TypeName { ... }` with method bodies. Update `src/ast.zig` and `src/parser.zig`. (per DESIGN.md section "Standard Library") Tests should cover: impl with one method, multiple methods, impl for generic type, impl without trait (inherent methods). (completed 2026-03-04)
+- [x] Resolve traits and impl blocks — register trait names and impl blocks in the symbol table during resolution. Verify impl method names match trait requirements. Update `src/resolver.zig`. (per DESIGN.md section "Standard Library") Tests should cover: duplicate trait error, impl for undefined trait error, impl for undefined type error, method name resolution within impl. (completed 2026-03-04)
+- [x] Type-check trait declarations and impl blocks — verify impl method signatures match trait declarations exactly. Check Self type substitution. Update `src/type_checker.zig`. (per DESIGN.md section "Standard Library") Tests should cover: signature mismatch error, missing method error, extra method warning, correct Self substitution, return type mismatch. (completed 2026-03-04)
+- [x] Implement trait bounds on generics — parse and enforce `where T: Eq` or `[T: Eq]` syntax on generic functions and types. Update `src/parser.zig` and `src/type_checker.zig`. (per DESIGN.md sections "Generic Types" and "Standard Library") Tests should cover: calling generic fn with type satisfying bound, calling with type missing bound produces error, multiple bounds, bound with supertrait. (completed 2026-03-04)
+- [x] Implement method resolution and dispatch — when a method is called on a value, find the appropriate impl block and dispatch. Update `src/type_checker.zig` and `src/interpreter.zig`. (per DESIGN.md section "Standard Library") Tests should cover: calling trait method on concrete type, ambiguous impl error, method on generic with trait bound, chained method calls. (completed 2026-03-04)
+- [x] Implement core trait instances — add impl blocks for `Eq`, `Ord`, `Show` on primitive types (i32, string, bool, etc.) in the standard library. Update relevant stdlib files. (per DESIGN.md section "Standard Library") Tests should cover: `==` on i32 uses Eq, Show on i32 produces string, Ord comparison on strings. (completed 2026-03-04)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Write `.ki` files exercising trait definitions, impl blocks, trait bounds, and method dispatch. Verify error messages for missing impls and signature mismatches.
 
 ### Phase 2 Readiness Gate
 Before Phase 3, these must be true:
-- [ ] Trait declarations parse and type-check
-- [ ] Impl blocks validate against trait requirements
-- [ ] Method calls dispatch through impl blocks
-- [ ] Trait bounds restrict generic instantiation
-- [ ] All prior tests still pass
+- [x] Trait declarations parse and type-check
+- [x] Impl blocks validate against trait requirements
+- [x] Method calls dispatch through impl blocks
+- [x] Trait bounds restrict generic instantiation
+- [x] All prior tests still pass (314 passing)
 
 ---
 

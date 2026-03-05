@@ -71,6 +71,9 @@ pub const Interpreter = struct {
     /// Environment arguments (command-line args for std.env.args())
     env_args: ?[]const Value,
 
+    /// Method table for impl block methods: "TypeName.methodName" -> FunctionValue
+    method_table: std.StringHashMapUnmanaged(Value.FunctionValue),
+
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
             .allocator = allocator,
@@ -85,6 +88,7 @@ pub const Interpreter = struct {
             .recursion_depth = 0,
             .max_recursion_depth = default_max_recursion_depth,
             .env_args = null,
+            .method_table = .{},
         };
     }
 
@@ -96,6 +100,134 @@ pub const Interpreter = struct {
     /// Clear environment arguments
     pub fn clearEnvArgs(self: *Interpreter) void {
         self.env_args = null;
+    }
+
+    /// Register built-in trait methods (Eq, Ord, Show) for primitive runtime types.
+    /// This populates the method_table so that method calls like `x.eq(y)` and
+    /// `x.show()` work on primitive values at runtime.
+    pub fn registerBuiltinMethods(self: *Interpreter) void {
+        const alloc = self.arenaAlloc();
+
+        // Runtime type names from getValueTypeName
+        const type_names = [_][]const u8{ "Int", "Float", "String", "Bool", "Char" };
+
+        for (type_names) |tn| {
+            // Eq.eq(self, other) -> bool
+            const eq_key = std.fmt.allocPrint(alloc, "{s}.eq", .{tn}) catch continue;
+            self.method_table.put(alloc, eq_key, .{
+                .name = "eq",
+                .parameters = &.{},
+                .body = .{ .builtin = &builtinEq },
+                .captured_env = null,
+                .is_effect = false,
+            }) catch {};
+
+            // Show.show(self) -> string
+            const show_key = std.fmt.allocPrint(alloc, "{s}.show", .{tn}) catch continue;
+            self.method_table.put(alloc, show_key, .{
+                .name = "show",
+                .parameters = &.{},
+                .body = .{ .builtin = &builtinShow },
+                .captured_env = null,
+                .is_effect = false,
+            }) catch {};
+
+            // Ord.lt(self, other) -> bool
+            const lt_key = std.fmt.allocPrint(alloc, "{s}.lt", .{tn}) catch continue;
+            self.method_table.put(alloc, lt_key, .{
+                .name = "lt",
+                .parameters = &.{},
+                .body = .{ .builtin = &builtinLt },
+                .captured_env = null,
+                .is_effect = false,
+            }) catch {};
+
+            // Ord.gt(self, other) -> bool
+            const gt_key = std.fmt.allocPrint(alloc, "{s}.gt", .{tn}) catch continue;
+            self.method_table.put(alloc, gt_key, .{
+                .name = "gt",
+                .parameters = &.{},
+                .body = .{ .builtin = &builtinGt },
+                .captured_env = null,
+                .is_effect = false,
+            }) catch {};
+
+            // Ord.compare(self, other) -> i32
+            const cmp_key = std.fmt.allocPrint(alloc, "{s}.compare", .{tn}) catch continue;
+            self.method_table.put(alloc, cmp_key, .{
+                .name = "compare",
+                .parameters = &.{},
+                .body = .{ .builtin = &builtinCompare },
+                .captured_env = null,
+                .is_effect = false,
+            }) catch {};
+        }
+    }
+
+    // ========== Built-in trait method implementations ==========
+
+    fn builtinEq(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
+        _ = ctx;
+        if (args.len != 2) return error.ArityMismatch;
+        return Value{ .boolean = args[0].eql(args[1]) };
+    }
+
+    fn builtinShow(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
+        if (args.len != 1) return error.ArityMismatch;
+        const str = switch (args[0]) {
+            .string => |s| s,
+            else => args[0].toString(ctx.allocator) catch return error.OutOfMemory,
+        };
+        return Value{ .string = str };
+    }
+
+    fn builtinLt(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
+        _ = ctx;
+        if (args.len != 2) return error.ArityMismatch;
+        return Value{ .boolean = compareValues(args[0], args[1]) == .lt };
+    }
+
+    fn builtinGt(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
+        _ = ctx;
+        if (args.len != 2) return error.ArityMismatch;
+        return Value{ .boolean = compareValues(args[0], args[1]) == .gt };
+    }
+
+    fn builtinCompare(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
+        _ = ctx;
+        if (args.len != 2) return error.ArityMismatch;
+        const ord = compareValues(args[0], args[1]);
+        return Value{ .integer = switch (ord) {
+            .lt => -1,
+            .eq => 0,
+            .gt => 1,
+        } };
+    }
+
+    fn compareValues(a: Value, b: Value) std.math.Order {
+        return switch (a) {
+            .integer => |ai| switch (b) {
+                .integer => |bi| std.math.order(ai, bi),
+                else => .lt,
+            },
+            .float => |af| switch (b) {
+                .float => |bf| std.math.order(af, bf),
+                else => .lt,
+            },
+            .string => |as| switch (b) {
+                .string => |bs| std.mem.order(u8, as, bs),
+                else => .lt,
+            },
+            .boolean => |ab| switch (b) {
+                .boolean => |bb| std.math.order(@intFromBool(ab), @intFromBool(bb)),
+                else => .lt,
+            },
+            .char => |ac| switch (b) {
+                .char => |bc| std.math.order(ac, bc),
+                else => .lt,
+            },
+            else => .eq,
+        };
     }
 
     /// Get the error context message, if any
@@ -525,8 +657,33 @@ pub const Interpreter = struct {
                 // Type declarations are handled by the type checker
                 // We may need to register constructors for sum types
             },
-            .trait_decl, .impl_block, .module_decl, .import_decl => {
+            .trait_decl, .module_decl, .import_decl => {
                 // These are handled elsewhere or don't need runtime representation
+            },
+            .impl_block => |impl| {
+                // Register impl methods in the method table for runtime dispatch
+                const target_name: ?[]const u8 = switch (impl.target_type.kind) {
+                    .named => |n| n.name,
+                    .primitive => |p| p.toString(),
+                    else => null,
+                };
+                if (target_name) |tn| {
+                    for (impl.methods) |method| {
+                        if (method.body) |body| {
+                            const param_names = try self.extractParamNames(method.parameters);
+                            const func_value = Value.FunctionValue{
+                                .name = method.name,
+                                .parameters = param_names,
+                                .body = .{ .ast_body = body },
+                                .captured_env = env,
+                                .is_effect = method.is_effect,
+                            };
+                            // Build key "TypeName.methodName"
+                            const key = try std.fmt.allocPrint(self.arenaAlloc(), "{s}.{s}", .{ tn, method.name });
+                            self.method_table.put(self.arenaAlloc(), key, func_value) catch {};
+                        }
+                    }
+                }
             },
             .test_decl => {
                 // Tests are skipped during normal execution
@@ -1209,9 +1366,46 @@ pub const Interpreter = struct {
             return error.FieldNotFound;
         }
 
-        // For user-defined methods, we would need trait/impl lookup
+        // Look up method through impl blocks via the method table
+        const type_name = self.getValueTypeName(obj);
+        if (type_name) |tn| {
+            const key = std.fmt.allocPrint(self.arenaAlloc(), "{s}.{s}", .{ tn, call.method }) catch {
+                return error.OutOfMemory;
+            };
+
+            if (self.method_table.get(key)) |method_func| {
+                // Evaluate arguments
+                const args = try self.arenaAlloc().alloc(Value, call.arguments.len + 1);
+                // First argument is `self` (the object)
+                args[0] = obj;
+                for (call.arguments, 0..) |arg, i| {
+                    args[i + 1] = try self.evalExpression(arg, env);
+                }
+                return self.callFunction(method_func, args, env);
+            }
+        }
+
         self.setErrorContext("method '{s}' not found on value", .{call.method});
         return error.FieldNotFound;
+    }
+
+    /// Get the type name of a runtime value for impl method lookup
+    fn getValueTypeName(_: *Interpreter, val: Value) ?[]const u8 {
+        return switch (val) {
+            .integer => "Int",
+            .float => "Float",
+            .string => "String",
+            .char => "Char",
+            .boolean => "Bool",
+            .record => |r| r.type_name,
+            .variant => null, // sum type variants don't carry their type name
+            .some, .none => "Option",
+            .ok, .err => "Result",
+            .cons, .nil => "List",
+            .array => "Array",
+            .tuple => "Tuple",
+            else => null,
+        };
     }
 
     /// Built-in len method

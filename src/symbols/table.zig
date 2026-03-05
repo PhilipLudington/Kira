@@ -40,6 +40,8 @@ pub const SymbolTable = struct {
     module_scopes: std.StringHashMapUnmanaged(ScopeId),
     /// Trait implementations: (trait_name, type_name) -> impl info
     implementations: std.ArrayListUnmanaged(ImplInfo),
+    /// Builtin type allocations that need to be freed on deinit
+    builtin_type_allocs: std.ArrayListUnmanaged(*Type),
 
     /// Information about a trait implementation
     pub const ImplInfo = struct {
@@ -59,6 +61,7 @@ pub const SymbolTable = struct {
             .current_scope_id = 0,
             .module_scopes = .{},
             .implementations = .{},
+            .builtin_type_allocs = .{},
         };
 
         // Create global scope
@@ -66,6 +69,9 @@ pub const SymbolTable = struct {
 
         // Register built-in types (List[T], HashMap, StringBuilder, Option[T], Result[T, E])
         table.registerBuiltinTypes();
+
+        // Register built-in traits (Eq, Ord, Show) and impls for primitive types
+        table.registerBuiltinTraits();
 
         return table;
     }
@@ -130,6 +136,53 @@ pub const SymbolTable = struct {
         }, true, builtin_span)) catch unreachable;
     }
 
+    /// Register built-in traits (Eq, Ord, Show) and impls for primitive types.
+    /// This makes trait bounds like `where T: Eq` work for i32, string, bool, etc.
+    fn registerBuiltinTraits(self: *SymbolTable) void {
+        const builtin_span = Span{
+            .start = .{ .line = 0, .column = 0, .offset = 0 },
+            .end = .{ .line = 0, .column = 0, .offset = 0 },
+        };
+
+        // Define trait declarations: Eq, Ord, Show
+        const trait_names = [_][]const u8{ "Eq", "Ord", "Show" };
+        for (trait_names) |trait_name| {
+            _ = self.define(Symbol.traitDef(0, trait_name, .{
+                .generic_params = null,
+                .super_traits = null,
+                .methods = &[_]Symbol.TraitMethodInfo{},
+            }, true, builtin_span)) catch unreachable;
+        }
+
+        // Register impls for each primitive type and each trait.
+        // The type checker uses PrimitiveType.toString() names (e.g. "i32", "string", "bool").
+        const prim_types = [_]Type.PrimitiveType{
+            .i8,  .i16,  .i32,  .i64,  .i128,
+            .u8,  .u16,  .u32,  .u64,  .u128,
+            .f32, .f64,
+            .bool,
+            .char,
+            .string,
+        };
+
+        // We need stable Type values — allocate them on the symbol table's allocator
+        for (prim_types) |prim| {
+            const prim_type_ptr = self.allocator.create(Type) catch unreachable;
+            prim_type_ptr.* = Type.primitive(prim, builtin_span);
+            self.builtin_type_allocs.append(self.allocator, prim_type_ptr) catch unreachable;
+
+            for (trait_names) |trait_name| {
+                self.registerImpl(.{
+                    .trait_name = trait_name,
+                    .target_type = prim_type_ptr,
+                    .methods = &[_]SymbolId{},
+                    .scope_id = 0,
+                    .span = builtin_span,
+                }) catch unreachable;
+            }
+        }
+    }
+
     /// Free all resources
     pub fn deinit(self: *SymbolTable) void {
         // Free nested allocations in each symbol
@@ -156,6 +209,12 @@ pub const SymbolTable = struct {
             }
         }
         self.implementations.deinit(self.allocator);
+
+        // Free builtin type allocations used for trait impls
+        for (self.builtin_type_allocs.items) |type_ptr| {
+            self.allocator.destroy(type_ptr);
+        }
+        self.builtin_type_allocs.deinit(self.allocator);
     }
 
     // ========== Scope Management ==========
@@ -375,11 +434,14 @@ pub const SymbolTable = struct {
         var result = std.ArrayListUnmanaged(ImplInfo){};
 
         for (self.implementations.items) |impl| {
-            // Simple name matching for now
-            // TODO: proper type comparison
             switch (impl.target_type.kind) {
                 .named => |n| {
                     if (std.mem.eql(u8, n.name, type_name)) {
+                        try result.append(allocator, impl);
+                    }
+                },
+                .primitive => |p| {
+                    if (std.mem.eql(u8, p.toString(), type_name)) {
                         try result.append(allocator, impl);
                     }
                 },
@@ -403,6 +465,11 @@ pub const SymbolTable = struct {
                 switch (impl.target_type.kind) {
                     .named => |n| {
                         if (std.mem.eql(u8, n.name, type_name)) {
+                            return impl;
+                        }
+                    },
+                    .primitive => |p| {
+                        if (std.mem.eql(u8, p.toString(), type_name)) {
                             return impl;
                         }
                     },
@@ -545,7 +612,8 @@ test "symbol table basic operations" {
     const id = try table.define(sym);
 
     // IDs 0-4 are taken by built-in types (List, HashMap, StringBuilder, Option, Result)
-    try std.testing.expectEqual(@as(SymbolId, 5), id);
+    // IDs 5-7 are taken by built-in traits (Eq, Ord, Show)
+    try std.testing.expectEqual(@as(SymbolId, 8), id);
 
     // Look it up
     const found = table.lookup("x");
