@@ -3653,13 +3653,9 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Also check where clause constraints
-        if (func_sym.kind == .function) {
-            // Look up the AST function decl for where clause info.
-            // The where clause is stored in the AST, not the symbol.
-            // We need to find it through the callee. For now, we check
-            // constraints from generic_params which is the primary path.
-        }
+        // TODO: Also check where clause constraints.
+        // The where clause is stored in the AST, not the symbol.
+        // For now, constraints from generic_params are the primary path.
 
         // Build substitution and instantiate function type
         var subst = instantiate_mod.TypeSubstitution{};
@@ -4871,7 +4867,8 @@ test "trait bounds: generic function call with satisfied bound" {
     param_names[1] = "b";
 
     const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
-    generic_params[0] = .{ .name = "T", .constraints = @constCast(&[_][]const u8{"Eq"}) };
+    var eq_constraints = [_][]const u8{"Eq"};
+    generic_params[0] = .{ .name = "T", .constraints = &eq_constraints };
 
     const func_sym = Symbol.function(unassigned_symbol_id, "is_equal", .{
         .generic_params = generic_params,
@@ -4954,7 +4951,8 @@ test "trait bounds: generic function call with unsatisfied bound" {
     param_names[1] = "b";
 
     const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
-    generic_params[0] = .{ .name = "T", .constraints = @constCast(&[_][]const u8{"Serialize"}) };
+    var serialize_constraints = [_][]const u8{"Serialize"};
+    generic_params[0] = .{ .name = "T", .constraints = &serialize_constraints };
 
     const func_sym = Symbol.function(unassigned_symbol_id, "serialize", .{
         .generic_params = generic_params,

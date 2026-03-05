@@ -108,59 +108,28 @@ pub const Interpreter = struct {
     pub fn registerBuiltinMethods(self: *Interpreter) void {
         const alloc = self.arenaAlloc();
 
-        // Runtime type names from getValueTypeName
-        const type_names = [_][]const u8{ "Int", "Float", "String", "Bool", "Char" };
+        // Use PrimitiveType.toString() names to match the type checker's impl registrations
+        const type_names = [_][]const u8{ "i32", "i64", "f32", "f64", "string", "bool", "char", "i8", "i16", "i128", "u8", "u16", "u32", "u64", "u128" };
+
+        const methods = [_]struct { name: []const u8, builtin: *const fn (Value.BuiltinContext, []const Value) InterpreterError!Value }{
+            .{ .name = "eq", .builtin = &builtinEq },
+            .{ .name = "show", .builtin = &builtinShow },
+            .{ .name = "lt", .builtin = &builtinLt },
+            .{ .name = "gt", .builtin = &builtinGt },
+            .{ .name = "compare", .builtin = &builtinCompare },
+        };
 
         for (type_names) |tn| {
-            // Eq.eq(self, other) -> bool
-            const eq_key = std.fmt.allocPrint(alloc, "{s}.eq", .{tn}) catch continue;
-            self.method_table.put(alloc, eq_key, .{
-                .name = "eq",
-                .parameters = &.{},
-                .body = .{ .builtin = &builtinEq },
-                .captured_env = null,
-                .is_effect = false,
-            }) catch {};
-
-            // Show.show(self) -> string
-            const show_key = std.fmt.allocPrint(alloc, "{s}.show", .{tn}) catch continue;
-            self.method_table.put(alloc, show_key, .{
-                .name = "show",
-                .parameters = &.{},
-                .body = .{ .builtin = &builtinShow },
-                .captured_env = null,
-                .is_effect = false,
-            }) catch {};
-
-            // Ord.lt(self, other) -> bool
-            const lt_key = std.fmt.allocPrint(alloc, "{s}.lt", .{tn}) catch continue;
-            self.method_table.put(alloc, lt_key, .{
-                .name = "lt",
-                .parameters = &.{},
-                .body = .{ .builtin = &builtinLt },
-                .captured_env = null,
-                .is_effect = false,
-            }) catch {};
-
-            // Ord.gt(self, other) -> bool
-            const gt_key = std.fmt.allocPrint(alloc, "{s}.gt", .{tn}) catch continue;
-            self.method_table.put(alloc, gt_key, .{
-                .name = "gt",
-                .parameters = &.{},
-                .body = .{ .builtin = &builtinGt },
-                .captured_env = null,
-                .is_effect = false,
-            }) catch {};
-
-            // Ord.compare(self, other) -> i32
-            const cmp_key = std.fmt.allocPrint(alloc, "{s}.compare", .{tn}) catch continue;
-            self.method_table.put(alloc, cmp_key, .{
-                .name = "compare",
-                .parameters = &.{},
-                .body = .{ .builtin = &builtinCompare },
-                .captured_env = null,
-                .is_effect = false,
-            }) catch {};
+            for (methods) |method| {
+                const key = std.fmt.allocPrint(alloc, "{s}.{s}", .{ tn, method.name }) catch unreachable;
+                self.method_table.put(alloc, key, .{
+                    .name = method.name,
+                    .parameters = &.{},
+                    .body = .{ .builtin = method.builtin },
+                    .captured_env = null,
+                    .is_effect = false,
+                }) catch unreachable;
+            }
         }
     }
 
@@ -184,19 +153,19 @@ pub const Interpreter = struct {
     fn builtinLt(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
         _ = ctx;
         if (args.len != 2) return error.ArityMismatch;
-        return Value{ .boolean = compareValues(args[0], args[1]) == .lt };
+        return Value{ .boolean = (try compareValues(args[0], args[1])) == .lt };
     }
 
     fn builtinGt(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
         _ = ctx;
         if (args.len != 2) return error.ArityMismatch;
-        return Value{ .boolean = compareValues(args[0], args[1]) == .gt };
+        return Value{ .boolean = (try compareValues(args[0], args[1])) == .gt };
     }
 
     fn builtinCompare(ctx: Value.BuiltinContext, args: []const Value) InterpreterError!Value {
         _ = ctx;
         if (args.len != 2) return error.ArityMismatch;
-        const ord = compareValues(args[0], args[1]);
+        const ord = try compareValues(args[0], args[1]);
         return Value{ .integer = switch (ord) {
             .lt => -1,
             .eq => 0,
@@ -204,29 +173,29 @@ pub const Interpreter = struct {
         } };
     }
 
-    fn compareValues(a: Value, b: Value) std.math.Order {
+    fn compareValues(a: Value, b: Value) InterpreterError!std.math.Order {
         return switch (a) {
             .integer => |ai| switch (b) {
                 .integer => |bi| std.math.order(ai, bi),
-                else => .lt,
+                else => error.TypeMismatch,
             },
             .float => |af| switch (b) {
                 .float => |bf| std.math.order(af, bf),
-                else => .lt,
+                else => error.TypeMismatch,
             },
             .string => |as| switch (b) {
                 .string => |bs| std.mem.order(u8, as, bs),
-                else => .lt,
+                else => error.TypeMismatch,
             },
             .boolean => |ab| switch (b) {
                 .boolean => |bb| std.math.order(@intFromBool(ab), @intFromBool(bb)),
-                else => .lt,
+                else => error.TypeMismatch,
             },
             .char => |ac| switch (b) {
                 .char => |bc| std.math.order(ac, bc),
-                else => .lt,
+                else => error.TypeMismatch,
             },
-            else => .eq,
+            else => error.TypeMismatch,
         };
     }
 
@@ -247,6 +216,9 @@ pub const Interpreter = struct {
 
     pub fn deinit(self: *Interpreter) void {
         self.global_env.deinit();
+        // method_table backing storage is arena-allocated (keys and values),
+        // but the hash map metadata uses the default allocator via arena
+        self.method_table.deinit(self.arena.allocator());
         self.arena.deinit();
         // module_exports uses arena allocator, so no need to free explicitly
     }
@@ -1392,11 +1364,11 @@ pub const Interpreter = struct {
     /// Get the type name of a runtime value for impl method lookup
     fn getValueTypeName(_: *Interpreter, val: Value) ?[]const u8 {
         return switch (val) {
-            .integer => "Int",
-            .float => "Float",
-            .string => "String",
-            .char => "Char",
-            .boolean => "Bool",
+            .integer => "i64",
+            .float => "f64",
+            .string => "string",
+            .char => "char",
+            .boolean => "bool",
             .record => |r| r.type_name,
             .variant => null, // sum type variants don't carry their type name
             .some, .none => "Option",

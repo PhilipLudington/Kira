@@ -2588,14 +2588,7 @@ pub const Parser = struct {
                 const expr_text = content[expr_start..j];
 
                 // Lex and parse the expression
-                const expr = self.parseEmbeddedExpression(expr_text) catch {
-                    // On parse failure, treat as literal text
-                    const lit = self.processStringEscapes(content[literal_start .. j + 1]) catch return error.OutOfMemory;
-                    parts.append(self.allocator, .{ .literal = lit }) catch return error.OutOfMemory;
-                    i = j + 1;
-                    literal_start = i;
-                    continue;
-                };
+                const expr = try self.parseEmbeddedExpression(expr_text);
 
                 parts.append(self.allocator, .{ .expression = expr }) catch return error.OutOfMemory;
                 i = j + 1; // skip past '}'
