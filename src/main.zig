@@ -1074,9 +1074,9 @@ fn showCompletions(
 }
 
 /// History file path
-fn getHistoryPath(buf: *[4096]u8) ?[]const u8 {
-    const home = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch return null;
-    defer std.heap.page_allocator.free(home);
+fn getHistoryPath(allocator: Allocator, buf: *[4096]u8) ?[]const u8 {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+    defer allocator.free(home);
     const path = std.fmt.bufPrint(buf, "{s}/.kira_history", .{home}) catch return null;
     return path;
 }
@@ -1084,7 +1084,7 @@ fn getHistoryPath(buf: *[4096]u8) ?[]const u8 {
 /// Load history from ~/.kira_history
 fn loadHistory(allocator: Allocator, history: *std.ArrayListUnmanaged([]const u8)) void {
     var path_buf: [4096]u8 = undefined;
-    const path = getHistoryPath(&path_buf) orelse return;
+    const path = getHistoryPath(allocator, &path_buf) orelse return;
 
     const file = std.fs.cwd().openFile(path, .{}) catch return;
     defer file.close();
@@ -1105,9 +1105,8 @@ fn loadHistory(allocator: Allocator, history: *std.ArrayListUnmanaged([]const u8
 
 /// Save history to ~/.kira_history
 fn saveHistory(allocator: Allocator, history: []const []const u8) void {
-    _ = allocator;
     var path_buf: [4096]u8 = undefined;
-    const path = getHistoryPath(&path_buf) orelse return;
+    const path = getHistoryPath(allocator, &path_buf) orelse return;
 
     const file = std.fs.cwd().createFile(path, .{}) catch return;
     defer file.close();

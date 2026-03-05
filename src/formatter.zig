@@ -54,9 +54,13 @@ pub const Formatter = struct {
     }
 
     fn writeFmt(self: *Formatter, comptime fmt: []const u8, args: anytype) !void {
-        // Use dynamic allocation for formatted output
-        const formatted = try std.fmt.allocPrint(self.allocator, fmt, args);
-        defer self.allocator.free(formatted);
+        var tmp: [128]u8 = undefined;
+        const formatted = std.fmt.bufPrint(&tmp, fmt, args) catch {
+            // Fallback to dynamic allocation for large output
+            const allocated = try std.fmt.allocPrint(self.allocator, fmt, args);
+            defer self.allocator.free(allocated);
+            return self.write(allocated);
+        };
         try self.write(formatted);
     }
 

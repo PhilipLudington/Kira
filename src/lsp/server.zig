@@ -128,6 +128,8 @@ pub const Server = struct {
             self.state = .shutdown;
         } else if (std.mem.eql(u8, method, "textDocument/didOpen")) {
             try self.handleDidOpen(params_val);
+        } else if (std.mem.eql(u8, method, "textDocument/didChange")) {
+            try self.handleDidChange(params_val);
         } else if (std.mem.eql(u8, method, "textDocument/didSave")) {
             try self.handleDidSave(params_val);
         } else if (std.mem.eql(u8, method, "textDocument/didClose")) {
@@ -189,20 +191,50 @@ pub const Server = struct {
         const uri = getString(params, "uri") orelse return;
         const text = getString(params, "text") orelse return;
 
-        const uri_owned = try self.allocator.dupe(u8, uri);
-        errdefer self.allocator.free(uri_owned);
+        try self.updateDocument(uri, text);
+    }
+
+    fn handleDidChange(self: *Server, params_val: ?std.json.Value) !void {
+        const pv = params_val orelse return;
+        const text_doc = getObject(pv, "textDocument") orelse return;
+        const uri = getString(text_doc, "uri") orelse return;
+
+        // Full sync (textDocumentSync: 1): contentChanges[0].text has the full document
+        if (pv != .object) return;
+        const changes_val = pv.object.get("contentChanges") orelse return;
+        if (changes_val != .array) return;
+        const changes = changes_val.array;
+        if (changes.items.len == 0) return;
+        const first = changes.items[0];
+        if (first != .object) return;
+        const text_val = first.object.get("text") orelse return;
+        if (text_val != .string) return;
+
+        try self.updateDocument(uri, text_val.string);
+    }
+
+    /// Shared logic for didOpen and didChange: update document store and publish diagnostics.
+    fn updateDocument(self: *Server, uri: []const u8, text: []const u8) !void {
         const text_owned = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(text_owned);
 
-        // Remove old entry before inserting new
-        if (self.documents.fetchRemove(uri_owned)) |old| {
-            self.allocator.free(old.key);
-            self.allocator.free(old.value);
+        // getOrPut cannot fail if key already exists (reuses slot), so
+        // existing documents are always updated safely without eviction risk.
+        const gop = try self.documents.getOrPut(uri);
+        if (gop.found_existing) {
+            self.allocator.free(gop.value_ptr.*);
+        } else {
+            // New slot — key_ptr is undefined, must initialize it.
+            // getOrPut already succeeded so the slot is reserved.
+            gop.key_ptr.* = self.allocator.dupe(u8, uri) catch {
+                // Remove the half-initialized slot
+                self.documents.removeByPtr(gop.key_ptr);
+                return error.OutOfMemory;
+            };
         }
+        gop.value_ptr.* = text_owned;
 
-        try self.documents.put(uri_owned, text_owned);
-        // After successful put, errdefers must not fire — publish is best-effort
-        self.publishDiagnostics(uri_owned, text_owned) catch {};
+        self.publishDiagnostics(gop.key_ptr.*, text_owned) catch {};
     }
 
     fn handleDidSave(self: *Server, params_val: ?std.json.Value) !void {
@@ -220,14 +252,9 @@ pub const Server = struct {
         const params = if (params_val) |p| getObject(p, "textDocument") else null;
         const uri = getString(params, "uri") orelse return;
 
-        var it = self.documents.iterator();
-        while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, uri)) {
-                self.allocator.free(entry.key_ptr.*);
-                self.allocator.free(entry.value_ptr.*);
-                self.documents.removeByPtr(entry.key_ptr);
-                break;
-            }
+        if (self.documents.fetchRemove(uri)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
         }
     }
 
@@ -383,20 +410,9 @@ pub const Server = struct {
         const text_doc = getObject(pv, "textDocument") orelse return null;
         const json_uri = getString(text_doc, "uri") orelse return null;
 
-        // Find the URI in our documents map — returns a stable pointer
-        var doc_uri: ?[]const u8 = null;
-        var doc_source: ?[]const u8 = null;
-        var it = self.documents.iterator();
-        while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, json_uri)) {
-                doc_uri = entry.key_ptr.*;
-                doc_source = entry.value_ptr.*;
-                break;
-            }
-        }
-
-        const uri = doc_uri orelse return null;
-        const source = doc_source orelse return null;
+        const gop = self.documents.getEntry(json_uri) orelse return null;
+        const uri = gop.key_ptr.*;
+        const source = gop.value_ptr.*;
 
         // Extract position if present
         var position: ?PositionInfo = null;
@@ -504,17 +520,28 @@ pub const Server = struct {
             var table = root.SymbolTable.init(self.allocator);
             defer table.deinit();
 
-            root.resolve(self.allocator, prog, &table) catch |err| {
+            // Use Resolver directly to access diagnostics on failure
+            var resolver = root.Resolver.init(self.allocator, &table);
+            defer resolver.deinit();
+            resolver.resolve(prog) catch {};
+            for (resolver.getDiagnostics()) |diag| {
+                if (diag.kind != .err) continue;
                 if (diag_count > 0) try buf.append(",");
-                try appendDiagnostic(&buf, 1, 1, @errorName(err));
+                try appendDiagnostic(&buf, diag.span.start.line, diag.span.start.column, diag.message);
                 diag_count += 1;
-            };
+            }
 
             if (diag_count == 0) {
-                root.typecheck(self.allocator, prog, &table) catch |err| {
-                    try appendDiagnostic(&buf, 1, 1, @errorName(err));
+                // Use TypeChecker directly to access diagnostics on failure
+                var checker = root.TypeChecker.init(self.allocator, &table);
+                defer checker.deinit();
+                checker.check(prog) catch {};
+                for (checker.getDiagnostics()) |diag| {
+                    if (diag.kind != .err) continue;
+                    if (diag_count > 0) try buf.append(",");
+                    try appendDiagnostic(&buf, diag.span.start.line, diag.span.start.column, diag.message);
                     diag_count += 1;
-                };
+                }
             }
         }
 

@@ -206,10 +206,11 @@ fn positionInSpan(line: u32, col: u32, span: Span) bool {
 }
 
 fn spanSize(span: Span) usize {
-    if (span.end.offset >= span.start.offset) {
+    if (span.end.offset > span.start.offset) {
         return span.end.offset - span.start.offset;
     }
-    return 0;
+    // Zero-size spans (synthetic symbols) should not win over real spans
+    return std.math.maxInt(usize);
 }
 
 // --- Tests ---
