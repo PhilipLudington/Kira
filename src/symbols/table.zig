@@ -541,6 +541,25 @@ pub const SymbolTable = struct {
         return result.toOwnedSlice(allocator);
     }
 
+    /// Collect all symbol names visible from the current scope.
+    /// Walks up the scope chain collecting names for "Did you mean?" suggestions.
+    /// Caller owns the returned slice.
+    pub fn getVisibleNames(self: *SymbolTable, allocator: Allocator) ![]const []const u8 {
+        var names = std.ArrayListUnmanaged([]const u8){};
+        var scope_id: ?ScopeId = self.current_scope_id;
+
+        while (scope_id) |id| {
+            const scope = &self.scopes.items[id];
+            var it = scope.symbols.keyIterator();
+            while (it.next()) |key| {
+                try names.append(allocator, key.*);
+            }
+            scope_id = scope.parent_id;
+        }
+
+        return names.toOwnedSlice(allocator);
+    }
+
     /// Check if we're inside an effect function
     pub fn isInEffectFunction(self: *SymbolTable) bool {
         var scope_id: ?ScopeId = self.current_scope_id;

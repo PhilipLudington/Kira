@@ -20,6 +20,7 @@ const Args = struct {
     file_path: ?[]const u8,
     show_tokens: bool,
     show_ast: bool,
+    no_color: bool,
     /// Arguments passed to the Kira program (after the file path)
     user_args: []const []const u8,
 };
@@ -39,12 +40,15 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
+    // Determine if color output should be used
+    const use_color = !args.no_color and Kira.diagnostic.isTTY(std.fs.File.stderr());
+
     switch (args.mode) {
         .help => printHelp(),
         .version_info => printVersion(),
         .run => {
             if (args.file_path) |path| {
-                runFile(allocator, path, false, args.user_args) catch |err| {
+                runFile(allocator, path, false, args.user_args, use_color) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
@@ -57,7 +61,7 @@ pub fn main() !void {
         },
         .check => {
             if (args.file_path) |path| {
-                checkFile(allocator, path) catch |err| {
+                checkFile(allocator, path, use_color) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
@@ -74,7 +78,7 @@ pub fn main() !void {
         },
         .test_cmd => {
             if (args.file_path) |path| {
-                testFile(allocator, path, args.user_args) catch |err| {
+                testFile(allocator, path, args.user_args, use_color) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
@@ -108,6 +112,7 @@ fn parseArgs() !Args {
         .file_path = null,
         .show_tokens = false,
         .show_ast = false,
+        .no_color = false,
         .user_args = &.{},
     };
 
@@ -152,6 +157,8 @@ fn parseArgs() !Args {
             result.show_tokens = true;
         } else if (std.mem.eql(u8, arg, "--ast")) {
             result.show_ast = true;
+        } else if (std.mem.eql(u8, arg, "--no-color")) {
+            result.no_color = true;
         } else if (!std.mem.startsWith(u8, arg, "-")) {
             // Bare file path - treat as run
             result.mode = .run;
@@ -190,6 +197,7 @@ fn printHelp() void {
         \\  -v, --version     Show version information
         \\  --tokens          Show token stream (debug)
         \\  --ast             Show AST (debug)
+        \\  --no-color        Disable colored output
         \\
         \\REPL Commands:
         \\  :help, :h         Show REPL help
@@ -213,92 +221,22 @@ fn printVersion() void {
 }
 
 /// Run a Kira source file
-fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []const []const u8) !void {
+fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []const []const u8, use_color: bool) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
     // Read the file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error: Cannot open file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-        try stderr.writeAll(msg);
-        return error.FileNotFound;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error reading file: {}\n", .{err}) catch "Error reading file\n";
-        try stderr.writeAll(msg);
-        return error.ReadError;
-    };
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
     defer allocator.free(source);
 
     // Parse with detailed error information
     var parse_result = Kira.parseWithErrors(allocator, source);
+    const renderer = Kira.diagnostic.DiagnosticRenderer.init(source, path, use_color);
 
     if (parse_result.hasErrors()) {
         defer parse_result.deinit();
-        // Format and print detailed parse errors with line/column info
         for (parse_result.errors) |err| {
-            var buf: [1024]u8 = undefined;
-            if (err.expected) |expected| {
-                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s} (expected {s}, found {s})\n", .{
-                    path,
-                    err.line,
-                    err.column,
-                    err.message,
-                    expected,
-                    err.found orelse "unknown",
-                }) catch "Parse error\n";
-                stderr.writeAll(msg) catch {};
-            } else {
-                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s}\n", .{
-                    path,
-                    err.line,
-                    err.column,
-                    err.message,
-                }) catch "Parse error\n";
-                stderr.writeAll(msg) catch {};
-            }
-
-            // Print the source line for context
-            if (err.line > 0) {
-                var line_num: u32 = 1;
-                var line_start: usize = 0;
-                var line_end: usize = 0;
-
-                // Find the line in source
-                for (source, 0..) |c, i| {
-                    if (c == '\n') {
-                        if (line_num == err.line) {
-                            line_end = i;
-                            break;
-                        }
-                        line_num += 1;
-                        line_start = i + 1;
-                    }
-                }
-                if (line_end == 0 and line_num == err.line) {
-                    line_end = source.len;
-                }
-
-                if (line_end > line_start) {
-                    const line_content = source[line_start..line_end];
-                    var line_buf: [512]u8 = undefined;
-                    const line_msg = std.fmt.bufPrint(&line_buf, "  {s}\n", .{line_content}) catch "";
-                    stderr.writeAll(line_msg) catch {};
-
-                    // Print caret pointing to the column
-                    if (err.column > 0 and err.column <= line_content.len + 1) {
-                        var caret_buf: [512]u8 = undefined;
-                        @memset(caret_buf[0 .. err.column + 1], ' ');
-                        caret_buf[err.column + 1] = '^';
-                        caret_buf[err.column + 2] = '\n';
-                        stderr.writeAll(caret_buf[0 .. err.column + 3]) catch {};
-                    }
-                }
-            }
+            renderParseError(stderr, renderer, err) catch {};
         }
         return error.ParseError;
     }
@@ -358,13 +296,11 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
     defer resolver.deinit();
 
     resolver.resolve(&program) catch {
-        // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        // Print resolver diagnostics
         for (resolver.getDiagnostics()) |diag| {
-            try formatResolverDiagnostic(stderr, path, source, diag);
+            renderResolverDiagnostic(stderr, renderer, diag) catch {};
         }
         return error.ResolveError;
     };
@@ -374,9 +310,8 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
     defer checker.deinit();
 
     checker.check(&program) catch {
-        // Print all diagnostics
         for (checker.getDiagnostics()) |diag| {
-            try formatDiagnostic(stderr, path, source, diag);
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
         }
         return error.TypeCheckError;
     };
@@ -385,7 +320,7 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
     const diagnostics = checker.getDiagnostics();
     for (diagnostics) |diag| {
         if (diag.kind == .warning or diag.kind == .hint) {
-            try formatDiagnostic(stderr, path, source, diag);
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
         }
     }
 
@@ -502,92 +437,20 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
 }
 
 /// Check (type-check) a file without running it
-fn checkFile(allocator: Allocator, path: []const u8) !void {
+fn checkFile(allocator: Allocator, path: []const u8, use_color: bool) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
-    // Read the file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error: Cannot open file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-        try stderr.writeAll(msg);
-        return error.FileNotFound;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error reading file: {}\n", .{err}) catch "Error reading file\n";
-        try stderr.writeAll(msg);
-        return error.ReadError;
-    };
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
     defer allocator.free(source);
 
-    // Parse with detailed error information
     var parse_result = Kira.parseWithErrors(allocator, source);
+    const renderer = Kira.diagnostic.DiagnosticRenderer.init(source, path, use_color);
 
     if (parse_result.hasErrors()) {
         defer parse_result.deinit();
-        // Format and print detailed parse errors with line/column info
         for (parse_result.errors) |err| {
-            var buf: [1024]u8 = undefined;
-            if (err.expected) |expected| {
-                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s} (expected {s}, found {s})\n", .{
-                    path,
-                    err.line,
-                    err.column,
-                    err.message,
-                    expected,
-                    err.found orelse "unknown",
-                }) catch "Parse error\n";
-                stderr.writeAll(msg) catch {};
-            } else {
-                const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s}\n", .{
-                    path,
-                    err.line,
-                    err.column,
-                    err.message,
-                }) catch "Parse error\n";
-                stderr.writeAll(msg) catch {};
-            }
-
-            // Print the source line for context
-            if (err.line > 0) {
-                var line_num: u32 = 1;
-                var line_start: usize = 0;
-                var line_end: usize = 0;
-
-                // Find the line in source
-                for (source, 0..) |c, i| {
-                    if (c == '\n') {
-                        if (line_num == err.line) {
-                            line_end = i;
-                            break;
-                        }
-                        line_num += 1;
-                        line_start = i + 1;
-                    }
-                }
-                if (line_end == 0 and line_num == err.line) {
-                    line_end = source.len;
-                }
-
-                if (line_end > line_start) {
-                    const line_content = source[line_start..line_end];
-                    var line_buf: [512]u8 = undefined;
-                    const line_msg = std.fmt.bufPrint(&line_buf, "  {s}\n", .{line_content}) catch "";
-                    stderr.writeAll(line_msg) catch {};
-
-                    // Print caret pointing to the column
-                    if (err.column > 0 and err.column <= line_content.len + 1) {
-                        var caret_buf: [512]u8 = undefined;
-                        @memset(caret_buf[0 .. err.column + 1], ' ');
-                        caret_buf[err.column + 1] = '^';
-                        caret_buf[err.column + 2] = '\n';
-                        stderr.writeAll(caret_buf[0 .. err.column + 3]) catch {};
-                    }
-                }
-            }
+            renderParseError(stderr, renderer, err) catch {};
         }
         return error.ParseError;
     }
@@ -597,7 +460,6 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
         try stderr.writeAll("error[parse]: Unknown parse error\n");
         return error.ParseError;
     };
-    // Transfer ownership - clear from result so it won't be deinited
     parse_result.program = null;
     if (parse_result.error_arena) |*arena| {
         arena.deinit();
@@ -647,13 +509,11 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     defer resolver.deinit();
 
     resolver.resolve(&program) catch {
-        // Check for loader errors first and format them nicely
         for (loader.getErrors()) |load_err| {
             try formatModuleError(stderr, load_err, source, path);
         }
-        // Print resolver diagnostics
         for (resolver.getDiagnostics()) |diag| {
-            try formatResolverDiagnostic(stderr, path, source, diag);
+            renderResolverDiagnostic(stderr, renderer, diag) catch {};
         }
         return error.ResolveError;
     };
@@ -664,7 +524,7 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
 
     checker.check(&program) catch {
         for (checker.getDiagnostics()) |diag| {
-            try formatDiagnostic(stderr, path, source, diag);
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
         }
         return error.TypeCheckError;
     };
@@ -674,7 +534,7 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
     var warning_count: usize = 0;
     for (diagnostics) |diag| {
         if (diag.kind == .warning) {
-            try formatDiagnostic(stderr, path, source, diag);
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
             warning_count += 1;
         }
     }
@@ -691,37 +551,20 @@ fn checkFile(allocator: Allocator, path: []const u8) !void {
 }
 
 /// Run tests in a Kira source file
-fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8) !void {
+fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8, use_color: bool) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
-    // Read the file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error: Cannot open file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-        try stderr.writeAll(msg);
-        return error.FileNotFound;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error reading file: {}\n", .{err}) catch "Error reading file\n";
-        try stderr.writeAll(msg);
-        return error.ReadError;
-    };
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
     defer allocator.free(source);
 
-    // Parse
     var parse_result = Kira.parseWithErrors(allocator, source);
+    const renderer = Kira.diagnostic.DiagnosticRenderer.init(source, path, use_color);
+
     if (parse_result.hasErrors()) {
         defer parse_result.deinit();
         for (parse_result.errors) |err| {
-            var buf: [1024]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "error[parse]: {s}:{d}:{d}: {s}\n", .{
-                path, err.line, err.column, err.message,
-            }) catch "Parse error\n";
-            stderr.writeAll(msg) catch {};
+            renderParseError(stderr, renderer, err) catch {};
         }
         return error.ParseError;
     }
@@ -766,7 +609,7 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
             try formatModuleError(stderr, load_err, source, path);
         }
         for (resolver.getDiagnostics()) |diag| {
-            try formatResolverDiagnostic(stderr, path, source, diag);
+            renderResolverDiagnostic(stderr, renderer, diag) catch {};
         }
         return error.ResolveError;
     };
@@ -776,7 +619,7 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     defer checker.deinit();
     checker.check(&program) catch {
         for (checker.getDiagnostics()) |diag| {
-            try formatDiagnostic(stderr, path, source, diag);
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
         }
         return error.TypeCheckError;
     };
@@ -1428,7 +1271,7 @@ fn formatModuleError(writer: anytype, err_info: Kira.ModuleLoader.LoadErrorInfo,
         try writer.writeAll(loc);
 
         // Source line (if available)
-        if (getSourceLine(source, span.start.line)) |line| {
+        if (Kira.diagnostic.getSourceLine(source, span.start.line)) |line| {
             const gutter = std.fmt.bufPrint(&buf, "   {d} | ", .{span.start.line}) catch "     | ";
             try writer.writeAll(gutter);
             try writer.writeAll(line);
@@ -1480,137 +1323,96 @@ fn formatModuleError(writer: anytype, err_info: Kira.ModuleLoader.LoadErrorInfo,
     try writer.writeAll(hint);
 }
 
-/// Format a diagnostic with source context
-fn formatDiagnostic(writer: anytype, path: []const u8, source: []const u8, diag: Kira.TypeCheckDiagnostic) !void {
-    var buf: [1024]u8 = undefined;
-
-    // Header line
-    const header = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ diag.kind.toString(), diag.message }) catch "error\n";
-    try writer.writeAll(header);
-
-    // Location
-    const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
-        path,
-        diag.span.start.line,
-        diag.span.start.column,
-    }) catch "";
-    try writer.writeAll(loc);
-
-    // Source line (if available)
-    if (getSourceLine(source, diag.span.start.line)) |line| {
-        // Line number gutter
-        const gutter = std.fmt.bufPrint(&buf, "   {d} | ", .{diag.span.start.line}) catch "     | ";
-        try writer.writeAll(gutter);
-        try writer.writeAll(line);
-        try writer.writeAll("\n");
-
-        // Pointer line
-        const pointer_offset = diag.span.start.column;
-        try writer.writeAll("     | ");
-        var i: usize = 1;
-        while (i < pointer_offset) : (i += 1) {
-            try writer.writeAll(" ");
-        }
-        try writer.writeAll("^\n");
-    }
-
-    // Related info
-    if (diag.related) |related| {
-        for (related) |info| {
-            const rel = std.fmt.bufPrint(&buf, "  note: {s} at {d}:{d}\n", .{
-                info.message,
-                info.span.start.line,
-                info.span.start.column,
-            }) catch "";
-            try writer.writeAll(rel);
-        }
-    }
-
-    try writer.writeAll("\n");
-}
-
-/// Format a resolver diagnostic with source context
-fn formatResolverDiagnostic(writer: anytype, path: []const u8, source: []const u8, diag: Kira.ResolverDiagnostic) !void {
-    var buf: [1024]u8 = undefined;
-
-    // Header line
-    const kind_str = switch (diag.kind) {
-        .err => "error",
-        .warning => "warning",
-        .hint => "hint",
+/// Load file content, reporting errors to stderr. Returns null on failure.
+fn loadFileContent(allocator: Allocator, stderr: std.fs.File, path: []const u8) ?[]const u8 {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: Cannot open file '{s}'\n", .{path}) catch "Error opening file\n";
+        stderr.writeAll(msg) catch {};
+        return null;
     };
-    const header = std.fmt.bufPrint(&buf, "{s}: {s}\n", .{ kind_str, diag.message }) catch "error\n";
-    try writer.writeAll(header);
+    defer file.close();
 
-    // Location
-    const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
-        path,
-        diag.span.start.line,
-        diag.span.start.column,
-    }) catch "";
-    try writer.writeAll(loc);
-
-    // Source line (if available)
-    if (getSourceLine(source, diag.span.start.line)) |line| {
-        // Line number gutter
-        const gutter = std.fmt.bufPrint(&buf, "   {d} | ", .{diag.span.start.line}) catch "     | ";
-        try writer.writeAll(gutter);
-        try writer.writeAll(line);
-        try writer.writeAll("\n");
-
-        // Pointer line
-        const pointer_offset = diag.span.start.column;
-        try writer.writeAll("     | ");
-        var i: usize = 1;
-        while (i < pointer_offset) : (i += 1) {
-            try writer.writeAll(" ");
-        }
-        try writer.writeAll("^\n");
-    }
-
-    // Related info
-    if (diag.related) |related| {
-        for (related) |info| {
-            const rel = std.fmt.bufPrint(&buf, "  note: {s} at {d}:{d}\n", .{
-                info.message,
-                info.span.start.line,
-                info.span.start.column,
-            }) catch "";
-            try writer.writeAll(rel);
-        }
-    }
-
-    try writer.writeAll("\n");
+    return file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+        stderr.writeAll("Error reading file\n") catch {};
+        return null;
+    };
 }
 
-/// Get a specific line from source code
-fn getSourceLine(source: []const u8, line_num: usize) ?[]const u8 {
-    if (line_num == 0) return null;
+/// Render a parse error using the diagnostic renderer
+fn renderParseError(writer: anytype, renderer: Kira.diagnostic.DiagnosticRenderer, err: Kira.ParseErrorInfo) !void {
+    // Build message with expected/found info
+    var msg_buf: [1024]u8 = undefined;
+    const message = if (err.expected) |expected|
+        std.fmt.bufPrint(&msg_buf, "{s} (expected {s}, found {s})", .{
+            err.message,
+            expected,
+            err.found orelse "unknown",
+        }) catch err.message
+    else
+        err.message;
 
-    var current_line: usize = 1;
-    var start: usize = 0;
+    try renderer.render(writer, .{
+        .message = message,
+        .span = .{
+            .start = .{ .line = err.line, .column = err.column, .offset = 0 },
+            .end = .{ .line = err.line, .column = err.column + 1, .offset = 0 },
+        },
+        .severity = .err,
+    });
+}
 
-    for (source, 0..) |c, i| {
-        if (current_line == line_num) {
-            // Find end of line
-            var end = i;
-            while (end < source.len and source[end] != '\n') {
-                end += 1;
-            }
-            return source[start..end];
+/// Render a type checker diagnostic using the diagnostic renderer
+fn renderTypeCheckDiagnostic(writer: anytype, renderer: Kira.diagnostic.DiagnosticRenderer, diag: Kira.TypeCheckDiagnostic) !void {
+    const severity: Kira.diagnostic.Severity = switch (diag.kind) {
+        .err => .err,
+        .warning => .warning,
+        .hint => .hint,
+    };
+
+    // Convert related info
+    var related_buf: [16]Kira.diagnostic.RelatedInfo = undefined;
+    var related: ?[]const Kira.diagnostic.RelatedInfo = null;
+    if (diag.related) |diag_related| {
+        const count = @min(diag_related.len, related_buf.len);
+        for (diag_related[0..count], 0..) |info, i| {
+            related_buf[i] = .{ .message = info.message, .span = info.span };
         }
-        if (c == '\n') {
-            current_line += 1;
-            start = i + 1;
-        }
+        related = related_buf[0..count];
     }
 
-    // Last line without newline
-    if (current_line == line_num and start < source.len) {
-        return source[start..];
+    try renderer.render(writer, .{
+        .message = diag.message,
+        .span = diag.span,
+        .severity = severity,
+        .related = related,
+    });
+}
+
+/// Render a resolver diagnostic using the diagnostic renderer
+fn renderResolverDiagnostic(writer: anytype, renderer: Kira.diagnostic.DiagnosticRenderer, diag: Kira.ResolverDiagnostic) !void {
+    const severity: Kira.diagnostic.Severity = switch (diag.kind) {
+        .err => .err,
+        .warning => .warning,
+        .hint => .hint,
+    };
+
+    var related_buf: [16]Kira.diagnostic.RelatedInfo = undefined;
+    var related: ?[]const Kira.diagnostic.RelatedInfo = null;
+    if (diag.related) |diag_related| {
+        const count = @min(diag_related.len, related_buf.len);
+        for (diag_related[0..count], 0..) |info, i| {
+            related_buf[i] = .{ .message = info.message, .span = info.span };
+        }
+        related = related_buf[0..count];
     }
 
-    return null;
+    try renderer.render(writer, .{
+        .message = diag.message,
+        .span = diag.span,
+        .severity = severity,
+        .related = related,
+    });
 }
 
 test "Kira tokenize works" {
@@ -1626,6 +1428,7 @@ test "parse args help" {
         .file_path = null,
         .show_tokens = false,
         .show_ast = false,
+        .no_color = false,
         .user_args = &.{},
     };
 }
@@ -1649,19 +1452,19 @@ test "format value" {
 test "get source line" {
     const source = "line one\nline two\nline three";
 
-    const line1 = getSourceLine(source, 1);
+    const line1 = Kira.diagnostic.getSourceLine(source, 1);
     try std.testing.expect(line1 != null);
     try std.testing.expectEqualStrings("line one", line1.?);
 
-    const line2 = getSourceLine(source, 2);
+    const line2 = Kira.diagnostic.getSourceLine(source, 2);
     try std.testing.expect(line2 != null);
     try std.testing.expectEqualStrings("line two", line2.?);
 
-    const line3 = getSourceLine(source, 3);
+    const line3 = Kira.diagnostic.getSourceLine(source, 3);
     try std.testing.expect(line3 != null);
     try std.testing.expectEqualStrings("line three", line3.?);
 
-    const line4 = getSourceLine(source, 4);
+    const line4 = Kira.diagnostic.getSourceLine(source, 4);
     try std.testing.expect(line4 == null);
 }
 
@@ -1707,5 +1510,5 @@ test "runFile supports cross-file aliased imports end-to-end" {
     const main_path = try tmp.dir.realpathAlloc(allocator, "main.ki");
     defer allocator.free(main_path);
 
-    try runFile(allocator, main_path, true, &[_][]const u8{});
+    try runFile(allocator, main_path, true, &[_][]const u8{}, false);
 }

@@ -260,7 +260,7 @@ pub const Resolver = struct {
 
         _ = self.table.define(sym) catch |err| {
             if (err == error.DuplicateDefinition) {
-                try self.addError("Duplicate definition of '{s}'", .{func.name}, span);
+                try self.addDuplicateError(func.name, span);
                 return error.DuplicateDefinition;
             }
             return err;
@@ -573,7 +573,7 @@ pub const Resolver = struct {
 
         _ = self.table.define(sym) catch |err| {
             if (err == error.DuplicateDefinition) {
-                try self.addError("Duplicate definition of '{s}'", .{let_decl.name}, span);
+                try self.addDuplicateError(let_decl.name, span);
             }
             return err;
         };
@@ -789,7 +789,7 @@ pub const Resolver = struct {
                                 try self.addError("Cannot assign to immutable binding '{s}'", .{name}, stmt.span);
                             }
                         } else {
-                            try self.addError("Undefined variable '{s}'", .{name}, stmt.span);
+                            try self.addUndefinedError(name, "variable", stmt.span);
                         }
                     },
                     .field_access => |fa| try self.resolveExpression(fa.object),
@@ -898,7 +898,7 @@ pub const Resolver = struct {
             .identifier => |ident| {
                 // Skip error for 'std' - it's a built-in namespace injected at runtime
                 if (self.table.lookup(ident.name) == null and !std.mem.eql(u8, ident.name, "std")) {
-                    try self.addError("Undefined identifier '{s}'", .{ident.name}, expr.span);
+                    try self.addUndefinedError(ident.name, "identifier", expr.span);
                 }
             },
             .binary => |bin| {
@@ -1171,6 +1171,63 @@ pub const Resolver = struct {
             .message = msg_copy,
             .span = span,
             .kind = .err,
+        });
+    }
+
+    fn addUndefinedError(
+        self: *Resolver,
+        name: []const u8,
+        comptime kind: []const u8,
+        span: Span,
+    ) ResolveError!void {
+        const diagnostic_mod = @import("../diagnostic.zig");
+
+        // Collect visible names for suggestion
+        const visible_names = self.table.getVisibleNames(self.allocator) catch &[_][]const u8{};
+        defer if (visible_names.len > 0) self.allocator.free(visible_names);
+
+        const suggestion = diagnostic_mod.findSuggestion(name, visible_names);
+
+        var buf: [512]u8 = undefined;
+        const msg = if (suggestion) |s|
+            std.fmt.bufPrint(&buf, "Undefined " ++ kind ++ " '{s}'; did you mean '{s}'?", .{ name, s }) catch return error.OutOfMemory
+        else
+            std.fmt.bufPrint(&buf, "Undefined " ++ kind ++ " '{s}'", .{name}) catch return error.OutOfMemory;
+
+        const msg_copy = try self.allocator.dupe(u8, msg);
+
+        try self.diagnostics.append(self.allocator, .{
+            .message = msg_copy,
+            .span = span,
+            .kind = .err,
+        });
+    }
+
+    fn addDuplicateError(
+        self: *Resolver,
+        name: []const u8,
+        span: Span,
+    ) ResolveError!void {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Duplicate definition of '{s}'", .{name}) catch return error.OutOfMemory;
+        const msg_copy = try self.allocator.dupe(u8, msg);
+
+        // Try to find the original definition for "first defined here" info
+        var related: ?[]const Diagnostic.RelatedInfo = null;
+        if (self.table.lookup(name)) |existing_sym| {
+            if (existing_sym.span.start.line > 0) {
+                const related_msg = try self.allocator.dupe(u8, "first defined here");
+                const related_slice = try self.allocator.alloc(Diagnostic.RelatedInfo, 1);
+                related_slice[0] = .{ .message = related_msg, .span = existing_sym.span };
+                related = related_slice;
+            }
+        }
+
+        try self.diagnostics.append(self.allocator, .{
+            .message = msg_copy,
+            .span = span,
+            .kind = .err,
+            .related = related,
         });
     }
 

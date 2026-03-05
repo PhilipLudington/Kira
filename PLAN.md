@@ -4,7 +4,7 @@
 
 Kira is a functional programming language with explicit types, algebraic data types, and a compiler-enforced effects system. The compiler is written in Zig (0.15+) with a pipeline of Parser → Resolver → TypeChecker → Interpreter. Phase 0 (foundation) is complete at v0.11.1 with 285 passing tests. This plan covers Phases 1–4 from ROADMAP.md, taking Kira from a working interpreter to a complete, compiled language with tooling and ecosystem.
 
-Current status: Phases 1–3 complete. Phase 4 next.
+Current status: Phases 1–4 complete. Phase 5 next.
 
 ---
 
@@ -100,8 +100,9 @@ Before Phase 4, these must be true:
 
 ---
 
-## Phase 4: Error Reporting
+## Phase 4: Error Reporting ✅
 
+**Status:** Complete (2026-03-04)
 **Goal:** Improve compiler error messages with source snippets, suggestions, and colored output.
 **Estimated Effort:** 3 days
 
@@ -112,21 +113,21 @@ Before Phase 4, these must be true:
 - Related info and notes attached to errors
 
 ### Tasks
-- [ ] Build a source location tracking module — create `src/diagnostic.zig` that maps byte offsets to line/column, extracts source lines, and renders underline carets. (per DESIGN.md section "Implementation Notes") Tests should cover: offset-to-line mapping, multi-line extraction, caret positioning for single-token and multi-token spans, tab handling.
-- [ ] Add source snippets to error output — integrate the diagnostic module into the error reporting path so all errors display the offending source line with a caret. Update error emission in `src/type_checker.zig`, `src/resolver.zig`, and `src/parser.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: parser error shows source line, type error shows source line, resolver error shows source line, multi-line span renders correctly.
-- [ ] Implement "Did you mean?" suggestions — when a symbol is not found, compute edit distance against known symbols in scope and suggest close matches. Add a Levenshtein distance utility. Update `src/resolver.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: single-character typo suggests correct name, no suggestion when nothing is close, multiple close matches show best, case-sensitivity handling.
-- [ ] Add colored terminal output — implement ANSI color codes for error (red), warning (yellow), note (blue), and source context (dim). Add `--no-color` flag. Update `src/diagnostic.zig` and CLI argument parsing. (per DESIGN.md section "Implementation Notes") Tests should cover: color codes present in TTY mode, no color codes with `--no-color`, color codes absent when piped (non-TTY).
-- [ ] Add related info and notes to diagnostics — extend error types to carry secondary spans and note messages (e.g., "first defined here" for duplicates). Update `src/diagnostic.zig` and error sites in resolver/type-checker. (per DESIGN.md section "Implementation Notes") Tests should cover: duplicate definition shows both locations, type mismatch shows expected type origin, import conflict shows both sources.
+- [x] Build a source location tracking module — create `src/diagnostic.zig` that maps byte offsets to line/column, extracts source lines, and renders underline carets. (per DESIGN.md section "Implementation Notes") Tests should cover: offset-to-line mapping, multi-line extraction, caret positioning for single-token and multi-token spans, tab handling. (completed 2026-03-04)
+- [x] Add source snippets to error output — integrate the diagnostic module into the error reporting path so all errors display the offending source line with a caret. Update error emission in `src/main.zig` for parser, resolver, and type checker diagnostics. (per DESIGN.md section "Implementation Notes") Tests should cover: parser error shows source line, type error shows source line, resolver error shows source line, multi-line span renders correctly. (completed 2026-03-04)
+- [x] Implement "Did you mean?" suggestions — when a symbol is not found, compute edit distance against known symbols in scope and suggest close matches. Add a Levenshtein distance utility. Update `src/symbols/resolver.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: single-character typo suggests correct name, no suggestion when nothing is close, multiple close matches show best, case-sensitivity handling. (completed 2026-03-04)
+- [x] Add colored terminal output — implement ANSI color codes for error (red), warning (yellow), note (blue), and source context (dim). Add `--no-color` flag. Update `src/diagnostic.zig` and CLI argument parsing. (per DESIGN.md section "Implementation Notes") Tests should cover: color codes present in TTY mode, no color codes with `--no-color`, color codes absent when piped (non-TTY). (completed 2026-03-04)
+- [x] Add related info and notes to diagnostics — extend error types to carry secondary spans and note messages (e.g., "first defined here" for duplicates). Update `src/diagnostic.zig` and error sites in resolver/type-checker. (per DESIGN.md section "Implementation Notes") Tests should cover: duplicate definition shows both locations, type mismatch shows expected type origin, import conflict shows both sources. (completed 2026-03-04)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Create `.ki` files with intentional errors and verify error output includes source snippets, suggestions, and notes. Test `--no-color` flag.
 
 ### Phase 4 Readiness Gate
 Before Phase 5, these must be true:
-- [ ] All errors show source snippets with carets
-- [ ] Typo suggestions appear for undefined names
-- [ ] Color output works and `--no-color` disables it
-- [ ] All prior tests still pass
+- [x] All errors show source snippets with carets
+- [x] Typo suggestions appear for undefined names
+- [x] Color output works and `--no-color` disables it
+- [x] All prior tests still pass (351 passing)
 
 ---
 
