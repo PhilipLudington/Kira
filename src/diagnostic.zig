@@ -278,7 +278,7 @@ pub const DiagnosticRenderer = struct {
     fn writeGutterPad(self: DiagnosticRenderer, writer: anytype, width: usize) !void {
         _ = self;
         var i: usize = 0;
-        while (i < width + 1) : (i += 1) {
+        while (i < width) : (i += 1) {
             try writer.writeAll(" ");
         }
     }

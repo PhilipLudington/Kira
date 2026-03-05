@@ -19,6 +19,7 @@ const ast = @import("../ast/root.zig");
 const symbol_mod = @import("symbol.zig");
 const table_mod = @import("table.zig");
 const modules = @import("../modules/root.zig");
+const diagnostic_mod = @import("../diagnostic.zig");
 
 pub const Declaration = ast.Declaration;
 pub const Statement = ast.Statement;
@@ -86,6 +87,11 @@ pub const Diagnostic = struct {
             allocator.free(self.message);
         }
         if (self.related) |rel| {
+            for (rel) |info| {
+                if (info.message.len > 0) {
+                    allocator.free(info.message);
+                }
+            }
             allocator.free(rel);
         }
     }
@@ -1180,11 +1186,13 @@ pub const Resolver = struct {
         comptime kind: []const u8,
         span: Span,
     ) ResolveError!void {
-        const diagnostic_mod = @import("../diagnostic.zig");
-
         // Collect visible names for suggestion
-        const visible_names = self.table.getVisibleNames(self.allocator) catch &[_][]const u8{};
-        defer if (visible_names.len > 0) self.allocator.free(visible_names);
+        var names_allocated = true;
+        const visible_names = self.table.getVisibleNames(self.allocator) catch blk: {
+            names_allocated = false;
+            break :blk &[_][]const u8{};
+        };
+        defer if (names_allocated) self.allocator.free(visible_names);
 
         const suggestion = diagnostic_mod.findSuggestion(name, visible_names);
 
@@ -1195,6 +1203,7 @@ pub const Resolver = struct {
             std.fmt.bufPrint(&buf, "Undefined " ++ kind ++ " '{s}'", .{name}) catch return error.OutOfMemory;
 
         const msg_copy = try self.allocator.dupe(u8, msg);
+        errdefer self.allocator.free(msg_copy);
 
         try self.diagnostics.append(self.allocator, .{
             .message = msg_copy,
@@ -1211,12 +1220,14 @@ pub const Resolver = struct {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Duplicate definition of '{s}'", .{name}) catch return error.OutOfMemory;
         const msg_copy = try self.allocator.dupe(u8, msg);
+        errdefer self.allocator.free(msg_copy);
 
         // Try to find the original definition for "first defined here" info
         var related: ?[]const Diagnostic.RelatedInfo = null;
         if (self.table.lookup(name)) |existing_sym| {
             if (existing_sym.span.start.line > 0) {
                 const related_msg = try self.allocator.dupe(u8, "first defined here");
+                errdefer self.allocator.free(related_msg);
                 const related_slice = try self.allocator.alloc(Diagnostic.RelatedInfo, 1);
                 related_slice[0] = .{ .message = related_msg, .span = existing_sym.span };
                 related = related_slice;
