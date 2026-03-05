@@ -4,7 +4,7 @@
 
 Kira is a functional programming language with explicit types, algebraic data types, and a compiler-enforced effects system. The compiler is written in Zig (0.15+) with a pipeline of Parser → Resolver → TypeChecker → Interpreter. Phase 0 (foundation) is complete at v0.11.1 with 285 passing tests. This plan covers Phases 1–4 from ROADMAP.md, taking Kira from a working interpreter to a complete, compiled language with tooling and ecosystem.
 
-Current status: Phases 1–4 complete. Phase 5 next.
+Current status: Phases 1–5 complete. Phase 6 next.
 
 ---
 
@@ -131,8 +131,9 @@ Before Phase 5, these must be true:
 
 ---
 
-## Phase 5: LSP Server
+## Phase 5: LSP Server ✅
 
+**Status:** Complete (2026-03-05)
 **Goal:** Build a Language Server Protocol implementation for IDE integration.
 **Estimated Effort:** 5 days
 
@@ -145,24 +146,24 @@ Before Phase 5, these must be true:
 - Completion suggestions
 
 ### Tasks
-- [ ] Implement LSP JSON-RPC transport layer — create `src/lsp/transport.zig` that reads/writes LSP messages over stdin/stdout with Content-Length headers. (per DESIGN.md section "Implementation Notes") Tests should cover: parse valid message, handle partial reads, write properly framed response, reject malformed headers.
-- [ ] Implement LSP initialization handshake — handle `initialize` and `initialized` requests, advertise server capabilities. Create `src/lsp/server.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: respond to initialize with capabilities, handle initialized notification, reject requests before initialize.
-- [ ] Implement diagnostics (errors on save) — on `textDocument/didOpen` and `textDocument/didSave`, run the parser/resolver/type-checker and publish diagnostics. Update `src/lsp/server.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: clean file produces no diagnostics, syntax error produces diagnostic with correct range, type error produces diagnostic, multiple errors reported.
-- [ ] Implement hover for type information — on `textDocument/hover`, find the symbol at the cursor position and return its type. Create `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: hover on variable shows type, hover on function shows signature, hover on type name shows definition, hover on whitespace returns null.
-- [ ] Implement go-to-definition — on `textDocument/definition`, resolve the symbol at cursor and return its definition location. Update `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: jump to local variable definition, jump to function definition, jump to imported symbol's source file, jump to type definition.
-- [ ] Implement find references — on `textDocument/references`, find all uses of the symbol at cursor. Update `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: find all uses of a variable, find all uses of a function, find all uses of a type, include/exclude definition based on request.
-- [ ] Implement completion suggestions — on `textDocument/completion`, suggest symbols in scope, struct fields after `.`, and module members after `::`. Update `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: suggest local variables, suggest module members after import, suggest struct fields after dot, filter by prefix.
-- [ ] Add `kira lsp` CLI subcommand — wire the LSP server into the CLI entry point. Update `src/main.zig` or CLI handling. (per DESIGN.md section "Implementation Notes") Tests should cover: `kira lsp` starts and responds to initialize, graceful shutdown on exit notification.
+- [x] Implement LSP JSON-RPC transport layer — create `src/lsp/transport.zig` that reads/writes LSP messages over stdin/stdout with Content-Length headers. (per DESIGN.md section "Implementation Notes") Tests should cover: parse valid message, handle partial reads, write properly framed response, reject malformed headers. (completed 2026-03-05)
+- [x] Implement LSP initialization handshake — handle `initialize` and `initialized` requests, advertise server capabilities. Create `src/lsp/server.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: respond to initialize with capabilities, handle initialized notification, reject requests before initialize. (completed 2026-03-05)
+- [x] Implement diagnostics (errors on save) — on `textDocument/didOpen` and `textDocument/didSave`, run the parser/resolver/type-checker and publish diagnostics. Update `src/lsp/server.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: clean file produces no diagnostics, syntax error produces diagnostic with correct range, type error produces diagnostic, multiple errors reported. (completed 2026-03-05)
+- [x] Implement hover for type information — on `textDocument/hover`, find the symbol at the cursor position and return its type. Create `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: hover on variable shows type, hover on function shows signature, hover on type name shows definition, hover on whitespace returns null. (completed 2026-03-05)
+- [x] Implement go-to-definition — on `textDocument/definition`, resolve the symbol at cursor and return its definition location. Update `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: jump to local variable definition, jump to function definition, jump to imported symbol's source file, jump to type definition. (completed 2026-03-05)
+- [x] Implement find references — on `textDocument/references`, find all uses of the symbol at cursor. Update `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: find all uses of a variable, find all uses of a function, find all uses of a type, include/exclude definition based on request. (completed 2026-03-05)
+- [x] Implement completion suggestions — on `textDocument/completion`, suggest symbols in scope, struct fields after `.`, and module members after `::`. Update `src/lsp/features.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: suggest local variables, suggest module members after import, suggest struct fields after dot, filter by prefix. (completed 2026-03-05)
+- [x] Add `kira lsp` CLI subcommand — wire the LSP server into the CLI entry point. Update `src/main.zig` or CLI handling. (per DESIGN.md section "Implementation Notes") Tests should cover: `kira lsp` starts and responds to initialize, graceful shutdown on exit notification. (completed 2026-03-05)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Write integration tests that send LSP JSON-RPC messages and verify responses. Test with sample `.ki` files containing various language constructs.
 
 ### Phase 5 Readiness Gate
 Before Phase 6, these must be true:
-- [ ] `kira lsp` starts and handles initialize/shutdown
-- [ ] Diagnostics published on file open/save
-- [ ] Hover, go-to-definition, references, and completion all work
-- [ ] All prior tests still pass
+- [x] `kira lsp` starts and handles initialize/shutdown
+- [x] Diagnostics published on file open/save
+- [x] Hover, go-to-definition, references, and completion all work
+- [x] All prior tests still pass (362 passing)
 
 ---
 

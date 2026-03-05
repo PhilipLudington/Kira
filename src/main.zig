@@ -10,6 +10,7 @@ const Mode = enum {
     run,
     check,
     test_cmd,
+    lsp,
     help,
     version_info,
 };
@@ -71,6 +72,10 @@ pub fn main() !void {
                 stderr.writeAll("Usage: kira check <file.ki>\n") catch {};
                 std.process.exit(1);
             }
+        },
+        .lsp => runLsp(allocator) catch |err| {
+            reportError(err);
+            std.process.exit(1);
         },
         .repl => runRepl(allocator) catch |err| {
             reportError(err);
@@ -147,6 +152,9 @@ fn parseArgs() !Args {
                 result.file_path = path;
                 file_path_seen = true;
             }
+        } else if (std.mem.eql(u8, arg, "lsp")) {
+            result.mode = .lsp;
+            return result;
         } else if (std.mem.eql(u8, arg, "test")) {
             result.mode = .test_cmd;
             if (args_iter.next()) |path| {
@@ -190,6 +198,7 @@ fn printHelp() void {
         \\  run <file.ki>     Run a Kira program
         \\  check <file.ki>   Type-check a program without running
         \\  test <file.ki>    Run tests in a file
+        \\  lsp               Start the LSP server
         \\  (no command)      Start the interactive REPL
         \\
         \\Options:
@@ -722,6 +731,17 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     if (test_count == 0) {
         try stdout.writeAll("No tests found.\n");
     }
+}
+
+/// Start LSP server
+fn runLsp(allocator: Allocator) !void {
+    var stdin = std.fs.File.stdin();
+    var stdout = std.fs.File.stdout();
+
+    var server = Kira.lsp.Server.fromFiles(allocator, &stdin, &stdout);
+    defer server.deinit();
+
+    try server.run();
 }
 
 /// Interactive REPL
