@@ -50,60 +50,64 @@
 
 ---
 
-## Phase 1: Language Completeness
+## Phase 1: Language Completeness ✅
+
+**Status:** Complete (2026-03-04)
 
 ### String Interpolation
-- [ ] Implement interpolation parsing (`"hello {name}"`)
-- [ ] Type-check interpolated expressions
-- [ ] Interpreter support for interpolated strings
+- [x] Implement interpolation parsing (`"hello {name}"`)
+- [x] Type-check interpolated expressions
+- [x] Interpreter support for interpolated strings
 
 ### Trait System
-- [ ] Type-check trait declarations and verify method signatures
-- [ ] Enforce impl blocks satisfy trait requirements
-- [ ] Method resolution through impl blocks
-- [ ] Trait bounds on generic type parameters
+- [x] Type-check trait declarations and verify method signatures
+- [x] Enforce impl blocks satisfy trait requirements
+- [x] Method resolution through impl blocks
+- [x] Trait bounds on generic type parameters
 
 ### Mutation in Effect Functions
-- [ ] Mutable field access in assignments
-- [ ] Mutable index access in assignments
-- [ ] Verify mutation only occurs in effect functions
+- [x] Mutable field access in assignments
+- [x] Mutable index access in assignments
+- [x] Verify mutation only occurs in effect functions
 
 ### Error Reporting
-- [ ] Source code snippets in error messages
-- [ ] "Did you mean?" suggestions for typos
-- [ ] Color output for terminal diagnostics
-- [ ] Related info and notes on errors
+- [x] Source code snippets in error messages
+- [x] "Did you mean?" suggestions for typos
+- [x] Color output for terminal diagnostics
+- [x] Related info and notes on errors
 
 ---
 
-## Phase 2: Developer Experience
+## Phase 2: Developer Experience ✅
+
+**Status:** Complete (2026-03-05)
 
 ### LSP Server
-- [ ] Diagnostics (errors and warnings on save)
-- [ ] Hover for type information
-- [ ] Go-to-definition
-- [ ] Find references
-- [ ] Completion suggestions
+- [x] Diagnostics (errors and warnings on save)
+- [x] Hover for type information
+- [x] Go-to-definition
+- [x] Find references
+- [x] Completion suggestions
 
 ### Formatter
-- [ ] `kira fmt` command
-- [ ] Consistent formatting rules matching language conventions
-- [ ] Format-on-save integration with editors
+- [x] `kira fmt` command
+- [x] Consistent formatting rules matching language conventions
+- [x] Format-on-save integration with editors
 
 ### REPL Improvements
-- [ ] `:type` shows actual inferred types
-- [ ] Multiline input support
-- [ ] Tab completion
-- [ ] History persistence
+- [x] `:type` shows actual inferred types
+- [x] Multiline input support
+- [x] Tab completion
+- [x] History persistence
 
 ---
 
 ## Phase 3: Compilation
 
 ### Intermediate Representation
-- [ ] Design IR suited for functional code
-- [ ] Lower AST to IR after type checking
-- [ ] IR-level optimizations for pure functions (inlining, constant folding)
+- [x] Design IR suited for functional code
+- [x] Lower AST to IR after type checking
+- [x] IR-level optimizations for pure functions (inlining, constant folding)
 
 ### Code Generation
 - [ ] Choose backend (shared with Klar, LLVM, or custom)
@@ -114,8 +118,8 @@
 ### Optimization
 - [ ] Memoization of pure functions
 - [ ] Tail-call optimization
-- [ ] Dead code elimination
-- [ ] Closure capture optimization
+- [x] Dead code elimination
+- [x] Closure capture optimization
 
 ---
 

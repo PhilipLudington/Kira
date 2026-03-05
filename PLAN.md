@@ -222,7 +222,7 @@ Before Phase 8, these must be true:
 - [x] All AST node types lower to IR
 - [x] Constant folding and dead code elimination work
 - [x] IR can represent closures and effects
-- [x] All prior tests still pass (392 passing)
+- [x] All prior tests still pass (394 passing)
 
 ---
 
