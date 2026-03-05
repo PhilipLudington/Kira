@@ -4,7 +4,7 @@
 
 Kira is a functional programming language with explicit types, algebraic data types, and a compiler-enforced effects system. The compiler is written in Zig (0.15+) with a pipeline of Parser → Resolver → TypeChecker → Interpreter. Phase 0 (foundation) is complete at v0.11.1 with 285 passing tests. This plan covers Phases 1–4 from ROADMAP.md, taking Kira from a working interpreter to a complete, compiled language with tooling and ecosystem.
 
-Current status: Phases 1–5 complete. Phase 6 next.
+Current status: Phases 1–6 complete. Phase 7 next.
 
 ---
 
@@ -167,8 +167,9 @@ Before Phase 6, these must be true:
 
 ---
 
-## Phase 6: Formatter and REPL Improvements
+## Phase 6: Formatter and REPL Improvements ✅
 
+**Status:** Complete (2026-03-05)
 **Goal:** Add `kira fmt` and improve the REPL experience.
 **Estimated Effort:** 3 days
 
@@ -177,20 +178,20 @@ Before Phase 6, these must be true:
 - REPL with `:type` command, multiline input, tab completion, and history
 
 ### Tasks
-- [ ] Implement AST pretty-printer — create `src/formatter.zig` that takes an AST and emits canonically formatted Kira source code with consistent indentation and spacing. (per DESIGN.md section "Syntax and Grammar") Tests should cover: indentation of nested blocks, line breaking for long expressions, preservation of comments, consistent spacing around operators.
-- [ ] Add `kira fmt` CLI command — parse each input file, pretty-print the AST, and write back. Support `--check` mode (exit non-zero if changes needed). Update CLI handling. (per DESIGN.md section "Syntax and Grammar") Tests should cover: format a messy file produces clean output, `--check` on formatted file exits 0, `--check` on unformatted file exits non-zero, multiple file arguments.
-- [ ] Implement REPL `:type` command — when the user enters `:type expr`, parse and type-check the expression and display the inferred type without evaluating. Update `src/repl.zig` or equivalent. (per DESIGN.md section "Type System") Tests should cover: `:type 42` shows `i32`, `:type fn(x: i32) -> i32 { return x }` shows function type, `:type undefined_var` shows error.
-- [ ] Add multiline input and history to REPL — detect incomplete expressions (unmatched braces) and continue reading. Persist history to `~/.kira_history`. Update REPL module. (per DESIGN.md section "Implementation Notes") Tests should cover: multiline function definition, history recall, unmatched brace continues prompt, Ctrl-C cancels current input.
-- [ ] Add tab completion to REPL — complete keywords, in-scope symbols, and module names on Tab press. Update REPL module. (per DESIGN.md section "Implementation Notes") Tests should cover: complete keyword prefix, complete variable name, complete module name after import, no completions for unknown prefix.
+- [x] Implement AST pretty-printer — create `src/formatter.zig` that takes an AST and emits canonically formatted Kira source code with consistent indentation and spacing. (per DESIGN.md section "Syntax and Grammar") Tests should cover: indentation of nested blocks, line breaking for long expressions, preservation of comments, consistent spacing around operators. (completed 2026-03-05)
+- [x] Add `kira fmt` CLI command — parse each input file, pretty-print the AST, and write back. Support `--check` mode (exit non-zero if changes needed). Update CLI handling. (per DESIGN.md section "Syntax and Grammar") Tests should cover: format a messy file produces clean output, `--check` on formatted file exits 0, `--check` on unformatted file exits non-zero, multiple file arguments. (completed 2026-03-05)
+- [x] Implement REPL `:type` command — when the user enters `:type expr`, parse and type-check the expression and display the inferred type without evaluating. Update `src/main.zig`. (per DESIGN.md section "Type System") Tests should cover: `:type 42` shows `i32`, `:type fn(x: i32) -> i32 { return x }` shows function type, `:type undefined_var` shows error. (completed 2026-03-05)
+- [x] Add multiline input and history to REPL — detect incomplete expressions (unmatched braces) and continue reading. Persist history to `~/.kira_history`. Update `src/main.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: multiline function definition, history recall, unmatched brace continues prompt, Ctrl-C cancels current input. (completed 2026-03-05)
+- [x] Add tab completion to REPL — complete keywords, in-scope symbols, and module names on Tab press. Update `src/main.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: complete keyword prefix, complete variable name, complete module name after import, no completions for unknown prefix. (completed 2026-03-05)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Test formatter on sample `.ki` files and verify idempotency (formatting twice produces same output). Test REPL features interactively and via scripted input.
 
 ### Phase 6 Readiness Gate
 Before Phase 7, these must be true:
-- [ ] `kira fmt` formats files and `--check` works
-- [ ] REPL supports `:type`, multiline, tab completion, and history
-- [ ] All prior tests still pass
+- [x] `kira fmt` formats files and `--check` works
+- [x] REPL supports `:type`, multiline, tab completion, and history
+- [x] All prior tests still pass (370 passing)
 
 ---
 

@@ -13,6 +13,7 @@ pub const modules = @import("modules/root.zig");
 pub const config = @import("config/root.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const lsp = @import("lsp/root.zig");
+pub const formatter = @import("formatter.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -285,6 +286,7 @@ test {
     _ = config;
     _ = diagnostic;
     _ = lsp;
+    _ = formatter;
 }
 
 test "tokenize simple expression" {

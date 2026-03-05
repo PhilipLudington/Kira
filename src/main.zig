@@ -9,6 +9,7 @@ const Mode = enum {
     repl,
     run,
     check,
+    fmt,
     test_cmd,
     lsp,
     help,
@@ -22,6 +23,7 @@ const Args = struct {
     show_tokens: bool,
     show_ast: bool,
     no_color: bool,
+    fmt_check: bool,
     /// Arguments passed to the Kira program (after the file path)
     user_args: []const []const u8,
 };
@@ -73,6 +75,19 @@ pub fn main() !void {
                 std.process.exit(1);
             }
         },
+        .fmt => {
+            if (args.file_path) |path| {
+                fmtFile(allocator, path, args.fmt_check) catch |err| {
+                    reportError(err);
+                    std.process.exit(1);
+                };
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Error: 'fmt' command requires a file path\n") catch {};
+                stderr.writeAll("Usage: kira fmt [--check] <file.ki>\n") catch {};
+                std.process.exit(1);
+            }
+        },
         .lsp => runLsp(allocator) catch |err| {
             reportError(err);
             std.process.exit(1);
@@ -118,6 +133,7 @@ fn parseArgs() !Args {
         .show_tokens = false,
         .show_ast = false,
         .no_color = false,
+        .fmt_check = false,
         .user_args = &.{},
     };
 
@@ -151,6 +167,18 @@ fn parseArgs() !Args {
             if (args_iter.next()) |path| {
                 result.file_path = path;
                 file_path_seen = true;
+            }
+        } else if (std.mem.eql(u8, arg, "fmt")) {
+            result.mode = .fmt;
+            // Look for --check flag and file path
+            while (args_iter.next()) |fmt_arg| {
+                if (std.mem.eql(u8, fmt_arg, "--check")) {
+                    result.fmt_check = true;
+                } else if (!std.mem.startsWith(u8, fmt_arg, "-")) {
+                    result.file_path = fmt_arg;
+                    file_path_seen = true;
+                    break;
+                }
             }
         } else if (std.mem.eql(u8, arg, "lsp")) {
             result.mode = .lsp;
@@ -197,6 +225,7 @@ fn printHelp() void {
         \\Commands:
         \\  run <file.ki>     Run a Kira program
         \\  check <file.ki>   Type-check a program without running
+        \\  fmt <file.ki>     Format a Kira source file
         \\  test <file.ki>    Run tests in a file
         \\  lsp               Start the LSP server
         \\  (no command)      Start the interactive REPL
@@ -207,6 +236,7 @@ fn printHelp() void {
         \\  --tokens          Show token stream (debug)
         \\  --ast             Show AST (debug)
         \\  --no-color        Disable colored output
+        \\  --check           (fmt) Check formatting without modifying
         \\
         \\REPL Commands:
         \\  :help, :h         Show REPL help
@@ -219,6 +249,8 @@ fn printHelp() void {
         \\Examples:
         \\  kira run hello.ki     Run a program
         \\  kira check lib.ki     Type-check without running
+        \\  kira fmt hello.ki     Format a source file
+        \\  kira fmt --check .    Check formatting
         \\  kira                  Start REPL
         \\
     ) catch {};
@@ -745,6 +777,49 @@ fn runLsp(allocator: Allocator) !void {
 }
 
 /// Interactive REPL
+/// Format a Kira source file
+fn fmtFile(allocator: Allocator, path: []const u8, check_only: bool) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    const source = loadFileContent(allocator, stderr, path) orelse return error.FileNotFound;
+    defer allocator.free(source);
+
+    const formatted = Kira.formatter.format(allocator, source) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error formatting '{s}': {}\n", .{ path, err }) catch "Format error\n";
+        stderr.writeAll(msg) catch {};
+        return error.FormatError;
+    };
+    defer allocator.free(formatted);
+
+    if (check_only) {
+        if (!std.mem.eql(u8, source, formatted)) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Would reformat: {s}\n", .{path}) catch "Would reformat\n";
+            stderr.writeAll(msg) catch {};
+            return error.FormattingRequired;
+        }
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Already formatted: {s}\n", .{path}) catch "Already formatted\n";
+        stdout.writeAll(msg) catch {};
+    } else {
+        // Write formatted output back to file
+        const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error writing '{s}': {}\n", .{ path, err }) catch "Write error\n";
+            stderr.writeAll(msg) catch {};
+            return error.WriteError;
+        };
+        defer file.close();
+        file.writeAll(formatted) catch return error.WriteError;
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Formatted: {s}\n", .{path}) catch "Formatted\n";
+        stdout.writeAll(msg) catch {};
+    }
+}
+
 fn runRepl(allocator: Allocator) !void {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
@@ -772,14 +847,27 @@ fn runRepl(allocator: Allocator) !void {
     var line_buf: [8192]u8 = undefined;
     var history = std.ArrayListUnmanaged([]const u8){};
     defer {
+        saveHistory(allocator, history.items);
         for (history.items) |h| {
             allocator.free(h);
         }
         history.deinit(allocator);
     }
 
+    // Load persistent history
+    loadHistory(allocator, &history);
+
+    // Buffer for multiline input
+    var multiline_buf = std.ArrayListUnmanaged(u8){};
+    defer multiline_buf.deinit(allocator);
+
     while (true) {
-        try stdout.writeAll("kira> ");
+        // Show continuation prompt if building multiline input
+        if (multiline_buf.items.len > 0) {
+            try stdout.writeAll("  ... ");
+        } else {
+            try stdout.writeAll("kira> ");
+        }
 
         // Read line
         const line = readLine(stdin, &line_buf) catch |err| {
@@ -790,10 +878,37 @@ fn runRepl(allocator: Allocator) !void {
             return err;
         };
 
-        if (line.len == 0) continue;
+        if (line.len == 0 and multiline_buf.items.len == 0) continue;
 
         const trimmed = std.mem.trim(u8, line, " \t\r");
+
+        // If building multiline input, append and check completeness
+        if (multiline_buf.items.len > 0) {
+            try multiline_buf.appendSlice(allocator, "\n");
+            try multiline_buf.appendSlice(allocator, trimmed);
+
+            if (!isIncomplete(multiline_buf.items)) {
+                // Complete — process the accumulated input
+                const full_input = try allocator.dupe(u8, multiline_buf.items);
+                defer allocator.free(full_input);
+                multiline_buf.clearRetainingCapacity();
+
+                const history_entry = try allocator.dupe(u8, full_input);
+                try history.append(allocator, history_entry);
+
+                try processInput(allocator, full_input, show_tokens, &table, &global_env, stdout);
+            }
+            continue;
+        }
+
         if (trimmed.len == 0) continue;
+
+        // Tab completion: if input contains a tab character, show completions
+        if (std.mem.indexOfScalar(u8, trimmed, '\t') != null) {
+            const prefix = std.mem.trimRight(u8, trimmed, "\t ");
+            try showCompletions(allocator, prefix, &table, stdout);
+            continue;
+        }
 
         // Add to history
         const history_entry = try allocator.dupe(u8, trimmed);
@@ -837,35 +952,171 @@ fn runRepl(allocator: Allocator) !void {
             continue;
         }
 
-        // Show tokens if enabled
-        if (show_tokens) {
-            var tokens = Kira.tokenize(allocator, trimmed) catch |err| {
-                var buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Lexer error: {}\n", .{err}) catch "Lexer error\n";
-                try stdout.writeAll(msg);
-                continue;
-            };
-            defer tokens.deinit(allocator);
-
-            try stdout.writeAll("Tokens:\n");
-            var print_buf: [512]u8 = undefined;
-            for (tokens.items) |tok| {
-                const tok_line = std.fmt.bufPrint(&print_buf, "  {s}: \"{s}\" at {d}:{d}\n", .{
-                    @tagName(tok.type),
-                    tok.lexeme,
-                    tok.span.start.line,
-                    tok.span.start.column,
-                }) catch continue;
-                try stdout.writeAll(tok_line);
-            }
+        // Check if input is incomplete (unmatched braces)
+        if (isIncomplete(trimmed)) {
+            try multiline_buf.appendSlice(allocator, trimmed);
+            continue;
         }
 
-        // Evaluate the input
-        evalLine(allocator, trimmed, &table, &global_env, stdout) catch |err| {
+        try processInput(allocator, trimmed, show_tokens, &table, &global_env, stdout);
+    }
+}
+
+/// Check if input has unmatched braces/parens/brackets
+fn isIncomplete(input: []const u8) bool {
+    var brace_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var in_string = false;
+    var prev_char: u8 = 0;
+
+    for (input) |c| {
+        if (in_string) {
+            if (c == '"' and prev_char != '\\') {
+                in_string = false;
+            }
+            prev_char = c;
+            continue;
+        }
+
+        switch (c) {
+            '"' => in_string = true,
+            '{' => brace_depth += 1,
+            '}' => brace_depth -= 1,
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth -= 1,
+            else => {},
+        }
+        prev_char = c;
+    }
+
+    return brace_depth > 0 or paren_depth > 0 or bracket_depth > 0;
+}
+
+/// Process a complete REPL input (single or multiline)
+fn processInput(
+    allocator: Allocator,
+    input: []const u8,
+    show_tokens: bool,
+    table: *Kira.SymbolTable,
+    env: *Kira.Environment,
+    writer: anytype,
+) !void {
+    // Show tokens if enabled
+    if (show_tokens) {
+        var tokens = Kira.tokenize(allocator, input) catch |err| {
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error: {}\n", .{err}) catch "Error\n";
-            try stdout.writeAll(msg);
+            const msg = std.fmt.bufPrint(&buf, "Lexer error: {}\n", .{err}) catch "Lexer error\n";
+            try writer.writeAll(msg);
+            return;
         };
+        defer tokens.deinit(allocator);
+
+        try writer.writeAll("Tokens:\n");
+        var print_buf: [512]u8 = undefined;
+        for (tokens.items) |tok| {
+            const tok_line = std.fmt.bufPrint(&print_buf, "  {s}: \"{s}\" at {d}:{d}\n", .{
+                @tagName(tok.type),
+                tok.lexeme,
+                tok.span.start.line,
+                tok.span.start.column,
+            }) catch continue;
+            try writer.writeAll(tok_line);
+        }
+    }
+
+    // Evaluate the input
+    evalLine(allocator, input, table, env, writer) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: {}\n", .{err}) catch "Error\n";
+        try writer.writeAll(msg);
+    };
+}
+
+/// Show tab completions for a prefix
+fn showCompletions(
+    allocator: Allocator,
+    input: []const u8,
+    table: *Kira.SymbolTable,
+    writer: anytype,
+) !void {
+    // Extract the last word as the prefix to complete
+    const prefix = blk: {
+        var i = input.len;
+        while (i > 0) {
+            i -= 1;
+            const c = input[i];
+            if (c == ' ' or c == '(' or c == ',' or c == '.' or c == '{' or c == '[') {
+                break :blk input[i + 1 ..];
+            }
+        }
+        break :blk input;
+    };
+
+    if (prefix.len == 0) return;
+
+    // Use the LSP features module for completions
+    const items = Kira.lsp.features.getCompletions(allocator, table, prefix) catch return;
+    defer allocator.free(items);
+
+    if (items.len == 0) {
+        try writer.writeAll("No completions found.\n");
+        return;
+    }
+
+    for (items) |item| {
+        try writer.writeAll("  ");
+        try writer.writeAll(item.label);
+        try writer.writeAll("\n");
+    }
+}
+
+/// History file path
+fn getHistoryPath(buf: *[4096]u8) ?[]const u8 {
+    const home = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch return null;
+    defer std.heap.page_allocator.free(home);
+    const path = std.fmt.bufPrint(buf, "{s}/.kira_history", .{home}) catch return null;
+    return path;
+}
+
+/// Load history from ~/.kira_history
+fn loadHistory(allocator: Allocator, history: *std.ArrayListUnmanaged([]const u8)) void {
+    var path_buf: [4096]u8 = undefined;
+    const path = getHistoryPath(&path_buf) orelse return;
+
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, 1024 * 1024) catch return;
+    defer allocator.free(content);
+
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        if (line.len == 0) continue;
+        const entry = allocator.dupe(u8, line) catch continue;
+        history.append(allocator, entry) catch {
+            allocator.free(entry);
+            continue;
+        };
+    }
+}
+
+/// Save history to ~/.kira_history
+fn saveHistory(allocator: Allocator, history: []const []const u8) void {
+    _ = allocator;
+    var path_buf: [4096]u8 = undefined;
+    const path = getHistoryPath(&path_buf) orelse return;
+
+    const file = std.fs.cwd().createFile(path, .{}) catch return;
+    defer file.close();
+
+    // Save last 1000 entries
+    const start = if (history.len > 1000) history.len - 1000 else 0;
+    for (history[start..]) |entry| {
+        file.writeAll(entry) catch return;
+        file.writeAll("\n") catch return;
     }
 }
 
@@ -895,7 +1146,10 @@ fn printReplHelp(writer: anytype) !void {
         \\  :clear            Clear the REPL environment
         \\  :tokens           Toggle token display mode
         \\
-        \\Enter Kira expressions, statements, or declarations to evaluate.
+        \\Features:
+        \\  - Multiline input: unmatched braces continue on next line
+        \\  - Tab completion: type a prefix and press Tab
+        \\  - History: persisted to ~/.kira_history
         \\
         \\Examples:
         \\  let x: i32 = 42
@@ -1073,9 +1327,53 @@ fn evalType(
         return;
     };
 
-    // TODO: Extract and print the inferred type
-    // For now, just confirm it type-checks
-    try writer.writeAll("Expression is well-typed\n");
+    // Extract the expression's type from the AST
+    // The program is: fn _type_check_() -> void { let _: auto = <EXPR> }
+    // We find the let binding's initializer and type-check it again
+    const expr = findExprInProgram(program) orelse {
+        try writer.writeAll("Expression is well-typed\n");
+        return;
+    };
+
+    // Create a fresh checker to evaluate the expression type
+    var expr_checker = Kira.TypeChecker.init(allocator, table);
+    defer expr_checker.deinit();
+
+    // Enter the function scope so symbol lookup works
+    _ = try table.enterScope(.function);
+    defer table.leaveScope() catch {};
+
+    const resolved_type = expr_checker.checkExpression(expr) catch {
+        try writer.writeAll("Expression is well-typed\n");
+        return;
+    };
+
+    const type_str = resolved_type.toString(allocator) catch {
+        try writer.writeAll("Expression is well-typed\n");
+        return;
+    };
+    defer allocator.free(type_str);
+
+    try writer.writeAll(type_str);
+    try writer.writeAll("\n");
+}
+
+/// Find the expression inside the type-check wrapper:
+/// fn _type_check_() -> void { let _: auto = <EXPR> }
+fn findExprInProgram(program: Kira.Program) ?*const Kira.Expression {
+    if (program.declarations.len == 0) return null;
+    const decl = &program.declarations[0];
+    switch (decl.kind) {
+        .function_decl => |fd| {
+            const body = fd.body orelse return null;
+            if (body.len == 0) return null;
+            switch (body[0].kind) {
+                .let_binding => |lb| return lb.initializer,
+                else => return null,
+            }
+        },
+        else => return null,
+    }
 }
 
 /// Load a file into the REPL environment
@@ -1449,6 +1747,7 @@ test "parse args help" {
         .show_tokens = false,
         .show_ast = false,
         .no_color = false,
+        .fmt_check = false,
         .user_args = &.{},
     };
 }
