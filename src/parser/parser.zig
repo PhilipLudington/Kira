@@ -2535,12 +2535,13 @@ pub const Parser = struct {
         return ParsedFloat{ .value = value, .suffix = suffix };
     }
 
-    /// Check if string content contains unescaped interpolation braces
+    /// Check if string content contains unescaped interpolation braces.
+    /// `\{` is treated as an escaped literal brace, not interpolation.
     fn containsInterpolation(content: []const u8) bool {
         var i: usize = 0;
         while (i < content.len) {
             if (content[i] == '\\') {
-                i += 2; // skip escaped char
+                i += 2; // skip escaped char (including \{)
                 continue;
             }
             if (content[i] == '{') return true;
@@ -2654,6 +2655,7 @@ pub const Parser = struct {
                     '\\' => '\\',
                     '"' => '"',
                     '\'' => '\'',
+                    '{' => '{',
                     '0' => 0,
                     'x' => blk: {
                         // Hex escape: \xNN

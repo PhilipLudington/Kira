@@ -1211,3 +1211,18 @@ test "interpreter: Ord.lt on strings" {
     try testing.expect(result != null);
     try testing.expectEqual(true, result.?.boolean);
 }
+
+test "interpreter: escaped brace in string is literal" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    return "hello \{world}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("hello {world}", r.value.?.string);
+}

@@ -105,11 +105,16 @@ pub const Interpreter = struct {
     /// Register built-in trait methods (Eq, Ord, Show) for primitive runtime types.
     /// This populates the method_table so that method calls like `x.eq(y)` and
     /// `x.show()` work on primitive values at runtime.
+    ///
+    /// Note: At runtime all integers are stored as i128 and map to "i64",
+    /// all floats are f64 and map to "f64". These are the only numeric type
+    /// names that need runtime method entries.
     pub fn registerBuiltinMethods(self: *Interpreter) void {
         const alloc = self.arenaAlloc();
 
-        // Use PrimitiveType.toString() names to match the type checker's impl registrations
-        const type_names = [_][]const u8{ "i32", "i64", "f32", "f64", "string", "bool", "char", "i8", "i16", "i128", "u8", "u16", "u32", "u64", "u128" };
+        // Runtime type names — getValueTypeName() returns these, not the
+        // declared source types (i32, u8, etc.)
+        const type_names = [_][]const u8{ "i64", "f64", "string", "bool", "char" };
 
         const methods = [_]struct { name: []const u8, builtin: *const fn (Value.BuiltinContext, []const Value) InterpreterError!Value }{
             .{ .name = "eq", .builtin = &builtinEq },
@@ -180,7 +185,10 @@ pub const Interpreter = struct {
                 else => error.TypeMismatch,
             },
             .float => |af| switch (b) {
-                .float => |bf| std.math.order(af, bf),
+                .float => |bf| if (std.math.isNan(af) or std.math.isNan(bf))
+                    error.TypeMismatch
+                else
+                    std.math.order(af, bf),
                 else => error.TypeMismatch,
             },
             .string => |as| switch (b) {
@@ -216,8 +224,7 @@ pub const Interpreter = struct {
 
     pub fn deinit(self: *Interpreter) void {
         self.global_env.deinit();
-        // method_table backing storage is arena-allocated (keys and values),
-        // but the hash map metadata uses the default allocator via arena
+        // method_table keys, values, and hash map metadata are all arena-allocated
         self.method_table.deinit(self.arena.allocator());
         self.arena.deinit();
         // module_exports uses arena allocator, so no need to free explicitly
@@ -652,7 +659,7 @@ pub const Interpreter = struct {
                             };
                             // Build key "TypeName.methodName"
                             const key = try std.fmt.allocPrint(self.arenaAlloc(), "{s}.{s}", .{ tn, method.name });
-                            self.method_table.put(self.arenaAlloc(), key, func_value) catch {};
+                            self.method_table.put(self.arenaAlloc(), key, func_value) catch unreachable;
                         }
                     }
                 }
