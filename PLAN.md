@@ -4,7 +4,7 @@
 
 Kira is a functional programming language with explicit types, algebraic data types, and a compiler-enforced effects system. The compiler is written in Zig (0.15+) with a pipeline of Parser → Resolver → TypeChecker → Interpreter. Phase 0 (foundation) is complete at v0.11.1 with 285 passing tests. This plan covers Phases 1–4 from ROADMAP.md, taking Kira from a working interpreter to a complete, compiled language with tooling and ecosystem.
 
-Current status: Phase 1 complete. Phase 2 next.
+Current status: Phases 1–3 complete. Phase 4 next.
 
 ---
 
@@ -72,8 +72,9 @@ Before Phase 3, these must be true:
 
 ---
 
-## Phase 3: Mutation and Effects Enforcement
+## Phase 3: Mutation and Effects Enforcement ✅
 
+**Status:** Complete (2026-03-04)
 **Goal:** Support mutable field/index access in effect functions and enforce that mutation only occurs in effectful contexts.
 **Estimated Effort:** 2 days
 
@@ -83,19 +84,19 @@ Before Phase 3, these must be true:
 - Compiler enforcement that mutation is restricted to effect functions
 
 ### Tasks
-- [ ] Parse mutable field and index assignments — extend the parser to handle `expr.field = value` and `expr[index] = value` as assignment targets. Update `src/parser.zig` and `src/ast.zig`. (per DESIGN.md section "Effects System") Tests should cover: field assignment, nested field assignment, index assignment, invalid assignment target error.
-- [ ] Type-check mutable assignments — verify left-hand side is a valid assignable location and right-hand side type matches. Update `src/type_checker.zig`. (per DESIGN.md section "Effects System") Tests should cover: field type mismatch error, index into non-array error, assignment to immutable let error, assignment in effect function succeeds.
-- [ ] Enforce mutation only in effect functions — during type checking, track whether the current function is effectful. Report errors for mutation in pure functions. Update `src/type_checker.zig`. (per DESIGN.md section "Effects System") Tests should cover: mutation in pure function produces error, mutation in effect function succeeds, nested pure-within-effect correctly restricts inner function.
-- [ ] Interpret mutable assignments — implement field and index assignment evaluation in the interpreter. Update `src/interpreter.zig`. (per DESIGN.md section "Effects System") Tests should cover: mutating a record field and reading it back, mutating an array element, chained mutations, mutation visible after function call.
+- [x] Parse mutable field and index assignments — extend the parser to handle `expr.field = value` and `expr[index] = value` as assignment targets. Update `src/parser.zig` and `src/ast.zig`. (per DESIGN.md section "Effects System") Tests should cover: field assignment, nested field assignment, index assignment, invalid assignment target error. (completed 2026-03-04, already implemented in Phase 0)
+- [x] Type-check mutable assignments — verify left-hand side is a valid assignable location and right-hand side type matches. Update `src/type_checker.zig`. (per DESIGN.md section "Effects System") Tests should cover: field type mismatch error, index into non-array error, assignment to immutable let error, assignment in effect function succeeds. (completed 2026-03-04)
+- [x] Enforce mutation only in effect functions — during type checking, track whether the current function is effectful. Report errors for mutation in pure functions. Update `src/type_checker.zig`. (per DESIGN.md section "Effects System") Tests should cover: mutation in pure function produces error, mutation in effect function succeeds, nested pure-within-effect correctly restricts inner function. (completed 2026-03-04)
+- [x] Interpret mutable assignments — implement field and index assignment evaluation in the interpreter. Update `src/interpreter.zig`. (per DESIGN.md section "Effects System") Tests should cover: mutating a record field and reading it back, mutating an array element, chained mutations, mutation visible after function call. (completed 2026-03-04)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Write `.ki` files that mutate record fields and array indices inside effect functions. Verify pure functions correctly reject mutation attempts.
 
 ### Phase 3 Readiness Gate
 Before Phase 4, these must be true:
-- [ ] Field and index assignment works in effect functions
-- [ ] Mutation in pure functions produces compile error
-- [ ] All prior tests still pass
+- [x] Field and index assignment works in effect functions
+- [x] Mutation in pure functions produces compile error
+- [x] All prior tests still pass (332 passing)
 
 ---
 

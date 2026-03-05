@@ -80,6 +80,24 @@ fn evalSource(allocator: std.mem.Allocator, source: []const u8) !?Value {
     return Kira.interpret(allocator, &program, &table);
 }
 
+/// Helper to parse, resolve, and type-check source. Returns true if type checking succeeds.
+/// Used to test compile-time error detection.
+fn typecheckSource(allocator: std.mem.Allocator, source: []const u8) !bool {
+    var program = try Kira.parse(allocator, source);
+    defer program.deinit();
+
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    Kira.resolve(allocator, &program, &table) catch return false;
+
+    var checker = Kira.TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    checker.check(&program) catch return false;
+    return true;
+}
+
 // ============================================================================
 // Literal Tests
 // ============================================================================
@@ -1225,4 +1243,165 @@ test "interpreter: escaped brace in string is literal" {
     defer r.deinit();
     try testing.expect(r.value != null);
     try testing.expectEqualStrings("hello {world}", r.value.?.string);
+}
+
+test "interpreter: mutable field assignment on record" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\type Point = { x: i32, y: i32 }
+        \\
+        \\effect fn main() -> i32 {
+        \\    var p: Point = Point { x: 1, y: 2 }
+        \\    p.x = 10
+        \\    return p.x
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 10), r.value.?.integer);
+}
+
+test "interpreter: mutable index assignment on array" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\effect fn main() -> i32 {
+        \\    var arr: [i32] = [1, 2, 3]
+        \\    arr[1] = 20
+        \\    return arr[1]
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 20), r.value.?.integer);
+}
+
+test "interpreter: nested field assignment" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\type Inner = { value: i32 }
+        \\type Outer = { inner: Inner }
+        \\
+        \\effect fn main() -> i32 {
+        \\    var o: Outer = Outer { inner: Inner { value: 5 } }
+        \\    o.inner.value = 42
+        \\    return o.inner.value
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 42), r.value.?.integer);
+}
+
+test "interpreter: field mutation visible after assignment" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\type Counter = { count: i32 }
+        \\
+        \\effect fn main() -> i32 {
+        \\    var c: Counter = Counter { count: 0 }
+        \\    c.count = c.count + 1
+        \\    c.count = c.count + 1
+        \\    c.count = c.count + 1
+        \\    return c.count
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 3), r.value.?.integer);
+}
+
+test "interpreter: field mutation in pure function rejected by type checker" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\type Point = { x: i32, y: i32 }
+        \\
+        \\fn main() -> i32 {
+        \\    var p: Point = Point { x: 1, y: 2 }
+        \\    p.x = 10
+        \\    return p.x
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
+test "interpreter: index mutation in pure function rejected by type checker" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> i32 {
+        \\    var arr: [i32] = [1, 2, 3]
+        \\    arr[0] = 99
+        \\    return arr[0]
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
+test "interpreter: assignment to let binding rejected by type checker" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> i32 {
+        \\    let x: i32 = 5
+        \\    x = 10
+        \\    return x
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
+test "interpreter: field mutation on immutable let binding fails" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\type Point = { x: i32, y: i32 }
+        \\
+        \\effect fn main() -> i32 {
+        \\    let p: Point = Point { x: 1, y: 2 }
+        \\    p.x = 10
+        \\    return p.x
+        \\}
+    ;
+
+    // Even in effect function, let binding field mutation should fail at runtime
+    const result = evalSourceFull(allocator, source);
+    try testing.expectError(error.ImmutableAssignment, result);
+}
+
+test "interpreter: array mutation does not alias" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\effect fn main() -> i32 {
+        \\    var a: [i32] = [1, 2, 3]
+        \\    var b: [i32] = a
+        \\    b[0] = 99
+        \\    return a[0]
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    // a[0] should still be 1, not 99
+    try testing.expectEqual(@as(i128, 1), r.value.?.integer);
 }

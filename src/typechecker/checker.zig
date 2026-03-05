@@ -2280,15 +2280,35 @@ pub const TypeChecker = struct {
             .assignment => |assign| {
                 const value_type = try self.checkExpression(assign.value);
 
+                // Simple identifier reassignment (var x = ...; x = val) is allowed in
+                // pure functions — local mutation is an implementation detail, not an
+                // effect. Only structural mutation (field/index) requires effect context
+                // because it could affect shared references.
                 const target_type = switch (assign.target) {
                     .identifier => |name| blk: {
                         if (self.symbol_table.lookup(name)) |sym| {
+                            // Check mutability: assignment to let binding is a compile error
+                            if (sym.kind == .variable and !sym.kind.variable.is_mutable) {
+                                try self.addDiagnostic(try errors_mod.simpleError(
+                                    self.allocator,
+                                    "cannot assign to immutable binding (use 'var' instead of 'let')",
+                                    stmt.span,
+                                ));
+                            }
                             break :blk try self.getSymbolType(sym, stmt.span);
                         }
                         try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, name, stmt.span));
                         break :blk ResolvedType.errorType(stmt.span);
                     },
                     .field_access => |ft| blk: {
+                        // Field mutation requires effect context
+                        if (!self.in_effect_function) {
+                            try self.addDiagnostic(try errors_mod.effectViolation(
+                                self.allocator,
+                                "field mutation is only allowed in effect functions",
+                                stmt.span,
+                            ));
+                        }
                         // Convert FieldTarget to FieldAccess (same structure)
                         const fa = Expression.FieldAccess{
                             .object = ft.object,
@@ -2297,6 +2317,14 @@ pub const TypeChecker = struct {
                         break :blk try self.checkFieldAccess(fa, stmt.span);
                     },
                     .index_access => |it| blk: {
+                        // Index mutation requires effect context
+                        if (!self.in_effect_function) {
+                            try self.addDiagnostic(try errors_mod.effectViolation(
+                                self.allocator,
+                                "index mutation is only allowed in effect functions",
+                                stmt.span,
+                            ));
+                        }
                         // Convert IndexTarget to IndexAccess (same structure)
                         const ia = Expression.IndexAccess{
                             .object = it.object,

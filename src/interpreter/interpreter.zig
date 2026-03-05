@@ -1687,7 +1687,10 @@ pub const Interpreter = struct {
         else
             Value{ .void = {} };
 
-        try env.define(vb.name, value, true);
+        // Deep-copy compound values so var bindings have independent storage.
+        // Without this, `var b = a; b[0] = 99` would also mutate `a`.
+        const owned = self.deepCopyValue(value) catch return error.OutOfMemory;
+        try env.define(vb.name, owned, true);
     }
 
     /// Evaluate an assignment
@@ -1696,8 +1699,112 @@ pub const Interpreter = struct {
 
         switch (assign.target) {
             .identifier => |name| try env.assign(name, value),
-            .field_access => |_| return error.InvalidOperation, // TODO: mutable field access
-            .index_access => |_| return error.InvalidOperation, // TODO: mutable index access
+            .field_access => |ft| {
+                const target_ptr = try self.resolveExprToMutableValue(ft.object, env);
+                switch (target_ptr.*) {
+                    .record => |*r| {
+                        if (r.fields.getPtr(ft.field)) |field_ptr| {
+                            field_ptr.* = value;
+                        } else {
+                            self.setErrorContext("field '{s}' not found in record '{s}'", .{ ft.field, r.type_name orelse "<anonymous>" });
+                            return error.FieldNotFound;
+                        }
+                    },
+                    else => return error.TypeMismatch,
+                }
+            },
+            .index_access => |it| {
+                const target_ptr = try self.resolveExprToMutableValue(it.object, env);
+                const index = try self.evalExpression(it.index, env);
+                switch (target_ptr.*) {
+                    .array => |arr| {
+                        const idx: usize = switch (index) {
+                            .integer => |i| blk: {
+                                if (i < 0) return error.IndexOutOfBounds;
+                                break :blk @intCast(i);
+                            },
+                            else => return error.TypeMismatch,
+                        };
+                        if (idx >= arr.len) return error.IndexOutOfBounds;
+                        // Safe: arena allocator returns writable memory; []const is a type constraint
+                        @constCast(arr)[idx] = value;
+                    },
+                    else => return error.TypeMismatch,
+                }
+            },
+        }
+    }
+
+    /// Deep-copy a value so that compound types (arrays, records) get independent
+    /// backing storage. Primitives and function values are returned as-is.
+    fn deepCopyValue(self: *Interpreter, value: Value) Allocator.Error!Value {
+        return switch (value) {
+            .array => |arr| {
+                const new_arr = try self.arenaAlloc().alloc(Value, arr.len);
+                for (arr, 0..) |elem, i| {
+                    new_arr[i] = try self.deepCopyValue(elem);
+                }
+                return Value{ .array = new_arr };
+            },
+            .record => |r| {
+                var new_fields = std.StringArrayHashMapUnmanaged(Value){};
+                try new_fields.ensureTotalCapacity(self.arenaAlloc(), @intCast(r.fields.count()));
+                var it = r.fields.iterator();
+                while (it.next()) |entry| {
+                    const copied = try self.deepCopyValue(entry.value_ptr.*);
+                    new_fields.putAssumeCapacity(entry.key_ptr.*, copied);
+                }
+                return Value{ .record = .{ .type_name = r.type_name, .fields = new_fields } };
+            },
+            else => value,
+        };
+    }
+
+    /// Resolve an expression to a mutable pointer to its underlying Value.
+    /// Used for field/index assignment targets to get the storage location.
+    fn resolveExprToMutableValue(self: *Interpreter, expr: *const Expression, env: *Environment) InterpreterError!*Value {
+        switch (expr.kind) {
+            .identifier => |id| {
+                if (env.getMutable(id.name)) |binding| {
+                    if (!binding.is_mutable) {
+                        self.setErrorContext("cannot mutate immutable binding '{s}'", .{id.name});
+                        return error.ImmutableAssignment;
+                    }
+                    return &binding.value;
+                }
+                return error.UndefinedVariable;
+            },
+            .field_access => |fa| {
+                const obj_ptr = try self.resolveExprToMutableValue(fa.object, env);
+                switch (obj_ptr.*) {
+                    .record => |*r| {
+                        if (r.fields.getPtr(fa.field)) |field_ptr| return field_ptr;
+                        self.setErrorContext("field '{s}' not found in record '{s}'", .{ fa.field, r.type_name orelse "<anonymous>" });
+                        return error.FieldNotFound;
+                    },
+                    else => return error.TypeMismatch,
+                }
+            },
+            .index_access => |ia| {
+                const obj_ptr = try self.resolveExprToMutableValue(ia.object, env);
+                const index = try self.evalExpression(ia.index, env);
+                switch (obj_ptr.*) {
+                    .array => |arr| {
+                        const idx: usize = switch (index) {
+                            .integer => |i| blk: {
+                                if (i < 0) return error.IndexOutOfBounds;
+                                break :blk @intCast(i);
+                            },
+                            else => return error.TypeMismatch,
+                        };
+                        if (idx >= arr.len) return error.IndexOutOfBounds;
+                        // Safe: arena allocator returns writable memory; []const is a type constraint
+                        return &@constCast(arr)[idx];
+                    },
+                    else => return error.TypeMismatch,
+                }
+            },
+            else => return error.InvalidOperation,
         }
     }
 
