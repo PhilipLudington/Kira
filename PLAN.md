@@ -209,7 +209,7 @@ Before Phase 7, these must be true:
 ### Tasks
 - [x] Design IR data structures — create `src/ir/ir.zig` with IR node types: basic blocks, SSA-style values, function definitions, ADT constructors, closure captures, effect annotations. (per DESIGN.md section "Implementation Notes") Tests should cover: construct IR nodes programmatically, IR printer produces readable output, round-trip IR creation and inspection. (completed 2026-03-05)
 - [x] Implement AST-to-IR lowering for expressions — convert arithmetic, function calls, let bindings, and literals to IR form. Create `src/ir/lower.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: lower integer literal, lower binary operation, lower let binding, lower function call, lower nested expressions. (completed 2026-03-05)
-- [x] Implement AST-to-IR lowering for control flow — convert if/else, match statements, and for loops to IR basic blocks with branches. Update `src/ir/lower.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: lower if/else to branch, lower match to jump table, lower for loop, nested control flow. (completed 2026-03-05)
+- [ ] Implement AST-to-IR lowering for control flow — convert if/else, match statements, and for loops to IR basic blocks with branches. Update `src/ir/lower.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: lower if/else to branch, lower match to jump table, lower for loop, nested control flow. **Note:** if/else and match are complete; for-loop returns `UnsupportedStatement` pending iterator protocol (Phase 8). Variant tag lookup (`lookupVariantTag`) uses first-match across all types — needs type-context threading to be correct when multiple sum types share a constructor name.
 - [x] Implement AST-to-IR lowering for functions and closures — convert function definitions, closure captures, and effect functions to IR. Update `src/ir/lower.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: lower pure function, lower effect function with annotation, lower closure with captured variables, lower recursive function. (completed 2026-03-05)
 - [x] Implement constant folding optimization — evaluate constant expressions at IR level. Create `src/ir/ir_opt.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: fold `2 + 3` to `5`, fold boolean logic, fold string concatenation of literals, don't fold expressions with variables. (completed 2026-03-05)
 - [x] Implement dead code elimination — remove unused bindings, keep side-effectful calls. Create `src/ir/ir_opt.zig`. (per DESIGN.md sections "Implementation Notes" and "Effects System") Tests should cover: eliminate unused let binding, keep side-effectful calls, optimize runs all passes. (completed 2026-03-05)
@@ -219,7 +219,7 @@ Run `./run-tests.sh`. Write tests that lower sample ASTs to IR and verify struct
 
 ### Phase 7 Readiness Gate
 Before Phase 8, these must be true:
-- [x] All AST node types lower to IR
+- [ ] All AST node types lower to IR (for-loop and variant tag disambiguation remain)
 - [x] Constant folding and dead code elimination work
 - [x] IR can represent closures and effects
 - [x] All prior tests still pass (394 passing)

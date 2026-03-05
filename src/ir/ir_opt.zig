@@ -145,6 +145,11 @@ fn tryFoldCmp(func: *const Function, cmp: Instruction.CmpOp) ?Instruction {
 
 /// Remove unused instructions using mark-and-sweep from live roots.
 /// H6 fix: only marks operands of USED instructions, enabling transitive elimination.
+///
+/// NOTE: This pass removes dead instruction refs from each block's per-block list,
+/// but does NOT compact the global `func.instructions` array. Dead instructions
+/// remain at their original indices. Any downstream pass or codegen MUST iterate
+/// per-block instruction lists (not the flat array) to see only live instructions.
 fn eliminateDeadCode(allocator: Allocator, func: *Function) OptError!void {
     var used = std.AutoArrayHashMapUnmanaged(ValueRef, void){};
     defer used.deinit(allocator);

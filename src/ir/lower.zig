@@ -135,6 +135,7 @@ pub const Lowerer = struct {
         // Set up params as instructions (C5 fix: params get proper ValueRefs)
         var params = std.ArrayListUnmanaged(Function.Param){};
         try self.pushScope();
+        errdefer self.popScope();
 
         for (fd.parameters, 0..) |param, i| {
             const vref = try self.emit(.{ .param = @intCast(i) });
@@ -235,6 +236,7 @@ pub const Lowerer = struct {
         errdefer self.current_func_idx = null;
 
         try self.pushScope();
+        errdefer self.popScope();
         self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         try self.lowerStatements(td.body);
@@ -289,6 +291,7 @@ pub const Lowerer = struct {
             },
             .block => |stmts| {
                 try self.pushScope();
+                errdefer self.popScope();
                 try self.lowerStatements(stmts);
                 self.popScope();
             },
@@ -355,6 +358,7 @@ pub const Lowerer = struct {
         // Then branch
         self.current_block = then_blk;
         try self.pushScope();
+        errdefer self.popScope();
         try self.lowerStatements(ifs.then_branch);
         self.popScope();
         if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
@@ -365,6 +369,7 @@ pub const Lowerer = struct {
         if (ifs.else_branch) |eb| {
             self.current_block = else_blk;
             try self.pushScope();
+            errdefer self.popScope();
             switch (eb) {
                 .block => |stmts| try self.lowerStatements(stmts),
                 .else_if => |elif_stmt| try self.lowerStatement(elif_stmt),
@@ -403,6 +408,7 @@ pub const Lowerer = struct {
 
         self.current_block = body_blk;
         try self.pushScope();
+        errdefer self.popScope();
         try self.lowerStatements(wl.body);
         self.popScope();
         if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
@@ -428,6 +434,7 @@ pub const Lowerer = struct {
 
         self.current_block = body_blk;
         try self.pushScope();
+        errdefer self.popScope();
         try self.lowerStatements(ls.body);
         self.popScope();
         if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
@@ -485,6 +492,7 @@ pub const Lowerer = struct {
             // Arm body
             self.current_block = arm_blk;
             try self.pushScope();
+            errdefer self.popScope();
             try self.lowerPatternBindings(arm.pattern, subject);
             try self.lowerStatements(arm.body);
             self.popScope();
@@ -924,6 +932,7 @@ pub const Lowerer = struct {
 
             self.current_block = arm_blk;
             try self.pushScope();
+            errdefer self.popScope();
             try self.lowerPatternBindings(arm.pattern, subject);
             const arm_val = try self.lowerMatchBody(&arm.body);
             const arm_end = self.current_block;
@@ -956,6 +965,7 @@ pub const Lowerer = struct {
             .block => |stmts| {
                 // L2 fix: track last expression value in block body
                 try self.pushScope();
+                errdefer self.popScope();
                 if (stmts.len > 0) {
                     try self.lowerStatements(stmts[0 .. stmts.len - 1]);
                     const last = &stmts[stmts.len - 1];
@@ -1237,22 +1247,21 @@ pub const Lowerer = struct {
     ) LowerError!void {
         switch (expr.kind) {
             .identifier => |id| {
-                // Check if this name is in an OUTER scope (not the current closure scope)
-                // The current scope is the closure's scope; outer scopes have the captures
-                if (self.scope_stack.items.len > 1) {
-                    // Look in outer scopes only (skip the top/current scope)
-                    var i = self.scope_stack.items.len - 1; // -1 because we skip current
-                    while (i > 0) {
-                        i -= 1;
-                        if (self.scope_stack.items[i].get(id.name)) |ref| {
-                            // Check it's not already captured
-                            for (names.items) |n| {
-                                if (std.mem.eql(u8, n, id.name)) return;
-                            }
-                            names.append(alloc, id.name) catch return LowerError.OutOfMemory;
-                            refs.append(alloc, ref) catch return LowerError.OutOfMemory;
-                            return;
+                // Walk all current (outer) scopes to find captured variables.
+                // At the point collectFreeVariables is called, the closure's own
+                // scope has NOT been pushed yet, so all scopes on the stack belong
+                // to the enclosing function/block.
+                var i = self.scope_stack.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (self.scope_stack.items[i].get(id.name)) |ref| {
+                        // Check it's not already captured
+                        for (names.items) |n| {
+                            if (std.mem.eql(u8, n, id.name)) return;
                         }
+                        names.append(alloc, id.name) catch return LowerError.OutOfMemory;
+                        refs.append(alloc, ref) catch return LowerError.OutOfMemory;
+                        return;
                     }
                 }
             },
