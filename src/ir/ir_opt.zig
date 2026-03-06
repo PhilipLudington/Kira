@@ -191,13 +191,13 @@ fn eliminateDeadCode(allocator: Allocator, func: *Function) OptError!void {
         collectInstructionRefs(inst, &worklist, &used, allocator) catch return OptError.OutOfMemory;
     }
 
-    // Phase 3: Remove unused instructions from blocks
+    // Phase 3: Remove unused instructions from blocks.
+    // Side-effectful instructions were already added to `used` in Phase 1b,
+    // so the `used` set is the sole authority here — no redundant hasSideEffect check.
     for (func.blocks.items) |*blk| {
         var write_idx: usize = 0;
         for (blk.instructions.items) |ref| {
-            const inst = &func.instructions.items[ref];
-            // Keep instructions that are used or have side effects
-            if (used.contains(ref) or hasSideEffect(inst)) {
+            if (used.contains(ref)) {
                 blk.instructions.items[write_idx] = ref;
                 write_idx += 1;
             }

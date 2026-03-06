@@ -450,10 +450,10 @@ pub const Lowerer = struct {
 
     fn lowerForLoop(self: *Lowerer, fl: *const Statement.ForLoop) LowerError!void {
         // Iterator protocol is not yet implemented in the IR backend.
-        _ = self;
+        // Emit a void placeholder so the rest of the module can still be lowered.
         _ = fl;
-        log.warn("for-loops are not yet supported in the IR backend", .{});
-        return LowerError.UnsupportedStatement;
+        log.warn("for-loops are not yet supported in the IR backend — emitting placeholder", .{});
+        _ = try self.emit(.{ .const_void = {} });
     }
 
     fn lowerMatchStatement(self: *Lowerer, ms: *const Statement.MatchStatement) LowerError!void {
@@ -603,10 +603,12 @@ pub const Lowerer = struct {
         const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(bin.left);
+        // Capture AFTER evaluating left — bin.left may span multiple blocks
+        // (e.g. nested &&), so current_block may have changed.
+        const left_blk = self.current_block;
 
         const right_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const left_blk = self.current_block;
 
         self.setTerminator(.{ .branch = .{
             .condition = left,
@@ -631,10 +633,11 @@ pub const Lowerer = struct {
         const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(bin.left);
+        // Capture AFTER evaluating left — bin.left may span multiple blocks
+        const left_blk = self.current_block;
 
         const right_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const left_blk = self.current_block;
 
         self.setTerminator(.{ .branch = .{
             .condition = left,
@@ -949,7 +952,11 @@ pub const Lowerer = struct {
                 .value = arm_val,
             }) catch return LowerError.OutOfMemory;
             self.popScope();
-            self.setTerminator(.{ .jump = merge_blk });
+            // Guard: only set jump if the arm body didn't already set a terminator
+            // (e.g. an explicit return statement). Mirrors lowerMatchStatement.
+            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+                self.setTerminator(.{ .jump = merge_blk });
+            }
 
             self.current_block = next_blk;
         }
@@ -957,6 +964,8 @@ pub const Lowerer = struct {
         // Fallthrough is unreachable — exhaustiveness is guaranteed by the type checker.
         // Use unreachable_term (not jump) so this block is NOT a structural predecessor
         // of merge_blk, keeping the phi node's incoming edges consistent.
+        // NOTE: This block remains in the function's block list but is dead code.
+        // Downstream CFG walkers must skip blocks with unreachable_term terminators.
         self.setTerminator(.{ .unreachable_term = {} });
 
         self.current_block = merge_blk;
@@ -1173,6 +1182,8 @@ pub const Lowerer = struct {
     /// When `type_name` is provided, the lookup is scoped to that specific sum type,
     /// avoiding ambiguity when multiple types define variants with the same name.
     fn lookupVariantTag(self: *Lowerer, variant_name: []const u8, type_name: ?[]const u8) ?i128 {
+        var first_match: ?i128 = null;
+        var match_count: u32 = 0;
         for (self.module.type_decls.items) |td| {
             if (type_name) |tn| {
                 if (!std.mem.eql(u8, td.name, tn)) continue;
@@ -1181,14 +1192,20 @@ pub const Lowerer = struct {
                 .sum_type => |st| {
                     for (st.variants) |v| {
                         if (std.mem.eql(u8, v.name, variant_name)) {
-                            return @intCast(v.tag);
+                            if (first_match == null) first_match = @intCast(v.tag);
+                            match_count += 1;
+                            // If scoped by type_name, return immediately (unambiguous)
+                            if (type_name != null) return first_match;
                         }
                     }
                 },
                 .product_type => {},
             }
         }
-        return null;
+        if (match_count > 1) {
+            log.warn("ambiguous variant '{s}' matched in {d} types — using first match", .{ variant_name, match_count });
+        }
+        return first_match;
     }
 
     /// H8: Collect free variable references in closure body statements.
