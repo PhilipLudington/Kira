@@ -108,10 +108,10 @@
 - [x] Design IR suited for functional code
 - [x] Lower AST to IR after type checking
 - [x] IR-level optimizations for pure functions (inlining, constant folding)
-- [ ] Scope `lookupVariantTag` to expected type when type_path is unavailable (prevents ambiguity with same-named variants across types)
-- [ ] Implement for-loop lowering (iterator protocol)
 
 ### Code Generation
+- [ ] Implement for-loop IR lowering (iterator protocol)
+- [ ] Scope `lookupVariantTag` to expected type (variant disambiguation)
 - [ ] Choose backend (shared with Klar, LLVM, or custom)
 - [ ] Emit native executables
 - [ ] `kira build` command
