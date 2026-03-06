@@ -33,6 +33,7 @@ pub const LowerError = error{
     UnsupportedStatement,
     UnsupportedDeclaration,
     UndefinedVariable,
+    NoCurrentFunction,
 };
 
 /// Lowers a Kira AST Program into an IR Module.
@@ -784,6 +785,7 @@ pub const Lowerer = struct {
         var capture_names = std.ArrayListUnmanaged([]const u8){};
         defer capture_names.deinit(self.allocator);
         var capture_refs = std.ArrayListUnmanaged(ValueRef){};
+        defer capture_refs.deinit(self.allocator);
         try self.collectFreeVariables(cl.body, &capture_names, &capture_refs);
 
         // Record which captures are float-typed (from outer scope) before clearing
@@ -846,8 +848,10 @@ pub const Lowerer = struct {
                 self.setTerminator(.{ .ret = void_ref });
             }
 
-            // Prepare capture slice before leaving the errdefer scope
-            break :closure_body capture_refs.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+            // Copy capture refs into the arena for the IR. The capture_refs list
+            // itself is backed by self.allocator (freed by defer above).
+            const arena_captures = alloc.dupe(ValueRef, capture_refs.items) catch return LowerError.OutOfMemory;
+            break :closure_body arena_captures;
         };
 
         // Success: restore outer function context (errdefer is out of scope here)
@@ -1187,7 +1191,9 @@ pub const Lowerer = struct {
         names: *std.ArrayListUnmanaged([]const u8),
         refs: *std.ArrayListUnmanaged(ValueRef),
     ) LowerError!void {
-        const alloc = self.irAlloc();
+        // Use the backing allocator (not the arena) because the caller owns
+        // these lists and frees them with self.allocator.
+        const alloc = self.allocator;
         for (stmts) |*stmt| {
             try self.collectFreeVarsInStmt(stmt, names, refs, alloc);
         }
@@ -1298,7 +1304,24 @@ pub const Lowerer = struct {
                 }
             },
             .closure => |*cl| {
+                // When recursing into a nested closure, any identifier that matches
+                // the inner closure's own parameter is locally bound — not a free
+                // variable of the outer closure. Record the pre-recurse count so we
+                // can filter spurious captures added during the walk.
+                const pre_count = names.items.len;
                 for (cl.body) |*s| try self.collectFreeVarsInStmt(s, names, refs, alloc);
+                // Remove captures that match inner closure parameters (walk backward)
+                var j: usize = names.items.len;
+                while (j > pre_count) {
+                    j -= 1;
+                    for (cl.parameters) |p| {
+                        if (std.mem.eql(u8, names.items[j], p.name)) {
+                            _ = names.orderedRemove(j);
+                            _ = refs.orderedRemove(j);
+                            break;
+                        }
+                    }
+                }
             },
             .field_access => |*fa| try self.collectFreeVarsInExpr(fa.object, names, refs, alloc),
             .index_access => |*ia| {
@@ -1396,7 +1419,7 @@ pub const Lowerer = struct {
     // ----------------------------------------------------------------
 
     fn emit(self: *Lowerer, op: Instruction.Op) LowerError!ValueRef {
-        const func = self.currentFunc() orelse return LowerError.OutOfMemory;
+        const func = self.currentFunc() orelse return LowerError.NoCurrentFunction;
         return func.addInstruction(self.irAlloc(), self.current_block, .{ .op = op }) catch return LowerError.OutOfMemory;
     }
 
