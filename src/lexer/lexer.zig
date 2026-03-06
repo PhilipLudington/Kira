@@ -149,7 +149,30 @@ pub const Lexer = struct {
                 return self.makeTokenAt(.pipe, "|", start_location);
             },
             '/' => {
-                // Comments are handled in skipWhitespaceAndComments
+                // Check for doc comments
+                if (self.peek() == '/' and self.current < self.source.len) {
+                    const next_after = if (self.current + 1 < self.source.len) self.source[self.current + 1] else 0;
+                    if (next_after == '/' or next_after == '!') {
+                        // Consume the rest of "///" or "//!"
+                        _ = self.advance(); // second /
+                        _ = self.advance(); // / or !
+                        const tok_type: TokenType = if (next_after == '!') .module_doc_comment else .doc_comment;
+
+                        // Consume the doc comment content to end of line
+                        // Include leading space skip
+                        if (!self.isAtEnd() and self.peek() == ' ') {
+                            _ = self.advance();
+                        }
+                        const content_start = self.current;
+                        while (!self.isAtEnd() and self.peek() != '\n') {
+                            _ = self.advance();
+                        }
+                        const content = self.source[content_start..self.current];
+                        self.updateNewlineState(.doc_comment);
+                        return self.makeTokenAt(tok_type, content, start_location);
+                    }
+                }
+                // Regular slash (division)
                 self.updateNewlineState(.slash);
                 return self.makeTokenAt(.slash, "/", start_location);
             },
@@ -184,7 +207,14 @@ pub const Lexer = struct {
                 },
                 '/' => {
                     if (self.peekNext() == '/') {
-                        // Line comment - skip to end of line
+                        // Check for doc comments: /// or //!
+                        if (self.current + 2 < self.source.len and
+                            (self.source[self.current + 2] == '/' or self.source[self.current + 2] == '!'))
+                        {
+                            // Don't skip doc comments — let nextToken handle them
+                            return;
+                        }
+                        // Regular line comment - skip to end of line
                         while (!self.isAtEnd() and self.peek() != '\n') {
                             _ = self.advance();
                         }
