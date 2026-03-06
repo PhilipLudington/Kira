@@ -14,6 +14,7 @@ pub const config = @import("config/root.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const lsp = @import("lsp/root.zig");
 pub const formatter = @import("formatter.zig");
+pub const ir = @import("ir/root.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -63,6 +64,16 @@ pub const ResolvedType = typechecker.ResolvedType;
 pub const TypeChecker = typechecker.TypeChecker;
 pub const TypeCheckError = typechecker.TypeCheckError;
 pub const TypeCheckDiagnostic = typechecker.Diagnostic;
+
+// IR exports
+pub const IRModule = ir.Module;
+pub const IRFunction = ir.Function;
+pub const IRInstruction = ir.Instruction;
+pub const IRTerminator = ir.Terminator;
+pub const IRValueRef = ir.ValueRef;
+pub const IRBlockId = ir.BlockId;
+pub const IRLowerer = ir.Lowerer;
+pub const IRLowerError = ir.LowerError;
 
 // Interpreter exports
 pub const Value = interpreter_mod.Value;
@@ -287,6 +298,7 @@ test {
     _ = diagnostic;
     _ = lsp;
     _ = formatter;
+    _ = ir;
 }
 
 test "tokenize simple expression" {

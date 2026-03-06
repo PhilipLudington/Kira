@@ -132,7 +132,7 @@ pub const DiagnosticRenderer = struct {
     }
 
     fn writeLocation(self: DiagnosticRenderer, writer: anytype, span: Span) !void {
-        var buf: [512]u8 = undefined;
+        var buf: [1024]u8 = undefined;
         if (self.use_color) {
             const loc = std.fmt.bufPrint(&buf, "  {s}-->{s} {s}:{d}:{d}\n", .{
                 Color.blue,
@@ -140,14 +140,21 @@ pub const DiagnosticRenderer = struct {
                 self.path,
                 span.start.line,
                 span.start.column,
-            }) catch return;
+            }) catch {
+                // Path too long for buffer — write a truncated location
+                try writer.writeAll("  --> <path too long>\n");
+                return;
+            };
             try writer.writeAll(loc);
         } else {
             const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
                 self.path,
                 span.start.line,
                 span.start.column,
-            }) catch return;
+            }) catch {
+                try writer.writeAll("  --> <path too long>\n");
+                return;
+            };
             try writer.writeAll(loc);
         }
     }
@@ -254,7 +261,7 @@ pub const DiagnosticRenderer = struct {
 
         // Related source snippet (if we have valid location)
         if (info.span.start.line > 0) {
-            var buf: [512]u8 = undefined;
+            var buf: [1024]u8 = undefined;
             if (self.use_color) {
                 const loc = std.fmt.bufPrint(&buf, "  {s}-->{s} {s}:{d}:{d}\n", .{
                     Color.blue,
@@ -262,14 +269,20 @@ pub const DiagnosticRenderer = struct {
                     self.path,
                     info.span.start.line,
                     info.span.start.column,
-                }) catch return;
+                }) catch {
+                    try writer.writeAll("  --> <path too long>\n");
+                    return;
+                };
                 try writer.writeAll(loc);
             } else {
                 const loc = std.fmt.bufPrint(&buf, "  --> {s}:{d}:{d}\n", .{
                     self.path,
                     info.span.start.line,
                     info.span.start.column,
-                }) catch return;
+                }) catch {
+                    try writer.writeAll("  --> <path too long>\n");
+                    return;
+                };
                 try writer.writeAll(loc);
             }
         }

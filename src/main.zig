@@ -146,6 +146,9 @@ fn parseArgs() !Args {
             if (user_args_count < user_args_buffer.len) {
                 user_args_buffer[user_args_count] = arg;
                 user_args_count += 1;
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Warning: too many arguments, excess arguments ignored\n") catch {};
             }
             continue;
         }
