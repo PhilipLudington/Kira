@@ -4,7 +4,7 @@
 
 Kira is a functional programming language with explicit types, algebraic data types, and a compiler-enforced effects system. The compiler is written in Zig (0.15+) with a pipeline of Parser → Resolver → TypeChecker → Interpreter. Phase 0 (foundation) is complete at v0.11.1 with 285 passing tests. This plan covers Phases 1–4 from ROADMAP.md, taking Kira from a working interpreter to a complete, compiled language with tooling and ecosystem.
 
-Current status: Phases 1–7 complete. Phase 8 next.
+Current status: Phases 1–8 complete. Phase 9 next.
 
 ---
 
@@ -226,8 +226,9 @@ Before Phase 8, these must be true:
 
 ---
 
-## Phase 8: Code Generation
+## Phase 8: Code Generation ✅
 
+**Status:** Complete (2026-03-05)
 **Goal:** Emit native executables from IR, implement `kira build`, and build the runtime system.
 **Estimated Effort:** 5 days
 
@@ -237,26 +238,26 @@ Before Phase 8, these must be true:
 - Runtime system for ADTs, closures, and garbage collection
 
 ### Tasks
-- [ ] Implement for-loop IR lowering (iterator protocol) — for-loop currently returns `UnsupportedStatement` in `src/ir/lower.zig`. Requires defining iterator protocol. (per DESIGN.md section "Implementation Notes") Tests should cover: lower for loop over list, lower for loop with index, nested for loops.
-- [ ] Scope `lookupVariantTag` to expected type — currently uses first-match across all types. Needs type-context threading to be correct when multiple sum types share a constructor name. Update `src/ir/lower.zig`. Tests should cover: disambiguate same-named variants from different sum types, error on ambiguous variant without type context.
-- [ ] Implement runtime system for ADTs — create `src/runtime/adt.zig` with tagged union representation, constructor allocation, and pattern match dispatch at native level. (per DESIGN.md sections "Syntax and Grammar" and "Pattern Matching") Tests should cover: construct Option.Some, match on ADT tag, nested ADT construction, memory layout correctness.
-- [ ] Implement runtime system for closures — create `src/runtime/closure.zig` with closure allocation, environment capture, and function pointer dispatch. (per DESIGN.md section "Higher-Order Functions") Tests should cover: create closure capturing one variable, call closure, nested closures, closure outlives creating scope.
-- [ ] Implement runtime memory management — create `src/runtime/gc.zig` with a simple garbage collector or reference counting for heap-allocated ADTs and closures. (per DESIGN.md section "Implementation Notes") Tests should cover: allocate and collect, no premature collection of live objects, cyclic reference handling if using GC, memory pressure triggers collection.
-- [ ] Implement code generation for expressions and functions — emit native code (or C, or LLVM IR) from Kira IR for arithmetic, function calls, and let bindings. Create `src/codegen.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: compile and run arithmetic expression, compile function call, compile let binding, output matches interpreter result.
-- [ ] Implement code generation for control flow and pattern matching — emit branches, jumps, and match dispatch. Update `src/codegen.zig`. (per DESIGN.md sections "Implementation Notes" and "Pattern Matching") Tests should cover: compile if/else, compile match on ADT, compile for loop, nested match with guards.
-- [ ] Implement code generation for effects and IO — emit code that interfaces with the runtime for IO operations and effect tracking. Update `src/codegen.zig`. (per DESIGN.md section "Effects System") Tests should cover: compile println, compile file read, compile effect function calling pure function, compile error propagation with `?`.
-- [ ] Add `kira build` CLI command — wire code generation into the CLI, producing a native executable from `.ki` source. Update CLI handling. (per DESIGN.md section "Implementation Notes") Tests should cover: `kira build hello.ki` produces executable, executable runs and produces correct output, build error on type error, `--output` flag for output path.
-- [ ] Implement tail-call optimization — detect tail-position calls in IR and emit jumps instead of calls. Update `src/ir_opt.zig` and `src/codegen.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: recursive factorial with TCO doesn't stack overflow, mutual recursion with TCO, non-tail call preserved as regular call.
+- [x] Implement for-loop IR lowering (iterator protocol) — for-loop currently returns `UnsupportedStatement` in `src/ir/lower.zig`. Requires defining iterator protocol. (per DESIGN.md section "Implementation Notes") Tests should cover: lower for loop over list, lower for loop with index, nested for loops. (completed 2026-03-05)
+- [x] Scope `lookupVariantTag` to expected type — currently uses first-match across all types. Needs type-context threading to be correct when multiple sum types share a constructor name. Update `src/ir/lower.zig`. Tests should cover: disambiguate same-named variants from different sum types, error on ambiguous variant without type context. (completed 2026-03-05)
+- [x] Implement runtime system for ADTs — create `src/runtime/adt.zig` with tagged union representation, constructor allocation, and pattern match dispatch at native level. (per DESIGN.md sections "Syntax and Grammar" and "Pattern Matching") Tests should cover: construct Option.Some, match on ADT tag, nested ADT construction, memory layout correctness. (completed 2026-03-05)
+- [x] Implement runtime system for closures — create `src/runtime/closure.zig` with closure allocation, environment capture, and function pointer dispatch. (per DESIGN.md section "Higher-Order Functions") Tests should cover: create closure capturing one variable, call closure, nested closures, closure outlives creating scope. (completed 2026-03-05)
+- [x] Implement runtime memory management — create `src/runtime/gc.zig` with a simple garbage collector or reference counting for heap-allocated ADTs and closures. (per DESIGN.md section "Implementation Notes") Tests should cover: allocate and collect, no premature collection of live objects, cyclic reference handling if using GC, memory pressure triggers collection. (completed 2026-03-05)
+- [x] Implement code generation for expressions and functions — emit native code (or C, or LLVM IR) from Kira IR for arithmetic, function calls, and let bindings. Create `src/codegen.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: compile and run arithmetic expression, compile function call, compile let binding, output matches interpreter result. (completed 2026-03-05)
+- [x] Implement code generation for control flow and pattern matching — emit branches, jumps, and match dispatch. Update `src/codegen.zig`. (per DESIGN.md sections "Implementation Notes" and "Pattern Matching") Tests should cover: compile if/else, compile match on ADT, compile for loop, nested match with guards. (completed 2026-03-05)
+- [x] Implement code generation for effects and IO — emit code that interfaces with the runtime for IO operations and effect tracking. Update `src/codegen.zig`. (per DESIGN.md section "Effects System") Tests should cover: compile println, compile file read, compile effect function calling pure function, compile error propagation with `?`. (completed 2026-03-05)
+- [x] Add `kira build` CLI command — wire code generation into the CLI, producing a native executable from `.ki` source. Update CLI handling. (per DESIGN.md section "Implementation Notes") Tests should cover: `kira build hello.ki` produces executable, executable runs and produces correct output, build error on type error, `--output` flag for output path. (completed 2026-03-05)
+- [x] Implement tail-call optimization — detect tail-position calls in IR and emit jumps instead of calls. Update `src/ir_opt.zig` and `src/codegen.zig`. (per DESIGN.md section "Implementation Notes") Tests should cover: recursive factorial with TCO doesn't stack overflow, mutual recursion with TCO, non-tail call preserved as regular call. (completed 2026-03-05)
 
 ### Testing Strategy
 Run `./run-tests.sh`. Compile sample `.ki` programs with `kira build` and run the executables. Compare output to interpreter results for the same programs.
 
 ### Phase 8 Readiness Gate
 Before Phase 9, these must be true:
-- [ ] `kira build` produces working native executables
-- [ ] ADTs, closures, and effects work in compiled code
-- [ ] Tail-call optimization prevents stack overflow on recursive programs
-- [ ] All prior tests still pass
+- [x] `kira build` produces working native executables
+- [x] ADTs, closures, and effects work in compiled code
+- [x] Tail-call optimization prevents stack overflow on recursive programs
+- [x] All prior tests still pass (437 passing)
 
 ---
 

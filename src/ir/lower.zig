@@ -449,11 +449,68 @@ pub const Lowerer = struct {
     }
 
     fn lowerForLoop(self: *Lowerer, fl: *const Statement.ForLoop) LowerError!void {
-        // Iterator protocol is not yet implemented in the IR backend.
-        // Emit a void placeholder so the rest of the module can still be lowered.
-        _ = fl;
-        log.warn("for-loops are not yet supported in the IR backend — emitting placeholder", .{});
-        _ = try self.emit(.{ .const_void = {} });
+        const func = self.currentFunc().?;
+        const alloc = self.irAlloc();
+
+        // Lower the iterable expression
+        const iterable = try self.lowerExpression(fl.iterable);
+
+        // Get the length of the iterable
+        const len = try self.emit(.{ .array_len = iterable });
+
+        // Create a mutable index variable initialized to 0
+        const zero = try self.emit(.{ .const_int = .{ .value = 0 } });
+        const idx_slot = try self.emit(.{ .alloc_var = .{ .name = "for$idx", .init_value = zero } });
+
+        // Create blocks: cond, body, exit
+        const cond_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const body_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const exit_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+
+        // Jump from current block to condition
+        self.setTerminator(.{ .jump = cond_blk });
+
+        // Condition block: check idx < len
+        self.current_block = cond_blk;
+        const idx_val = try self.emit(.{ .load_var = idx_slot });
+        const cond = try self.emit(.{ .cmp = .{ .op = .lt, .left = idx_val, .right = len } });
+        self.setTerminator(.{ .branch = .{
+            .condition = cond,
+            .then_block = body_blk,
+            .else_block = exit_blk,
+        } });
+
+        // Body block: extract element, bind pattern, execute body, increment
+        const saved_break = self.break_target;
+        self.break_target = exit_blk;
+
+        self.current_block = body_blk;
+        try self.pushScope();
+        errdefer self.popScope();
+
+        // Load index and get element
+        const body_idx = try self.emit(.{ .load_var = idx_slot });
+        const elem = try self.emit(.{ .index_get = .{ .object = iterable, .index = body_idx } });
+
+        // Bind the loop pattern to the element
+        try self.lowerPatternBindings(fl.pattern, elem);
+
+        // Lower the loop body
+        try self.lowerStatements(fl.body);
+
+        self.popScope();
+
+        // Increment index (only if block not terminated by return/break)
+        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+            const cur_idx = try self.emit(.{ .load_var = idx_slot });
+            const one = try self.emit(.{ .const_int = .{ .value = 1 } });
+            const next_idx = try self.emit(.{ .int_binop = .{ .op = .add, .left = cur_idx, .right = one } });
+            _ = try self.emit(.{ .store_var = .{ .target = idx_slot, .value = next_idx } });
+            self.setTerminator(.{ .jump = cond_blk });
+        }
+
+        self.break_target = saved_break;
+        self.current_block = exit_blk;
     }
 
     fn lowerMatchStatement(self: *Lowerer, ms: *const Statement.MatchStatement) LowerError!void {
@@ -463,6 +520,9 @@ pub const Lowerer = struct {
 
         if (ms.arms.len == 0) return;
 
+        // Derive context type for variant disambiguation
+        const context_type = inferTypeFromArms(ms.arms) orelse self.inferTypeFromSubject(subject);
+
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         // For each arm, create a block
@@ -471,7 +531,7 @@ pub const Lowerer = struct {
             const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
 
             // Generate condition check for this arm's pattern
-            const matches = try self.lowerPatternCheck(arm.pattern, subject);
+            const matches = try self.lowerPatternCheck(arm.pattern, subject, context_type);
 
             // Apply guard if present
             const final_cond = if (arm.guard) |guard| blk: {
@@ -913,6 +973,9 @@ pub const Lowerer = struct {
 
         if (me.arms.len == 0) return self.emit(.{ .const_void = {} });
 
+        // Derive context type for variant disambiguation
+        const context_type = inferTypeFromArms(me.arms) orelse self.inferTypeFromSubject(subject);
+
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
         var phi_entries = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
 
@@ -920,7 +983,7 @@ pub const Lowerer = struct {
             const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
             const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
 
-            const matches = try self.lowerPatternCheck(arm.pattern, subject);
+            const matches = try self.lowerPatternCheck(arm.pattern, subject, context_type);
 
             const final_cond = if (arm.guard) |guard| blk: {
                 const guard_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
@@ -1072,7 +1135,9 @@ pub const Lowerer = struct {
     // ----------------------------------------------------------------
 
     /// Generate a boolean ValueRef that is true if the pattern matches the subject.
-    fn lowerPatternCheck(self: *Lowerer, pat: *const Pattern, subject: ValueRef) LowerError!ValueRef {
+    /// `context_type` provides the expected sum type name for scoping variant lookups
+    /// when the pattern itself doesn't carry a type_path.
+    fn lowerPatternCheck(self: *Lowerer, pat: *const Pattern, subject: ValueRef, context_type: ?[]const u8) LowerError!ValueRef {
         return switch (pat.kind) {
             .wildcard, .identifier => self.emit(.{ .const_bool = true }),
             .bool_literal => |b| {
@@ -1088,9 +1153,12 @@ pub const Lowerer = struct {
                 return self.emit(.{ .cmp = .{ .op = .eq, .left = subject, .right = lit } });
             },
             .constructor => |c| {
-                // C6 fix: compare tag as integer, not string
-                // Use type_path to scope the lookup to the correct sum type
-                const type_name: ?[]const u8 = if (c.type_path) |tp| if (tp.len > 0) tp[0] else null else null;
+                // Use type_path from the pattern if available, otherwise fall back
+                // to the context type derived from the match subject or sibling arms.
+                const type_name: ?[]const u8 = if (c.type_path) |tp|
+                    (if (tp.len > 0) tp[0] else null)
+                else
+                    context_type;
                 const tag = try self.emit(.{ .get_tag = subject });
                 const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse blk: {
                     log.warn("unknown variant '{s}' in pattern — tag lookup failed, defaulting to 0", .{c.variant_name});
@@ -1100,6 +1168,31 @@ pub const Lowerer = struct {
                 return self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected_tag } });
             },
             else => self.emit(.{ .const_bool = true }),
+        };
+    }
+
+    /// Try to determine the sum type name from a set of match arms.
+    /// Scans constructor patterns for any that have an explicit type_path.
+    fn inferTypeFromArms(arms: anytype) ?[]const u8 {
+        for (arms) |*arm| {
+            if (arm.pattern.kind == .constructor) {
+                const c = arm.pattern.kind.constructor;
+                if (c.type_path) |tp| {
+                    if (tp.len > 0) return tp[0];
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Try to extract the type name from a subject's IR instruction.
+    /// Works when the subject was directly constructed via make_variant.
+    fn inferTypeFromSubject(self: *Lowerer, subject: ValueRef) ?[]const u8 {
+        const func = self.currentFunc() orelse return null;
+        if (subject >= func.instructions.items.len) return null;
+        return switch (func.instructions.items[subject].op) {
+            .make_variant => |v| v.type_name,
+            else => null,
         };
     }
 
@@ -1711,6 +1804,365 @@ test "lower nested expressions" {
     const inst = lowerer.currentFunc().?.getInstruction(ref);
     try std.testing.expect(inst.op == .int_binop);
     try std.testing.expect(inst.op.int_binop.op == .mul);
+
+    lowerer.popScope();
+}
+
+test "lower for loop over array" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_for";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    // Build: for x in [1, 2, 3] { }
+    var elem1 = Expression.init(.{ .integer_literal = .{ .value = 1, .suffix = null } }, span);
+    var elem2 = Expression.init(.{ .integer_literal = .{ .value = 2, .suffix = null } }, span);
+    var elem3 = Expression.init(.{ .integer_literal = .{ .value = 3, .suffix = null } }, span);
+    var elements = [_]*Expression{ &elem1, &elem2, &elem3 };
+    var iterable = Expression.init(.{ .array_literal = .{ .elements = &elements } }, span);
+
+    var pattern = Pattern.identifier("x", span);
+
+    const for_loop = Statement.ForLoop{
+        .pattern = &pattern,
+        .iterable = &iterable,
+        .body = &.{},
+    };
+
+    const stmt = Statement.init(.{ .for_loop = for_loop }, span);
+    try lowerer.lowerStatement(&stmt);
+
+    // Verify the lowered structure:
+    // bb0: init block with array, array_len, alloc_var, jump -> bb1
+    // bb1: cond block with load_var, cmp_lt, branch
+    // bb2: body block with load_var, index_get, increment, jump -> bb1
+    // bb3: exit block
+    const f = lowerer.currentFunc().?;
+    try std.testing.expectEqual(@as(usize, 4), f.blocks.items.len);
+
+    // Entry block terminates with jump to cond
+    try std.testing.expect(f.blocks.items[0].terminator == .jump);
+
+    // Cond block terminates with branch
+    try std.testing.expect(f.blocks.items[1].terminator == .branch);
+    try std.testing.expectEqual(@as(BlockId, 2), f.blocks.items[1].terminator.branch.then_block);
+    try std.testing.expectEqual(@as(BlockId, 3), f.blocks.items[1].terminator.branch.else_block);
+
+    // Body block terminates with jump back to cond
+    try std.testing.expect(f.blocks.items[2].terminator == .jump);
+    try std.testing.expectEqual(@as(BlockId, 1), f.blocks.items[2].terminator.jump);
+
+    // Verify array_len instruction exists
+    var has_array_len = false;
+    for (f.instructions.items) |inst2| {
+        if (inst2.op == .array_len) has_array_len = true;
+    }
+    try std.testing.expect(has_array_len);
+
+    // Exit block is current
+    try std.testing.expectEqual(@as(BlockId, 3), lowerer.current_block);
+
+    lowerer.popScope();
+}
+
+test "lower for loop binds pattern variable" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_for_bind";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    // Build: for item in [10] { <use item> }
+    // Body: expression statement that references "item"
+    var elem = Expression.init(.{ .integer_literal = .{ .value = 10, .suffix = null } }, span);
+    var elements = [_]*Expression{&elem};
+    var iterable = Expression.init(.{ .array_literal = .{ .elements = &elements } }, span);
+
+    var pattern = Pattern.identifier("item", span);
+
+    // Body: just reference "item" as an expression statement
+    var item_ref = Expression.init(.{ .identifier = .{ .name = "item", .generic_args = null } }, span);
+    var body = [_]Statement{
+        Statement.init(.{ .expression_statement = &item_ref }, span),
+    };
+
+    const for_loop = Statement.ForLoop{
+        .pattern = &pattern,
+        .iterable = &iterable,
+        .body = &body,
+    };
+
+    const stmt = Statement.init(.{ .for_loop = for_loop }, span);
+    try lowerer.lowerStatement(&stmt);
+
+    // Verify: the body block should contain an index_get (element extraction)
+    // and use that value when referencing "item"
+    const f = lowerer.currentFunc().?;
+    var has_index_get = false;
+    for (f.instructions.items) |inst2| {
+        if (inst2.op == .index_get) has_index_get = true;
+    }
+    try std.testing.expect(has_index_get);
+
+    lowerer.popScope();
+}
+
+test "lower nested for loops" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_nested_for";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 20, .offset = 19 },
+    };
+
+    // Build: for x in [1] { for y in [2] { } }
+    var inner_elem = Expression.init(.{ .integer_literal = .{ .value = 2, .suffix = null } }, span);
+    var inner_elements = [_]*Expression{&inner_elem};
+    var inner_iterable = Expression.init(.{ .array_literal = .{ .elements = &inner_elements } }, span);
+    var inner_pattern = Pattern.identifier("y", span);
+    const inner_for = Statement.ForLoop{
+        .pattern = &inner_pattern,
+        .iterable = &inner_iterable,
+        .body = &.{},
+    };
+    const inner_stmt = Statement.init(.{ .for_loop = inner_for }, span);
+
+    var outer_elem = Expression.init(.{ .integer_literal = .{ .value = 1, .suffix = null } }, span);
+    var outer_elements = [_]*Expression{&outer_elem};
+    var outer_iterable = Expression.init(.{ .array_literal = .{ .elements = &outer_elements } }, span);
+    var outer_pattern = Pattern.identifier("x", span);
+    var outer_body = [_]Statement{inner_stmt};
+    const outer_for = Statement.ForLoop{
+        .pattern = &outer_pattern,
+        .iterable = &outer_iterable,
+        .body = &outer_body,
+    };
+
+    const stmt = Statement.init(.{ .for_loop = outer_for }, span);
+    try lowerer.lowerStatement(&stmt);
+
+    // Nested for loops should create 7 blocks total:
+    // bb0: outer init (entry)
+    // bb1: outer cond
+    // bb2: outer body (contains inner loop init)
+    // bb3: outer exit
+    // bb4: inner cond
+    // bb5: inner body
+    // bb6: inner exit
+    const f = lowerer.currentFunc().?;
+    try std.testing.expectEqual(@as(usize, 7), f.blocks.items.len);
+
+    // Outer entry -> outer cond
+    try std.testing.expect(f.blocks.items[0].terminator == .jump);
+
+    // Outer cond -> branch(outer body, outer exit)
+    try std.testing.expect(f.blocks.items[1].terminator == .branch);
+
+    // Inner cond -> branch(inner body, inner exit)
+    try std.testing.expect(f.blocks.items[4].terminator == .branch);
+
+    lowerer.popScope();
+}
+
+test "lookupVariantTag scoped to expected type" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+
+    const alloc = lowerer.irAlloc();
+
+    // Register two sum types that share a variant name "Red"
+    _ = lowerer.module.addTypeDecl(.{
+        .name = "Color",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Red", .tag = 0, .field_count = 0 },
+                .{ .name = "Blue", .tag = 1, .field_count = 0 },
+            },
+        } },
+    }) catch unreachable;
+
+    _ = lowerer.module.addTypeDecl(.{
+        .name = "Light",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Red", .tag = 0, .field_count = 0 },
+                .{ .name = "Yellow", .tag = 1, .field_count = 0 },
+                .{ .name = "Green", .tag = 2, .field_count = 0 },
+            },
+        } },
+    }) catch unreachable;
+
+    // Scoped lookup: "Red" in "Color" -> tag 0
+    const color_red = lowerer.lookupVariantTag("Red", "Color");
+    try std.testing.expect(color_red != null);
+    try std.testing.expectEqual(@as(i128, 0), color_red.?);
+
+    // Scoped lookup: "Yellow" in "Light" -> tag 1
+    const light_yellow = lowerer.lookupVariantTag("Yellow", "Light");
+    try std.testing.expect(light_yellow != null);
+    try std.testing.expectEqual(@as(i128, 1), light_yellow.?);
+
+    // Scoped lookup: "Yellow" in "Color" -> not found
+    const color_yellow = lowerer.lookupVariantTag("Yellow", "Color");
+    try std.testing.expect(color_yellow == null);
+
+    // Unscoped: "Red" without type -> returns first match (0) but is ambiguous
+    const unscoped = lowerer.lookupVariantTag("Red", null);
+    try std.testing.expect(unscoped != null);
+    try std.testing.expectEqual(@as(i128, 0), unscoped.?);
+
+    // Unscoped: unique variant "Green" -> unambiguous
+    const green = lowerer.lookupVariantTag("Green", null);
+    try std.testing.expect(green != null);
+    try std.testing.expectEqual(@as(i128, 2), green.?);
+
+    _ = alloc;
+}
+
+test "inferTypeFromArms extracts type from constructor pattern" {
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    // Arm with type_path set (e.g., Option.Some)
+    var type_path = [_][]const u8{"Option"};
+    var pat_with_path = Pattern{
+        .kind = .{ .constructor = .{
+            .type_path = &type_path,
+            .variant_name = "Some",
+            .arguments = null,
+        } },
+        .span = span,
+    };
+    var arms = [_]Statement.MatchArm{
+        .{ .pattern = &pat_with_path, .guard = null, .body = &.{}, .span = span },
+    };
+    const result = Lowerer.inferTypeFromArms(&arms);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("Option", result.?);
+
+    // Arm without type_path (bare variant)
+    var pat_bare = Pattern{
+        .kind = .{ .constructor = .{
+            .type_path = null,
+            .variant_name = "None",
+            .arguments = null,
+        } },
+        .span = span,
+    };
+    var bare_arms = [_]Statement.MatchArm{
+        .{ .pattern = &pat_bare, .guard = null, .body = &.{}, .span = span },
+    };
+    const bare_result = Lowerer.inferTypeFromArms(&bare_arms);
+    try std.testing.expect(bare_result == null);
+}
+
+test "lowerPatternCheck uses context_type for untyped constructor" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+
+    const alloc = lowerer.irAlloc();
+
+    // Register two types with same variant "None"
+    _ = lowerer.module.addTypeDecl(.{
+        .name = "Option",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Some", .tag = 0, .field_count = 1 },
+                .{ .name = "None", .tag = 1, .field_count = 0 },
+            },
+        } },
+    }) catch unreachable;
+
+    _ = lowerer.module.addTypeDecl(.{
+        .name = "Maybe",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Just", .tag = 0, .field_count = 1 },
+                .{ .name = "None", .tag = 1, .field_count = 0 },
+            },
+        } },
+    }) catch unreachable;
+
+    var func = Function.init(alloc);
+    func.name = "test_ctx";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    // Create a subject value (some ADT value)
+    const subject = try lowerer.emit(.{ .const_int = .{ .value = 0 } });
+
+    // Pattern: bare "None" (no type_path)
+    var pat = Pattern{
+        .kind = .{ .constructor = .{
+            .type_path = null,
+            .variant_name = "None",
+            .arguments = null,
+        } },
+        .span = span,
+    };
+
+    // With context_type "Option", should scope to Option.None (tag 1)
+    const check_ref = try lowerer.lowerPatternCheck(&pat, subject, "Option");
+    const f = lowerer.currentFunc().?;
+    const check_inst = f.getInstruction(check_ref);
+    try std.testing.expect(check_inst.op == .cmp);
+
+    // Verify the expected tag is 1 (Option.None)
+    const expected_tag_ref = check_inst.op.cmp.right;
+    const tag_inst = f.getInstruction(expected_tag_ref);
+    try std.testing.expect(tag_inst.op == .const_int);
+    try std.testing.expectEqual(@as(i128, 1), tag_inst.op.const_int.value);
 
     lowerer.popScope();
 }

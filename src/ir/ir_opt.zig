@@ -25,6 +25,7 @@ pub fn optimize(allocator: Allocator, module: *Module) OptError!void {
     for (module.functions.items) |*func| {
         try constantFold(allocator, func);
         try eliminateDeadCode(allocator, func);
+        try tailCallOptimize(allocator, module, func);
     }
 }
 
@@ -288,6 +289,8 @@ fn collectInstructionRefs(inst: *const Instruction, worklist: *std.ArrayListUnma
             try markRef(idx.index, worklist, used, allocator);
             try markRef(idx.value, worklist, used, allocator);
         },
+        .array_len => |v| try markRef(v, worklist, used, allocator),
+        .store_param => |sp| try markRef(sp.value, worklist, used, allocator),
         .get_tag => |v| try markRef(v, worklist, used, allocator),
         .get_payload => |p| try markRef(p.variant, worklist, used, allocator),
         .call => |c| {
@@ -339,6 +342,101 @@ fn getConstBool(func: *const Function, ref: ValueRef) ?bool {
         .const_bool => |b| b,
         else => null,
     };
+}
+
+// ============================================================
+// Tail-Call Optimization
+// ============================================================
+
+/// Detect tail-position self-recursive calls and replace them with jumps
+/// back to the function entry block, turning recursion into iteration.
+///
+/// A tail call is detected when a block:
+///   1. Has a `ret %N` terminator
+///   2. Where `%N` is the result of a `call` instruction
+///   3. The call's callee resolves to the same function
+///   4. The call is the last instruction in the block (no uses after it)
+///
+/// When found, the call is replaced by:
+///   - Store each argument into the corresponding parameter slot
+///   - Jump back to the entry block
+fn tailCallOptimize(allocator: Allocator, module: *const Module, func: *Function) OptError!void {
+    const func_name = func.name orelse return; // Can't TCO anonymous closures
+
+    for (func.blocks.items) |*blk| {
+        const blk_id: BlockId = @intCast(blk.id);
+
+        // Check: terminator is `ret %N`
+        const ret_ref = switch (blk.terminator) {
+            .ret => |v| v orelse continue,
+            else => continue,
+        };
+
+        // Check: the returned value is a call instruction
+        if (ret_ref >= func.instructions.items.len) continue;
+        const ret_inst = &func.instructions.items[ret_ref];
+        const call_info = switch (ret_inst.op) {
+            .call => |c| c,
+            else => continue,
+        };
+
+        // Check: the callee is a reference to this same function
+        if (call_info.callee >= func.instructions.items.len) continue;
+        const callee_inst = func.instructions.items[call_info.callee];
+
+        const is_self_call = switch (callee_inst.op) {
+            .const_int => |c| blk2: {
+                if (c.value >= 0 and c.value < module.functions.items.len) {
+                    const target = &module.functions.items[@intCast(c.value)];
+                    if (target.name) |tn| {
+                        break :blk2 std.mem.eql(u8, tn, func_name);
+                    }
+                }
+                break :blk2 false;
+            },
+            else => false,
+        };
+
+        if (!is_self_call) continue;
+
+        // Check: argument count matches parameter count
+        if (call_info.args.len != func.params.len) continue;
+
+        // Check: the call is the last meaningful instruction in the block
+        var call_in_block = false;
+        for (blk.instructions.items) |inst_ref| {
+            if (inst_ref == ret_ref) {
+                call_in_block = true;
+                break;
+            }
+        }
+        if (!call_in_block) continue;
+
+        // Snapshot args before mutating — call_info.args may be invalidated
+        // when we add instructions below (since they share the arena).
+        const arg_count = call_info.args.len;
+        var arg_snapshot: [16]ValueRef = undefined;
+        if (arg_count > 16) continue; // Safety: skip if too many params
+        for (call_info.args, 0..) |a, i| {
+            arg_snapshot[i] = a;
+        }
+
+        // Replace the call instruction with a no-op
+        ret_inst.op = .{ .const_void = {} };
+
+        // Emit store_param instructions to reassign each parameter
+        for (0..arg_count) |i| {
+            _ = func.addInstruction(allocator, blk_id, .{
+                .op = .{ .store_param = .{
+                    .param_index = @intCast(i),
+                    .value = arg_snapshot[i],
+                } },
+            }) catch continue;
+        }
+
+        // Replace terminator: ret -> jump to entry
+        blk.terminator = .{ .jump = func.entry_block };
+    }
 }
 
 // ============================================================
@@ -570,6 +668,144 @@ test "dead code elimination keeps side-effectful calls" {
 
     // Both instructions should remain (call has side effects, callee is used by call)
     try std.testing.expectEqual(@as(usize, 2), func.blocks.items[blk].instructions.items.len);
+}
+
+test "tail call optimization detects self-recursive tail call" {
+    const allocator = std.testing.allocator;
+
+    var module = Module.init(allocator);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Build: fn factorial(n) { if n <= 1 { return 1 } return factorial(n-1) }
+    // Simplified IR: just the tail call block
+    var func = Function.init(alloc);
+    func.name = "factorial";
+    const params = [_]Function.Param{.{ .name = "n", .value_ref = 0 }};
+    func.params = &params;
+
+    const entry = try func.addBlock(alloc);
+
+    // %0 = const_int 0 (representing the function reference to factorial, index 0)
+    const func_ref = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 0 } } });
+    // %1 = const_int 42 (argument)
+    const arg = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 42 } } });
+    // %2 = call %0(%1) — self-recursive call
+    const args = [_]ValueRef{arg};
+    const call_result = try func.addInstruction(alloc, entry, .{
+        .op = .{ .call = .{ .callee = func_ref, .args = &args } },
+    });
+    // ret %2 — tail position
+    func.setTerminator(entry, .{ .ret = call_result });
+
+    _ = try module.addFunction(func);
+
+    // Run TCO
+    try tailCallOptimize(alloc, &module, &module.functions.items[0]);
+
+    const optimized = &module.functions.items[0];
+
+    // After TCO: terminator should be jump to entry, not ret
+    const term = optimized.blocks.items[0].terminator;
+    try std.testing.expect(term == .jump);
+    try std.testing.expectEqual(@as(BlockId, 0), term.jump);
+
+    // The call instruction should be replaced with const_void
+    const replaced = optimized.getInstruction(call_result);
+    try std.testing.expect(replaced.op == .const_void);
+
+    // A store_param instruction should have been added for the argument
+    var has_store_param = false;
+    for (optimized.instructions.items) |inst| {
+        if (inst.op == .store_param) {
+            const sp = inst.op.store_param;
+            try std.testing.expectEqual(@as(u32, 0), sp.param_index);
+            try std.testing.expectEqual(arg, sp.value);
+            has_store_param = true;
+        }
+    }
+    try std.testing.expect(has_store_param);
+}
+
+test "tail call optimization preserves non-tail calls" {
+    const allocator = std.testing.allocator;
+
+    var module = Module.init(allocator);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Build: fn foo(n) { let x = foo(n-1); return x + 1 }
+    // The call to foo is NOT in tail position (x + 1 happens after)
+    var func = Function.init(alloc);
+    func.name = "foo";
+    const params = [_]Function.Param{.{ .name = "n", .value_ref = 0 }};
+    func.params = &params;
+
+    const entry = try func.addBlock(alloc);
+
+    // %0 = const_int 0 (function ref)
+    const func_ref = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 0 } } });
+    // %1 = const_int 1 (argument)
+    const arg = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 1 } } });
+    // %2 = call %0(%1)
+    const args = [_]ValueRef{arg};
+    const call_result = try func.addInstruction(alloc, entry, .{
+        .op = .{ .call = .{ .callee = func_ref, .args = &args } },
+    });
+    // %3 = const_int 1
+    const one = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 1 } } });
+    // %4 = int_add %2, %3 (x + 1)
+    const sum = try func.addInstruction(alloc, entry, .{
+        .op = .{ .int_binop = .{ .op = .add, .left = call_result, .right = one } },
+    });
+    // ret %4 — NOT tail call (returns sum, not call result)
+    func.setTerminator(entry, .{ .ret = sum });
+
+    _ = try module.addFunction(func);
+
+    // Run TCO
+    try tailCallOptimize(alloc, &module, &module.functions.items[0]);
+
+    // Should NOT be optimized: terminator should still be ret
+    const term = module.functions.items[0].blocks.items[0].terminator;
+    try std.testing.expect(term == .ret);
+}
+
+test "tail call optimization ignores non-self calls" {
+    const allocator = std.testing.allocator;
+
+    var module = Module.init(allocator);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Build: fn bar(n) { return baz(n) }
+    // baz is a different function, so TCO should not apply
+    var func = Function.init(alloc);
+    func.name = "bar";
+    const params = [_]Function.Param{.{ .name = "n", .value_ref = 0 }};
+    func.params = &params;
+
+    const entry = try func.addBlock(alloc);
+
+    // %0 = const_int 99 (NOT a valid function index for "bar")
+    const func_ref = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 99 } } });
+    // %1 = const_int 1 (argument)
+    const arg = try func.addInstruction(alloc, entry, .{ .op = .{ .const_int = .{ .value = 1 } } });
+    // %2 = call %0(%1)
+    const args = [_]ValueRef{arg};
+    const call_result = try func.addInstruction(alloc, entry, .{
+        .op = .{ .call = .{ .callee = func_ref, .args = &args } },
+    });
+    func.setTerminator(entry, .{ .ret = call_result });
+
+    _ = try module.addFunction(func);
+
+    // Run TCO
+    try tailCallOptimize(alloc, &module, &module.functions.items[0]);
+
+    // Should NOT be optimized: callee is not self
+    const term = module.functions.items[0].blocks.items[0].terminator;
+    try std.testing.expect(term == .ret);
 }
 
 test "dead code elimination transitively removes dead chains" {

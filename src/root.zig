@@ -15,6 +15,8 @@ pub const diagnostic = @import("diagnostic.zig");
 pub const lsp = @import("lsp/root.zig");
 pub const formatter = @import("formatter.zig");
 pub const ir = @import("ir/root.zig");
+pub const runtime = @import("runtime/root.zig");
+pub const codegen = @import("codegen.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -299,6 +301,8 @@ test {
     _ = lsp;
     _ = formatter;
     _ = ir;
+    _ = runtime;
+    _ = codegen;
 }
 
 test "tokenize simple expression" {

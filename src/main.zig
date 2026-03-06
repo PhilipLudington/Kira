@@ -10,6 +10,7 @@ const Mode = enum {
     run,
     check,
     fmt,
+    build,
     test_cmd,
     lsp,
     help,
@@ -24,6 +25,7 @@ const Args = struct {
     show_ast: bool,
     no_color: bool,
     fmt_check: bool,
+    output_path: ?[]const u8,
     /// Arguments passed to the Kira program (after the file path)
     user_args: []const []const u8,
 };
@@ -88,6 +90,19 @@ pub fn main() !void {
                 std.process.exit(1);
             }
         },
+        .build => {
+            if (args.file_path) |path| {
+                buildFile(allocator, path, args.output_path, use_color) catch |err| {
+                    reportError(err);
+                    std.process.exit(1);
+                };
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Error: 'build' command requires a file path\n") catch {};
+                stderr.writeAll("Usage: kira build [--output <path>] <file.ki>\n") catch {};
+                std.process.exit(1);
+            }
+        },
         .lsp => runLsp(allocator) catch |err| {
             reportError(err);
             std.process.exit(1);
@@ -134,6 +149,7 @@ fn parseArgs() !Args {
         .show_ast = false,
         .no_color = false,
         .fmt_check = false,
+        .output_path = null,
         .user_args = &.{},
     };
 
@@ -183,6 +199,20 @@ fn parseArgs() !Args {
                     break;
                 }
             }
+        } else if (std.mem.eql(u8, arg, "build")) {
+            result.mode = .build;
+            // Look for --output flag and file path
+            while (args_iter.next()) |build_arg| {
+                if (std.mem.eql(u8, build_arg, "--output") or std.mem.eql(u8, build_arg, "-o")) {
+                    if (args_iter.next()) |out_path| {
+                        result.output_path = out_path;
+                    }
+                } else if (!std.mem.startsWith(u8, build_arg, "-")) {
+                    result.file_path = build_arg;
+                    file_path_seen = true;
+                    break;
+                }
+            }
         } else if (std.mem.eql(u8, arg, "lsp")) {
             result.mode = .lsp;
             return result;
@@ -227,6 +257,7 @@ fn printHelp() void {
         \\
         \\Commands:
         \\  run <file.ki>     Run a Kira program
+        \\  build <file.ki>   Compile to C (use --output for custom path)
         \\  check <file.ki>   Type-check a program without running
         \\  fmt <file.ki>     Format a Kira source file
         \\  test <file.ki>    Run tests in a file
@@ -239,6 +270,7 @@ fn printHelp() void {
         \\  --tokens          Show token stream (debug)
         \\  --ast             Show AST (debug)
         \\  --no-color        Disable colored output
+        \\  -o, --output      (build) Output file path
         \\  --check           (fmt) Check formatting without modifying
         \\
         \\REPL Commands:
@@ -251,6 +283,7 @@ fn printHelp() void {
         \\
         \\Examples:
         \\  kira run hello.ki     Run a program
+        \\  kira build hello.ki   Compile to hello.c
         \\  kira check lib.ki     Type-check without running
         \\  kira fmt hello.ki     Format a source file
         \\  kira fmt --check .    Check formatting
@@ -592,6 +625,146 @@ fn checkFile(allocator: Allocator, path: []const u8, use_color: bool) !void {
         const msg = std.fmt.bufPrint(&buf, "Check passed: {s}\n", .{path}) catch "Check passed\n";
         try stdout.writeAll(msg);
     }
+}
+
+/// Build a Kira source file to a native executable via C codegen.
+fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
+    defer allocator.free(source);
+
+    // Parse
+    var parse_result = Kira.parseWithErrors(allocator, source);
+    const renderer = Kira.diagnostic.DiagnosticRenderer.init(source, path, use_color);
+
+    if (parse_result.hasErrors()) {
+        defer parse_result.deinit();
+        for (parse_result.errors) |err| {
+            renderParseError(stderr, renderer, err) catch {};
+        }
+        return error.ParseError;
+    }
+
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        try stderr.writeAll("error[parse]: Unknown parse error\n");
+        return error.ParseError;
+    };
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| {
+        arena.deinit();
+    }
+    defer program.deinit();
+
+    // Resolve
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+
+    var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
+    defer loader.deinit();
+
+    loader.addSearchPath(".") catch {};
+    if (std.fs.path.dirname(path)) |dir| {
+        if (std.fs.path.dirname(dir)) |parent| {
+            if (parent.len > 0 and !std.mem.eql(u8, parent, ".")) {
+                loader.addSearchPath(parent) catch {};
+            }
+        }
+        if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
+            loader.addSearchPath(dir) catch {};
+        }
+    }
+    if (project_config.project_root) |root| {
+        loader.addSearchPath(root) catch {};
+    }
+
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
+        for (loader.getErrors()) |load_err| {
+            try formatModuleError(stderr, load_err, source, path);
+        }
+        for (resolver.getDiagnostics()) |diag| {
+            renderResolverDiagnostic(stderr, renderer, diag) catch {};
+        }
+        return error.ResolveError;
+    };
+
+    // Type check
+    var checker = Kira.TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    checker.check(&program) catch {
+        for (checker.getDiagnostics()) |diag| {
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
+        }
+        return error.TypeCheckError;
+    };
+
+    // Lower to IR
+    var lowerer = Kira.IRLowerer.init(allocator);
+    defer lowerer.deinit();
+
+    var ir_module = lowerer.lower(&program) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error[ir]: IR lowering failed: {}\n", .{err}) catch "error[ir]: IR lowering failed\n";
+        stderr.writeAll(msg) catch {};
+        return error.CompileError;
+    };
+    defer ir_module.deinit();
+
+    // Generate C code
+    var codegen_gen = Kira.codegen.CCodeGen.init(allocator);
+    defer codegen_gen.deinit();
+
+    codegen_gen.generateModule(&ir_module) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error[codegen]: Code generation failed: {}\n", .{err}) catch "error[codegen]: Code generation failed\n";
+        stderr.writeAll(msg) catch {};
+        return error.CompileError;
+    };
+
+    // Determine output path
+    const c_output = codegen_gen.getOutput();
+
+    // Write C file
+    var c_path_buf: [512]u8 = undefined;
+    const c_path = output_path orelse blk: {
+        // Default: replace .ki with .c
+        if (std.mem.endsWith(u8, path, ".ki")) {
+            const base = path[0 .. path.len - 3];
+            const c_name = std.fmt.bufPrint(&c_path_buf, "{s}.c", .{base}) catch {
+                break :blk "output.c";
+            };
+            break :blk c_name;
+        }
+        break :blk "output.c";
+    };
+
+    const c_file = std.fs.cwd().createFile(c_path, .{}) catch {
+        stderr.writeAll("error: could not create output file\n") catch {};
+        return error.WriteError;
+    };
+    defer c_file.close();
+
+    c_file.writeAll(c_output) catch {
+        stderr.writeAll("error: could not write output file\n") catch {};
+        return error.WriteError;
+    };
+
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{c_path}) catch "Generated output\n";
+    try stdout.writeAll(msg);
 }
 
 /// Run tests in a Kira source file
@@ -1750,6 +1923,7 @@ test "parse args help" {
         .show_ast = false,
         .no_color = false,
         .fmt_check = false,
+        .output_path = null,
         .user_args = &.{},
     };
 }
