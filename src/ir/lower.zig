@@ -942,19 +942,22 @@ pub const Lowerer = struct {
             try self.lowerPatternBindings(arm.pattern, subject);
             const arm_val = try self.lowerMatchBody(&arm.body);
             const arm_end = self.current_block;
-            self.popScope();
-            self.setTerminator(.{ .jump = merge_blk });
 
+            // Append phi entry BEFORE popScope so errdefer won't double-pop on OOM
             phi_entries.append(alloc, .{
                 .block = arm_end,
                 .value = arm_val,
             }) catch return LowerError.OutOfMemory;
+            self.popScope();
+            self.setTerminator(.{ .jump = merge_blk });
 
             self.current_block = next_blk;
         }
 
-        // Default: unreachable (exhaustiveness checked by type checker)
-        self.setTerminator(.{ .jump = merge_blk });
+        // Fallthrough is unreachable — exhaustiveness is guaranteed by the type checker.
+        // Use unreachable_term (not jump) so this block is NOT a structural predecessor
+        // of merge_blk, keeping the phi node's incoming edges consistent.
+        self.setTerminator(.{ .unreachable_term = {} });
 
         self.current_block = merge_blk;
         if (phi_entries.items.len > 0) {
@@ -1020,7 +1023,10 @@ pub const Lowerer = struct {
         const left = try self.lowerExpression(nc.left);
 
         // L4 fix: look up Some tag from type declarations, fall back to 0
-        const some_tag = self.lookupVariantTag("Some", "Option") orelse 0;
+        const some_tag = self.lookupVariantTag("Some", "Option") orelse blk: {
+            log.warn("Option type not in IR type_decls; null-coalesce tag may be incorrect", .{});
+            break :blk 0;
+        };
         const tag = try self.emit(.{ .get_tag = left });
         const expected = try self.emit(.{ .const_int = .{ .value = some_tag } });
         const is_some = try self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected } });
@@ -1077,7 +1083,10 @@ pub const Lowerer = struct {
                 // Use type_path to scope the lookup to the correct sum type
                 const type_name: ?[]const u8 = if (c.type_path) |tp| if (tp.len > 0) tp[0] else null else null;
                 const tag = try self.emit(.{ .get_tag = subject });
-                const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse 0;
+                const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse blk: {
+                    log.warn("unknown variant '{s}' in pattern — tag lookup failed, defaulting to 0", .{c.variant_name});
+                    break :blk 0;
+                };
                 const expected_tag = try self.emit(.{ .const_int = .{ .value = tag_value } });
                 return self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected_tag } });
             },
