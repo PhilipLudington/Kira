@@ -176,16 +176,19 @@ fn eliminateDeadCode(allocator: Allocator, func: *Function) OptError!void {
         used.put(allocator, c.value_ref, {}) catch return OptError.OutOfMemory;
     }
 
-    // Phase 2: Transitively mark operands of used instructions until stable
-    var prev_count: usize = 0;
-    while (used.count() != prev_count) {
-        prev_count = used.count();
-        for (func.instructions.items, 0..) |*inst, idx| {
-            const ref: ValueRef = @intCast(idx);
-            if (used.contains(ref)) {
-                markInstructionRefs(inst, &used, allocator) catch return OptError.OutOfMemory;
-            }
-        }
+    // Phase 2: Transitively mark operands of used instructions via worklist
+    var worklist = std.ArrayListUnmanaged(ValueRef){};
+    defer worklist.deinit(allocator);
+    // Seed worklist with all initially-used refs
+    for (used.keys()) |ref| {
+        worklist.append(allocator, ref) catch return OptError.OutOfMemory;
+    }
+    while (worklist.items.len > 0) {
+        const ref = worklist.items[worklist.items.len - 1];
+        worklist.items.len -= 1;
+        if (ref >= func.instructions.items.len) continue;
+        const inst = &func.instructions.items[ref];
+        collectInstructionRefs(inst, &worklist, &used, allocator) catch return OptError.OutOfMemory;
     }
 
     // Phase 3: Remove unused instructions from blocks
@@ -227,76 +230,85 @@ fn markTerminatorRefs(term: *const Terminator, used: *std.AutoArrayHashMapUnmana
     }
 }
 
-fn markInstructionRefs(inst: *const Instruction, used: *std.AutoArrayHashMapUnmanaged(ValueRef, void), allocator: Allocator) !void {
+/// Add a ref to the used set and worklist if not already present.
+fn markRef(ref: ValueRef, worklist: *std.ArrayListUnmanaged(ValueRef), used: *std.AutoArrayHashMapUnmanaged(ValueRef, void), allocator: Allocator) !void {
+    const gop = try used.getOrPut(allocator, ref);
+    if (!gop.found_existing) {
+        try worklist.append(allocator, ref);
+    }
+}
+
+/// Collect instruction operand refs into the worklist (only newly-seen refs).
+fn collectInstructionRefs(inst: *const Instruction, worklist: *std.ArrayListUnmanaged(ValueRef), used: *std.AutoArrayHashMapUnmanaged(ValueRef, void), allocator: Allocator) !void {
     switch (inst.op) {
         .int_binop => |b| {
-            try used.put(allocator, b.left, {});
-            try used.put(allocator, b.right, {});
+            try markRef(b.left, worklist, used, allocator);
+            try markRef(b.right, worklist, used, allocator);
         },
         .float_binop => |b| {
-            try used.put(allocator, b.left, {});
-            try used.put(allocator, b.right, {});
+            try markRef(b.left, worklist, used, allocator);
+            try markRef(b.right, worklist, used, allocator);
         },
         .cmp => |c| {
-            try used.put(allocator, c.left, {});
-            try used.put(allocator, c.right, {});
+            try markRef(c.left, worklist, used, allocator);
+            try markRef(c.right, worklist, used, allocator);
         },
-        .int_neg, .float_neg, .log_not => |v| try used.put(allocator, v, {}),
-        .int_to_float, .float_to_int, .to_string => |v| try used.put(allocator, v, {}),
-        .load_var => |v| try used.put(allocator, v, {}),
+        .int_neg, .float_neg, .log_not => |v| try markRef(v, worklist, used, allocator),
+        .int_to_float, .float_to_int, .to_string => |v| try markRef(v, worklist, used, allocator),
+        .load_var => |v| try markRef(v, worklist, used, allocator),
         .store_var => |s| {
-            try used.put(allocator, s.target, {});
-            try used.put(allocator, s.value, {});
+            try markRef(s.target, worklist, used, allocator);
+            try markRef(s.value, worklist, used, allocator);
         },
         .alloc_var => |a| {
-            if (a.init_value) |v| try used.put(allocator, v, {});
+            if (a.init_value) |v| try markRef(v, worklist, used, allocator);
         },
         .make_tuple => |elems| {
-            for (elems) |e| try used.put(allocator, e, {});
+            for (elems) |e| try markRef(e, worklist, used, allocator);
         },
         .make_array => |elems| {
-            for (elems) |e| try used.put(allocator, e, {});
+            for (elems) |e| try markRef(e, worklist, used, allocator);
         },
         .make_record => |r| {
-            for (r.field_values) |v| try used.put(allocator, v, {});
+            for (r.field_values) |v| try markRef(v, worklist, used, allocator);
         },
         .make_variant => |v| {
-            if (v.payload) |p| for (p) |val| try used.put(allocator, val, {});
+            if (v.payload) |p| for (p) |val| try markRef(val, worklist, used, allocator);
         },
-        .tuple_get => |t| try used.put(allocator, t.tuple, {}),
-        .field_get => |f| try used.put(allocator, f.object, {}),
+        .tuple_get => |t| try markRef(t.tuple, worklist, used, allocator),
+        .field_get => |f| try markRef(f.object, worklist, used, allocator),
         .index_get => |idx| {
-            try used.put(allocator, idx.object, {});
-            try used.put(allocator, idx.index, {});
+            try markRef(idx.object, worklist, used, allocator);
+            try markRef(idx.index, worklist, used, allocator);
         },
         .field_set => |f| {
-            try used.put(allocator, f.object, {});
-            try used.put(allocator, f.value, {});
+            try markRef(f.object, worklist, used, allocator);
+            try markRef(f.value, worklist, used, allocator);
         },
         .index_set => |idx| {
-            try used.put(allocator, idx.object, {});
-            try used.put(allocator, idx.index, {});
-            try used.put(allocator, idx.value, {});
+            try markRef(idx.object, worklist, used, allocator);
+            try markRef(idx.index, worklist, used, allocator);
+            try markRef(idx.value, worklist, used, allocator);
         },
-        .get_tag => |v| try used.put(allocator, v, {}),
-        .get_payload => |p| try used.put(allocator, p.variant, {}),
+        .get_tag => |v| try markRef(v, worklist, used, allocator),
+        .get_payload => |p| try markRef(p.variant, worklist, used, allocator),
         .call => |c| {
-            try used.put(allocator, c.callee, {});
-            for (c.args) |a| try used.put(allocator, a, {});
+            try markRef(c.callee, worklist, used, allocator);
+            for (c.args) |a| try markRef(a, worklist, used, allocator);
         },
         .method_call => |mc| {
-            try used.put(allocator, mc.object, {});
-            for (mc.args) |a| try used.put(allocator, a, {});
+            try markRef(mc.object, worklist, used, allocator);
+            for (mc.args) |a| try markRef(a, worklist, used, allocator);
         },
         .make_closure => |c| {
-            for (c.captures) |cap| try used.put(allocator, cap, {});
+            for (c.captures) |cap| try markRef(cap, worklist, used, allocator);
         },
-        .wrap_some, .wrap_ok, .wrap_err, .unwrap => |v| try used.put(allocator, v, {}),
+        .wrap_some, .wrap_ok, .wrap_err, .unwrap => |v| try markRef(v, worklist, used, allocator),
         .str_concat => |s| {
-            for (s.parts) |p| try used.put(allocator, p, {});
+            for (s.parts) |p| try markRef(p, worklist, used, allocator);
         },
         .phi => |p| {
-            for (p.incoming) |inc| try used.put(allocator, inc.value, {});
+            for (p.incoming) |inc| try markRef(inc.value, worklist, used, allocator);
         },
         .param, .capture => {},
         .const_int, .const_float, .const_string, .const_char, .const_bool, .const_void, .wrap_none => {},

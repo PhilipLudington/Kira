@@ -234,7 +234,9 @@ pub const Server = struct {
         }
         gop.value_ptr.* = text_owned;
 
-        self.publishDiagnostics(gop.key_ptr.*, text_owned) catch {};
+        self.publishDiagnostics(gop.key_ptr.*, text_owned) catch |err| {
+            log.warn("Failed to publish diagnostics: {}", .{err});
+        };
     }
 
     fn handleDidSave(self: *Server, params_val: ?std.json.Value) !void {
@@ -242,9 +244,9 @@ pub const Server = struct {
         const uri = getString(params, "uri") orelse return;
 
         if (self.documents.get(uri)) |text| {
-            const uri_owned = try self.allocator.dupe(u8, uri);
-            defer self.allocator.free(uri_owned);
-            self.publishDiagnostics(uri_owned, text) catch {};
+            self.publishDiagnostics(uri, text) catch |err| {
+                log.warn("Failed to publish diagnostics on save: {}", .{err});
+            };
         }
     }
 

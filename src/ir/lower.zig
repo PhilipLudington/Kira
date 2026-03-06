@@ -11,6 +11,8 @@ const Allocator = std.mem.Allocator;
 const ast = @import("../ast/root.zig");
 const ir = @import("ir.zig");
 
+const log = std.log.scoped(.ir_lower);
+
 const Expression = ast.Expression;
 const Statement = ast.Statement;
 const Declaration = ast.Declaration;
@@ -446,10 +448,10 @@ pub const Lowerer = struct {
     }
 
     fn lowerForLoop(self: *Lowerer, fl: *const Statement.ForLoop) LowerError!void {
-        // Iterator protocol is not yet implemented. Return an explicit error
-        // rather than silently producing an infinite loop.
+        // Iterator protocol is not yet implemented in the IR backend.
         _ = self;
         _ = fl;
+        log.warn("for-loops are not yet supported in the IR backend", .{});
         return LowerError.UnsupportedStatement;
     }
 
@@ -1014,7 +1016,7 @@ pub const Lowerer = struct {
         const left = try self.lowerExpression(nc.left);
 
         // L4 fix: look up Some tag from type declarations, fall back to 0
-        const some_tag = self.lookupVariantTag("Some") orelse 0;
+        const some_tag = self.lookupVariantTag("Some", "Option") orelse 0;
         const tag = try self.emit(.{ .get_tag = left });
         const expected = try self.emit(.{ .const_int = .{ .value = some_tag } });
         const is_some = try self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected } });
@@ -1068,8 +1070,10 @@ pub const Lowerer = struct {
             },
             .constructor => |c| {
                 // C6 fix: compare tag as integer, not string
+                // Use type_path to scope the lookup to the correct sum type
+                const type_name: ?[]const u8 = if (c.type_path) |tp| if (tp.len > 0) tp[0] else null else null;
                 const tag = try self.emit(.{ .get_tag = subject });
-                const tag_value = self.lookupVariantTag(c.variant_name) orelse 0;
+                const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse 0;
                 const expected_tag = try self.emit(.{ .const_int = .{ .value = tag_value } });
                 return self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected_tag } });
             },
@@ -1112,9 +1116,10 @@ pub const Lowerer = struct {
             },
             .typed => |t| try self.lowerPatternBindings(t.pattern, subject),
             .or_pattern => |o| {
-                // H7 note: or-patterns should ideally emit bindings for all alternatives
-                // via phi nodes. For now, use the first alternative (correct when all
-                // alternatives bind the same names to the same positions).
+                // Or-patterns: the type checker enforces that all alternatives bind the
+                // same names to the same types/positions, so extracting bindings from the
+                // first alternative is correct. A more rigorous approach would emit phi
+                // nodes for each alternative, but that is unnecessary given the invariant.
                 if (o.patterns.len > 0) {
                     try self.lowerPatternBindings(o.patterns[0], subject);
                 }
@@ -1152,11 +1157,13 @@ pub const Lowerer = struct {
     }
 
     /// Look up a variant's numeric tag from the module's type declarations (C6/L4 fix).
-    /// TODO: This returns the first matching variant name across ALL sum types. If two
-    /// types define a variant with the same name, the wrong tag may be returned. A real
-    /// fix requires threading the expected type through pattern/expression lowering.
-    fn lookupVariantTag(self: *Lowerer, variant_name: []const u8) ?i128 {
+    /// When `type_name` is provided, the lookup is scoped to that specific sum type,
+    /// avoiding ambiguity when multiple types define variants with the same name.
+    fn lookupVariantTag(self: *Lowerer, variant_name: []const u8, type_name: ?[]const u8) ?i128 {
         for (self.module.type_decls.items) |td| {
+            if (type_name) |tn| {
+                if (!std.mem.eql(u8, td.name, tn)) continue;
+            }
             switch (td.kind) {
                 .sum_type => |st| {
                     for (st.variants) |v| {

@@ -160,6 +160,10 @@ pub const Function = struct {
         };
     }
 
+    /// Free this function's owned ArrayListUnmanaged storage.
+    /// WARNING: Only call this on functions NOT owned by a Module's arena.
+    /// Module-owned functions are freed in bulk by Module.deinit() — calling
+    /// this on them would double-free arena memory.
     pub fn deinit(self: *Function, allocator: Allocator) void {
         for (self.blocks.items) |*blk| {
             blk.instructions.deinit(allocator);

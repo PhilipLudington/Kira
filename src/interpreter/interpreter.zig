@@ -1726,7 +1726,11 @@ pub const Interpreter = struct {
                             else => return error.TypeMismatch,
                         };
                         if (idx >= arr.len) return error.IndexOutOfBounds;
-                        // Safe: arena allocator returns writable memory; []const is a type constraint
+                        // Safety invariant: all Value.array slices are allocated via
+                        // arenaAlloc(), which returns writable memory. The []const type
+                        // is a Zig convention for the Value union; the backing memory is
+                        // always mutable. If arrays are ever backed by non-arena memory,
+                        // this cast would be unsound.
                         @constCast(arr)[idx] = value;
                     },
                     else => return error.TypeMismatch,
