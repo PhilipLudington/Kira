@@ -79,7 +79,8 @@ pub const CCodeGen = struct {
         try self.write("#include <stdbool.h>\n");
         try self.write("#include <stdio.h>\n");
         try self.write("#include <stdlib.h>\n");
-        try self.write("#include <string.h>\n\n");
+        try self.write("#include <string.h>\n");
+        try self.write("#include <math.h>\n\n");
         try self.write("/* Kira runtime types */\n");
         try self.write("typedef int64_t kira_int;\n");
         try self.write("typedef double kira_float;\n");
@@ -283,17 +284,22 @@ pub const CCodeGen = struct {
                 try self.writeFmt("v{d} = v{d} {s} v{d};\n", .{ ref, b.left, op_str, b.right });
             },
             .float_binop => |b| {
-                const op_str: []const u8 = switch (b.op) {
-                    .add => "+",
-                    .sub => "-",
-                    .mul => "*",
-                    .div => "/",
-                    .mod => " /* fmod */ %",
-                };
-                try self.writeFmt("v{d} = v{d} {s} v{d}; /* float */\n", .{ ref, b.left, op_str, b.right });
+                // Unpack i64 bit-patterns to double, operate, repack
+                if (b.op == .mod) {
+                    try self.writeFmt("{{ kira_float _a, _b, _r; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _r = fmod(_a, _b); memcpy(&v{d}, &_r, sizeof(kira_float)); }}\n", .{ b.left, b.right, ref });
+                } else {
+                    const op_str: []const u8 = switch (b.op) {
+                        .add => "+",
+                        .sub => "-",
+                        .mul => "*",
+                        .div => "/",
+                        .mod => unreachable,
+                    };
+                    try self.writeFmt("{{ kira_float _a, _b, _r; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _r = _a {s} _b; memcpy(&v{d}, &_r, sizeof(kira_float)); }}\n", .{ b.left, b.right, op_str, ref });
+                }
             },
             .int_neg => |v| try self.writeFmt("v{d} = -v{d};\n", .{ ref, v }),
-            .float_neg => |v| try self.writeFmt("v{d} = -v{d}; /* float */\n", .{ ref, v }),
+            .float_neg => |v| try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = -_f; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ v, ref }),
             .cmp => |c| {
                 const op_str: []const u8 = switch (c.op) {
                     .eq => "==",
@@ -306,8 +312,8 @@ pub const CCodeGen = struct {
                 try self.writeFmt("v{d} = (v{d} {s} v{d});\n", .{ ref, c.left, op_str, c.right });
             },
             .log_not => |v| try self.writeFmt("v{d} = !v{d};\n", .{ ref, v }),
-            .int_to_float => |v| try self.writeFmt("v{d} = (kira_int)(kira_float)v{d};\n", .{ ref, v }),
-            .float_to_int => |v| try self.writeFmt("v{d} = (kira_int)v{d};\n", .{ ref, v }),
+            .int_to_float => |v| try self.writeFmt("{{ kira_float _f = (kira_float)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ v, ref }),
+            .float_to_int => |v| try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)_f; }}\n", .{ v, ref }),
             .to_string => |_| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: to_string not implemented\\n\"); abort(); /* to_string */\n", .{ref}),
             .alloc_var => |a| {
                 if (a.init_value) |iv| {

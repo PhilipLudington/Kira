@@ -106,11 +106,33 @@ pub fn constraintsCompatible(a: toml.VersionConstraint, b: toml.VersionConstrain
         return ver_a.major == ver_b.major and ver_a.minor == ver_b.minor;
     }
 
-    // For mixed constraints, be conservative — check if the higher version satisfies both
+    // For mixed constraints, check if any of several candidate versions satisfies both.
+    // Test both constraint bounds and the midpoint between them to catch open intervals
+    // like ">= 1.5.0" + "< 2.0.0" where neither bound satisfies both but 1.7.0 does.
+    const candidates = [_]SemVer{ ver_a, ver_b };
+    for (candidates) |candidate| {
+        const sat_a = try satisfiesConstraint(candidate, a);
+        const sat_b = try satisfiesConstraint(candidate, b);
+        if (sat_a and sat_b) return true;
+    }
+    // Try the higher version minus one patch as a midpoint heuristic
     const higher = if (ver_a.order(ver_b) != .lt) ver_a else ver_b;
-    const sat_a = try satisfiesConstraint(higher, a);
-    const sat_b = try satisfiesConstraint(higher, b);
-    return sat_a and sat_b;
+    const lower = if (ver_a.order(ver_b) == .lt) ver_a else ver_b;
+    // Check a version just above the lower bound
+    const mid = SemVer{
+        .major = lower.major,
+        .minor = lower.minor,
+        .patch = if (lower.patch < higher.patch or lower.minor < higher.minor or lower.major < higher.major)
+            lower.patch + 1
+        else
+            lower.patch,
+    };
+    if (!mid.eql(lower) and !mid.eql(higher)) {
+        const sat_a = try satisfiesConstraint(mid, a);
+        const sat_b = try satisfiesConstraint(mid, b);
+        if (sat_a and sat_b) return true;
+    }
+    return false;
 }
 
 /// Source type for a resolved dependency.
@@ -227,10 +249,14 @@ pub const DependencyResolver = struct {
 
         var iter = self.resolved.iterator();
         while (iter.next()) |entry| {
+            const name_copy = self.allocator.dupe(u8, entry.value_ptr.name) catch return error.OutOfMemory;
+            errdefer self.allocator.free(name_copy);
+            const path_copy = self.allocator.dupe(u8, entry.value_ptr.local_path) catch return error.OutOfMemory;
+            errdefer self.allocator.free(path_copy);
             const copy = ResolvedDependency{
-                .name = self.allocator.dupe(u8, entry.value_ptr.name) catch return error.OutOfMemory,
+                .name = name_copy,
                 .version = entry.value_ptr.version,
-                .local_path = self.allocator.dupe(u8, entry.value_ptr.local_path) catch return error.OutOfMemory,
+                .local_path = path_copy,
                 .source = entry.value_ptr.source,
             };
             result.append(self.allocator, copy) catch return error.OutOfMemory;
@@ -259,7 +285,10 @@ pub const DependencyResolver = struct {
             return error.CircularDependency;
         }
         const ip_key = self.allocator.dupe(u8, dep.name) catch return error.OutOfMemory;
+        var ip_key_owned = true;
+        errdefer if (ip_key_owned) self.allocator.free(ip_key);
         self.in_progress.put(self.allocator, ip_key, {}) catch return error.OutOfMemory;
+        ip_key_owned = false; // Ownership transferred to in_progress map
         errdefer {
             if (self.in_progress.fetchRemove(dep.name)) |kv| {
                 self.allocator.free(kv.key);
