@@ -55,6 +55,9 @@ pub const LoadError = modules.LoadError;
 
 // Configuration exports
 pub const ProjectConfig = config.ProjectConfig;
+pub const ValidationError = config.ValidationError;
+pub const Dependency = config.Dependency;
+pub const VersionConstraint = config.VersionConstraint;
 
 // Diagnostic rendering exports
 pub const DiagnosticRenderer = diagnostic.DiagnosticRenderer;
