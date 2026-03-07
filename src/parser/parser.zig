@@ -89,10 +89,15 @@ pub const Parser = struct {
         // Skip leading newlines
         self.skipNewlines();
 
-        // Check for module doc comment
+        // Collect module doc comments (multiple //! lines)
         if (self.check(.module_doc_comment)) {
-            module_doc = self.advance().lexeme;
-            self.skipNewlines();
+            var doc_parts = std.ArrayListUnmanaged([]const u8){};
+            defer doc_parts.deinit(self.allocator);
+            while (self.check(.module_doc_comment)) {
+                try doc_parts.append(self.allocator, self.advance().lexeme);
+                self.skipNewlines();
+            }
+            module_doc = try std.mem.join(self.allocator, "\n", doc_parts.items);
         }
 
         // Parse module declaration if present
@@ -135,10 +140,15 @@ pub const Parser = struct {
     fn parseDeclaration(self: *Parser) ParseError!Declaration {
         var doc_comment: ?[]const u8 = null;
 
-        // Check for doc comment
+        // Collect doc comments (multiple /// lines)
         if (self.check(.doc_comment)) {
-            doc_comment = self.advance().lexeme;
-            self.skipNewlines();
+            var doc_parts = std.ArrayListUnmanaged([]const u8){};
+            defer doc_parts.deinit(self.allocator);
+            while (self.check(.doc_comment)) {
+                try doc_parts.append(self.allocator, self.advance().lexeme);
+                self.skipNewlines();
+            }
+            doc_comment = try std.mem.join(self.allocator, "\n", doc_parts.items);
         }
 
         const is_public = self.match(.pub_keyword);

@@ -62,6 +62,9 @@ pub fn registerBuiltins(allocator: Allocator, env: *Environment) !void {
     try env.define("assert", makeBuiltin("assert", &builtinAssert), false);
     try env.define("assert_eq", makeBuiltin("assert_eq", &builtinAssertEq), false);
 
+    // Property-based testing
+    try env.define("prop_test", makeBuiltin("prop_test", &builtinPropTest), false);
+
     _ = allocator;
 }
 
@@ -539,6 +542,161 @@ fn builtinAssertEq(ctx: BuiltinContext, args: []const Value) InterpreterError!Va
     return Value{ .void = {} };
 }
 
+// ============================================================================
+// Property-Based Testing
+// ============================================================================
+
+/// prop_test(property_fn, iterations?)
+/// Runs a property function with randomly generated arguments.
+/// The function should return a boolean — true means the property holds.
+/// If a failure is found, attempts to shrink the inputs to a minimal case.
+///
+/// Usage in Kira:
+///   prop_test(fn(a: i32, b: i32) -> bool { a + b == b + a }, 100)
+fn builtinPropTest(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len < 1 or args.len > 2) return error.ArityMismatch;
+
+    const func = switch (args[0]) {
+        .function => |f| f,
+        else => return error.InvalidOperation,
+    };
+
+    const iterations: u32 = if (args.len == 2)
+        switch (args[1]) {
+            .integer => |n| if (n > 0 and n <= 10000) @intCast(n) else 100,
+            else => 100,
+        }
+    else
+        100;
+
+    const param_count = func.parameters.len;
+    if (param_count == 0) return error.ArityMismatch;
+
+    // Use a deterministic seed for reproducibility, but vary by run
+    var rng = std.Random.DefaultPrng.init(@bitCast(std.time.timestamp()));
+    var random = rng.random();
+
+    // Generate and test
+    const test_args = ctx.allocator.alloc(Value, param_count) catch return error.OutOfMemory;
+    defer ctx.allocator.free(test_args);
+
+    var failing_args: ?[]Value = null;
+    defer if (failing_args) |fa| ctx.allocator.free(fa);
+
+    var i: u32 = 0;
+    while (i < iterations) : (i += 1) {
+        // Generate random values for each parameter
+        for (test_args) |*arg| {
+            arg.* = generateRandomValue(&random);
+        }
+
+        // Call the property function
+        const result = ctx.callFunction(func, test_args) catch {
+            // Error during execution — treat as failure
+            failing_args = ctx.allocator.dupe(Value, test_args) catch null;
+            break;
+        };
+
+        // Check result
+        if (!result.isTruthy()) {
+            failing_args = ctx.allocator.dupe(Value, test_args) catch null;
+            break;
+        }
+    }
+
+    if (failing_args) |original_fail| {
+        // Try to shrink the failing case
+        var shrunk = ctx.allocator.dupe(Value, original_fail) catch original_fail;
+        defer if (shrunk.ptr != original_fail.ptr) ctx.allocator.free(shrunk);
+
+        shrinkInputs(ctx, func, &shrunk);
+
+        // Report the minimal failing case
+        std.debug.print("Property failed after {d} tests.\n", .{i + 1});
+        std.debug.print("Failing inputs: ", .{});
+        for (shrunk, 0..) |v, j| {
+            if (j > 0) std.debug.print(", ", .{});
+            printValue(v);
+        }
+        std.debug.print("\n", .{});
+        return error.AssertionFailed;
+    }
+
+    return Value{ .void = {} };
+}
+
+fn generateRandomValue(random: *std.Random) Value {
+    // Generate i32-range integers by default
+    const n = random.intRangeAtMost(i128, -1000, 1000);
+    return Value{ .integer = n };
+}
+
+fn shrinkInputs(ctx: BuiltinContext, func: Value.FunctionValue, args: *[]Value) void {
+    // Try shrinking each argument toward zero
+    const max_shrink_rounds: u32 = 50;
+    var round: u32 = 0;
+
+    while (round < max_shrink_rounds) : (round += 1) {
+        var improved = false;
+
+        for (args.*) |*arg| {
+            const candidates = shrinkCandidates(arg.*);
+            for (candidates) |candidate| {
+                const old = arg.*;
+                arg.* = candidate;
+
+                // Check if the property still fails with the smaller value
+                const result = ctx.callFunction(func, args.*) catch {
+                    // Still fails — keep the shrunk value
+                    improved = true;
+                    continue;
+                };
+
+                if (!result.isTruthy()) {
+                    // Still fails — keep the shrunk value
+                    improved = true;
+                } else {
+                    // Property passes — revert
+                    arg.* = old;
+                }
+            }
+        }
+
+        if (!improved) break;
+    }
+}
+
+fn shrinkCandidates(value: Value) [3]Value {
+    return switch (value) {
+        .integer => |n| .{
+            Value{ .integer = 0 },
+            Value{ .integer = @divTrunc(n, 2) },
+            Value{ .integer = if (n > 0) n - 1 else if (n < 0) n + 1 else 0 },
+        },
+        .float => |f| .{
+            Value{ .float = 0.0 },
+            Value{ .float = f / 2.0 },
+            Value{ .float = if (f > 0) f - 1.0 else if (f < 0) f + 1.0 else 0.0 },
+        },
+        .boolean => .{
+            Value{ .boolean = false },
+            Value{ .boolean = true },
+            value,
+        },
+        else => .{ value, value, value },
+    };
+}
+
+fn printValue(v: Value) void {
+    switch (v) {
+        .integer => |n| std.debug.print("{d}", .{n}),
+        .float => |f| std.debug.print("{d}", .{f}),
+        .string => |s| std.debug.print("\"{s}\"", .{s}),
+        .boolean => |b| std.debug.print("{}", .{b}),
+        else => std.debug.print("<value>", .{}),
+    }
+}
+
 fn testCtx(allocator: Allocator) BuiltinContext {
     return .{
         .allocator = allocator,
@@ -602,4 +760,89 @@ test "builtin string functions" {
     // trim
     const trim_result = try builtinTrim(ctx, &.{Value{ .string = "  hello  " }});
     try std.testing.expectEqualStrings("hello", trim_result.string);
+}
+
+test "prop_test passing property" {
+    const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
+
+    // Property: for any integer a, a == a (always true)
+    const identity_fn = Value.FunctionValue{
+        .name = "identity_check",
+        .parameters = &.{"a"},
+        .body = .{ .builtin = &struct {
+            fn f(_: BuiltinContext, args: []const Value) InterpreterError!Value {
+                return Value{ .boolean = args[0].eql(args[0]) };
+            }
+        }.f },
+        .captured_env = null,
+        .is_effect = false,
+    };
+
+    const result = try builtinPropTest(ctx, &.{
+        Value{ .function = identity_fn },
+        Value{ .integer = 50 },
+    });
+    try std.testing.expectEqual(Value.void, result);
+}
+
+test "prop_test failing property" {
+    const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
+
+    // Property: for any integer a, a > 500 (will fail quickly)
+    const bad_fn = Value.FunctionValue{
+        .name = "bad_check",
+        .parameters = &.{"a"},
+        .body = .{ .builtin = &struct {
+            fn f(_: BuiltinContext, args: []const Value) InterpreterError!Value {
+                return Value{ .boolean = switch (args[0]) {
+                    .integer => |n| n > 500,
+                    else => false,
+                } };
+            }
+        }.f },
+        .captured_env = null,
+        .is_effect = false,
+    };
+
+    const result = builtinPropTest(ctx, &.{
+        Value{ .function = bad_fn },
+        Value{ .integer = 100 },
+    });
+    try std.testing.expectError(error.AssertionFailed, result);
+}
+
+test "generate random values" {
+    var rng = std.Random.DefaultPrng.init(42);
+    var random = rng.random();
+
+    // Generate several values and verify they're integers
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        const val = generateRandomValue(&random);
+        try std.testing.expectEqual(std.meta.activeTag(val), .integer);
+        const n = val.integer;
+        try std.testing.expect(n >= -1000 and n <= 1000);
+    }
+}
+
+test "shrink candidates" {
+    // Integer shrink
+    const candidates = shrinkCandidates(Value{ .integer = 100 });
+    try std.testing.expectEqual(@as(i128, 0), candidates[0].integer);
+    try std.testing.expectEqual(@as(i128, 50), candidates[1].integer);
+    try std.testing.expectEqual(@as(i128, 99), candidates[2].integer);
+
+    // Zero doesn't shrink further
+    const zero_candidates = shrinkCandidates(Value{ .integer = 0 });
+    try std.testing.expectEqual(@as(i128, 0), zero_candidates[0].integer);
+    try std.testing.expectEqual(@as(i128, 0), zero_candidates[1].integer);
+    try std.testing.expectEqual(@as(i128, 0), zero_candidates[2].integer);
+
+    // Negative shrink
+    const neg_candidates = shrinkCandidates(Value{ .integer = -100 });
+    try std.testing.expectEqual(@as(i128, 0), neg_candidates[0].integer);
+    try std.testing.expectEqual(@as(i128, -50), neg_candidates[1].integer);
+    try std.testing.expectEqual(@as(i128, -99), neg_candidates[2].integer);
 }

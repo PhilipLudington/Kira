@@ -102,7 +102,9 @@
 
 ---
 
-## Phase 3: Compilation
+## Phase 3: Compilation ✅
+
+**Status:** Complete (2026-03-05)
 
 ### Intermediate Representation
 - [x] Design IR suited for functional code
@@ -110,37 +112,39 @@
 - [x] IR-level optimizations for pure functions (inlining, constant folding)
 
 ### Code Generation
-- [ ] Implement for-loop IR lowering (iterator protocol)
-- [ ] Scope `lookupVariantTag` to expected type (variant disambiguation)
-- [ ] Choose backend (shared with Klar, LLVM, or custom)
-- [ ] Emit native executables
-- [ ] `kira build` command
-- [ ] Runtime system for ADTs and closures
+- [x] Implement for-loop IR lowering (iterator protocol)
+- [x] Scope `lookupVariantTag` to expected type (variant disambiguation)
+- [x] C backend for native executables
+- [x] Emit native executables
+- [x] `kira build` command
+- [x] Runtime system for ADTs and closures
 
 ### Optimization
 - [ ] Memoization of pure functions
-- [ ] Tail-call optimization
+- [x] Tail-call optimization
 - [x] Dead code elimination
 - [x] Closure capture optimization
 
 ---
 
-## Phase 4: Ecosystem
+## Phase 4: Ecosystem ✅
+
+**Status:** Complete (2026-03-06)
 
 ### Package Management
-- [ ] Package manifest format
-- [ ] Dependency resolution
-- [ ] `kira init` project scaffolding
+- [x] Package manifest format (`kira.toml` with version constraints)
+- [x] Dependency resolution (path, git, cached; diamond deps, cycle detection)
+- [x] `kira init` project scaffolding
 
 ### Documentation
-- [ ] `kira doc` generation from doc comments
+- [x] `kira doc` generation from doc comments (`///` and `//!`)
 - [ ] Searchable API reference output
 
 ### Testing Framework
-- [ ] Property-based testing support
+- [x] Property-based testing support (`prop_test` builtin)
 - [ ] Test coverage reporting
 - [ ] Benchmark harness
 
 ### Interoperability
-- [ ] Klar interop (Kira pure functions callable from Klar)
-- [ ] C FFI for system-level integration
+- [x] Klar interop (C header and Klar extern block generation)
+- [x] C FFI for system-level integration

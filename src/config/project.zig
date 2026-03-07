@@ -32,10 +32,25 @@ pub const PackageConfig = struct {
     }
 };
 
+/// Errors from validating a project configuration.
+pub const ValidationError = error{
+    MissingPackageName,
+    MissingPackageVersion,
+    InvalidVersion,
+};
+
 /// Project configuration loaded from kira.toml.
 pub const ProjectConfig = struct {
     /// Package name from [package] section (null for root project without package identity).
     package_name: ?[]const u8,
+    /// Package version from [package] section (null if not specified).
+    package_version: ?[]const u8,
+    /// Package description from [package] section (null if not specified).
+    package_description: ?[]const u8,
+    /// Package license from [package] section (null if not specified).
+    package_license: ?[]const u8,
+    /// Package authors from [package] section.
+    package_authors: std.ArrayListUnmanaged([]const u8),
     /// Module name -> file path mapping from [modules] section.
     modules: std.StringHashMapUnmanaged([]const u8),
     /// The directory containing kira.toml (project root).
@@ -44,15 +59,22 @@ pub const ProjectConfig = struct {
     loaded: bool,
     /// Nested package configurations (package_name -> PackageConfig).
     packages: std.StringHashMapUnmanaged(PackageConfig),
+    /// Dependencies from [dependencies] section.
+    dependencies: std.ArrayListUnmanaged(toml.Dependency),
 
     /// Create an empty configuration.
     pub fn init() ProjectConfig {
         return .{
             .package_name = null,
+            .package_version = null,
+            .package_description = null,
+            .package_license = null,
+            .package_authors = .{},
             .modules = .{},
             .project_root = null,
             .loaded = false,
             .packages = .{},
+            .dependencies = .{},
         };
     }
 
@@ -61,6 +83,19 @@ pub const ProjectConfig = struct {
         if (self.package_name) |name| {
             allocator.free(name);
         }
+        if (self.package_version) |v| {
+            allocator.free(v);
+        }
+        if (self.package_description) |d| {
+            allocator.free(d);
+        }
+        if (self.package_license) |l| {
+            allocator.free(l);
+        }
+        for (self.package_authors.items) |author| {
+            allocator.free(author);
+        }
+        self.package_authors.deinit(allocator);
 
         var iter = self.modules.iterator();
         while (iter.next()) |entry| {
@@ -80,6 +115,11 @@ pub const ProjectConfig = struct {
             entry.value_ptr.deinit(allocator);
         }
         self.packages.deinit(allocator);
+
+        for (self.dependencies.items) |*dep| {
+            @constCast(dep).deinit(allocator);
+        }
+        self.dependencies.deinit(allocator);
     }
 
     /// Search for and load kira.toml starting from `start_dir` and walking up.
@@ -130,10 +170,32 @@ pub const ProjectConfig = struct {
             var parse_result = toml.parse(allocator, source) catch break;
             // Don't defer deinit - we're taking ownership of the data
 
-            // Transfer package name if present
+            // Transfer package fields (null out source to prevent double-free
+            // if parse_result.deinit() is ever called after partial transfer)
             if (parse_result.package_name) |name| {
-                self.package_name = name; // Take ownership
+                self.package_name = name;
+                parse_result.package_name = null;
             }
+            if (parse_result.package_version) |v| {
+                self.package_version = v;
+                parse_result.package_version = null;
+            }
+            if (parse_result.package_description) |d| {
+                self.package_description = d;
+                parse_result.package_description = null;
+            }
+            if (parse_result.package_license) |l| {
+                self.package_license = l;
+                parse_result.package_license = null;
+            }
+            // Transfer authors
+            for (parse_result.package_authors.items) |author| {
+                self.package_authors.append(allocator, author) catch {
+                    allocator.free(author);
+                    continue;
+                };
+            }
+            parse_result.package_authors.deinit(allocator);
 
             // Transfer module mappings
             var modules_iter = parse_result.modules.iterator();
@@ -147,6 +209,16 @@ pub const ProjectConfig = struct {
             }
             // Free the hashmap structure itself (entries are transferred)
             parse_result.modules.deinit(allocator);
+
+            // Transfer dependencies
+            for (parse_result.dependencies.items) |dep| {
+                self.dependencies.append(allocator, dep) catch {
+                    var mutable_dep = dep;
+                    mutable_dep.deinit(allocator);
+                    continue;
+                };
+            }
+            parse_result.dependencies.deinit(allocator);
 
             // Store project root
             self.project_root = try allocator.dupe(u8, current_dir);
@@ -275,6 +347,41 @@ pub const ProjectConfig = struct {
     pub fn isLoaded(self: *const ProjectConfig) bool {
         return self.loaded;
     }
+
+    /// Validate the configuration for use as a publishable package.
+    /// Requires name and version at minimum.
+    pub fn validate(self: *const ProjectConfig) ValidationError!void {
+        if (self.package_name == null) return error.MissingPackageName;
+        const version = self.package_version orelse return error.MissingPackageVersion;
+        if (!isValidSemver(version)) return error.InvalidVersion;
+    }
+
+    /// Check if a string is a valid semantic version (major.minor.patch).
+    fn isValidSemver(version: []const u8) bool {
+        var parts: usize = 0;
+        var digit_count: usize = 0;
+        for (version) |c| {
+            if (c == '.') {
+                if (digit_count == 0) return false;
+                parts += 1;
+                digit_count = 0;
+            } else if (std.ascii.isDigit(c)) {
+                digit_count += 1;
+            } else {
+                return false;
+            }
+        }
+        // Must have exactly 2 dots (3 parts) and final part must have digits
+        return parts == 2 and digit_count > 0;
+    }
+
+    /// Get a dependency by name. Returns a copy of the dependency value.
+    pub fn getDependency(self: *const ProjectConfig, name: []const u8) ?toml.Dependency {
+        for (self.dependencies.items) |dep| {
+            if (std.mem.eql(u8, dep.name, name)) return dep;
+        }
+        return null;
+    }
 };
 
 // Tests
@@ -293,4 +400,78 @@ test "load from non-existent directory" {
     // Should not crash, just return false
     const loaded = config.loadFromDirectory(std.testing.allocator, "/non/existent/path/that/should/not/exist") catch false;
     try std.testing.expect(!loaded);
+}
+
+test "validate requires name" {
+    var config = ProjectConfig.init();
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.MissingPackageName, config.validate());
+}
+
+test "validate requires version" {
+    const allocator = std.testing.allocator;
+    var config = ProjectConfig.init();
+    defer config.deinit(allocator);
+
+    config.package_name = try allocator.dupe(u8, "test");
+    try std.testing.expectError(error.MissingPackageVersion, config.validate());
+}
+
+test "validate rejects invalid version" {
+    const allocator = std.testing.allocator;
+    var config = ProjectConfig.init();
+    defer config.deinit(allocator);
+
+    config.package_name = try allocator.dupe(u8, "test");
+    config.package_version = try allocator.dupe(u8, "not-a-version");
+    try std.testing.expectError(error.InvalidVersion, config.validate());
+}
+
+test "validate accepts valid config" {
+    const allocator = std.testing.allocator;
+    var config = ProjectConfig.init();
+    defer config.deinit(allocator);
+
+    config.package_name = try allocator.dupe(u8, "myapp");
+    config.package_version = try allocator.dupe(u8, "1.0.0");
+    try config.validate();
+}
+
+test "isValidSemver" {
+    try std.testing.expect(ProjectConfig.isValidSemver("0.0.1"));
+    try std.testing.expect(ProjectConfig.isValidSemver("1.2.3"));
+    try std.testing.expect(ProjectConfig.isValidSemver("10.20.30"));
+    try std.testing.expect(!ProjectConfig.isValidSemver("1.0"));
+    try std.testing.expect(!ProjectConfig.isValidSemver("1"));
+    try std.testing.expect(!ProjectConfig.isValidSemver("1.0.0.0"));
+    try std.testing.expect(!ProjectConfig.isValidSemver(""));
+    try std.testing.expect(!ProjectConfig.isValidSemver("abc"));
+    try std.testing.expect(!ProjectConfig.isValidSemver("1..0"));
+    try std.testing.expect(!ProjectConfig.isValidSemver(".1.0"));
+}
+
+test "getDependency" {
+    const allocator = std.testing.allocator;
+    var config = ProjectConfig.init();
+    defer config.deinit(allocator);
+
+    const dep = toml.Dependency{
+        .name = try allocator.dupe(u8, "json"),
+        .constraint = .{
+            .op = .caret,
+            .version = try allocator.dupe(u8, "1.0.0"),
+        },
+        .git = null,
+        .path = null,
+    };
+    try config.dependencies.append(allocator, dep);
+
+    // Returns a value copy, safe to use without lifetime concerns
+    const found = config.getDependency("json");
+    try std.testing.expect(found != null);
+    try std.testing.expectEqualStrings("json", found.?.name);
+    try std.testing.expectEqual(toml.VersionConstraint.Op.caret, found.?.constraint.?.op);
+
+    try std.testing.expect(config.getDependency("nonexistent") == null);
 }

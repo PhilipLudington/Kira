@@ -10,8 +10,11 @@ const Mode = enum {
     run,
     check,
     fmt,
+    build,
     test_cmd,
     lsp,
+    doc,
+    init,
     help,
     version_info,
 };
@@ -24,6 +27,9 @@ const Args = struct {
     show_ast: bool,
     no_color: bool,
     fmt_check: bool,
+    output_path: ?[]const u8,
+    /// Project name for init command
+    init_name: ?[]const u8,
     /// Arguments passed to the Kira program (after the file path)
     user_args: []const []const u8,
 };
@@ -88,6 +94,38 @@ pub fn main() !void {
                 std.process.exit(1);
             }
         },
+        .build => {
+            if (args.file_path) |path| {
+                buildFile(allocator, path, args.output_path, use_color) catch |err| {
+                    reportError(err);
+                    std.process.exit(1);
+                };
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Error: 'build' command requires a file path\n") catch {};
+                stderr.writeAll("Usage: kira build [--output <path>] <file.ki>\n") catch {};
+                std.process.exit(1);
+            }
+        },
+        .doc => {
+            if (args.file_path) |path| {
+                docFile(allocator, path, args.output_path, use_color) catch |err| {
+                    reportError(err);
+                    std.process.exit(1);
+                };
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Error: 'doc' command requires a file path\n") catch {};
+                stderr.writeAll("Usage: kira doc <file.ki> [--output <path>]\n") catch {};
+                std.process.exit(1);
+            }
+        },
+        .init => {
+            initProject(allocator, args.init_name) catch |err| {
+                reportError(err);
+                std.process.exit(1);
+            };
+        },
         .lsp => runLsp(allocator) catch |err| {
             reportError(err);
             std.process.exit(1);
@@ -134,6 +172,8 @@ fn parseArgs() !Args {
         .show_ast = false,
         .no_color = false,
         .fmt_check = false,
+        .output_path = null,
+        .init_name = null,
         .user_args = &.{},
     };
 
@@ -183,6 +223,43 @@ fn parseArgs() !Args {
                     break;
                 }
             }
+        } else if (std.mem.eql(u8, arg, "build")) {
+            result.mode = .build;
+            // Look for --output flag and file path
+            while (args_iter.next()) |build_arg| {
+                if (std.mem.eql(u8, build_arg, "--output") or std.mem.eql(u8, build_arg, "-o")) {
+                    if (args_iter.next()) |out_path| {
+                        result.output_path = out_path;
+                    }
+                } else if (!std.mem.startsWith(u8, build_arg, "-")) {
+                    result.file_path = build_arg;
+                    file_path_seen = true;
+                    break;
+                }
+            }
+        } else if (std.mem.eql(u8, arg, "doc")) {
+            result.mode = .doc;
+            while (args_iter.next()) |doc_arg| {
+                if (std.mem.eql(u8, doc_arg, "--output") or std.mem.eql(u8, doc_arg, "-o")) {
+                    if (args_iter.next()) |out_path| {
+                        result.output_path = out_path;
+                    }
+                } else if (!std.mem.startsWith(u8, doc_arg, "-")) {
+                    result.file_path = doc_arg;
+                }
+            }
+            return result;
+        } else if (std.mem.eql(u8, arg, "init")) {
+            result.mode = .init;
+            // Look for --name flag
+            while (args_iter.next()) |init_arg| {
+                if (std.mem.eql(u8, init_arg, "--name") or std.mem.eql(u8, init_arg, "-n")) {
+                    if (args_iter.next()) |name| {
+                        result.init_name = name;
+                    }
+                }
+            }
+            return result;
         } else if (std.mem.eql(u8, arg, "lsp")) {
             result.mode = .lsp;
             return result;
@@ -227,9 +304,12 @@ fn printHelp() void {
         \\
         \\Commands:
         \\  run <file.ki>     Run a Kira program
+        \\  build <file.ki>   Compile to C (use --output for custom path)
         \\  check <file.ki>   Type-check a program without running
         \\  fmt <file.ki>     Format a Kira source file
         \\  test <file.ki>    Run tests in a file
+        \\  doc <file.ki>     Generate API documentation (Markdown)
+        \\  init              Initialize a new Kira project
         \\  lsp               Start the LSP server
         \\  (no command)      Start the interactive REPL
         \\
@@ -239,7 +319,9 @@ fn printHelp() void {
         \\  --tokens          Show token stream (debug)
         \\  --ast             Show AST (debug)
         \\  --no-color        Disable colored output
+        \\  -o, --output      (build) Output file path
         \\  --check           (fmt) Check formatting without modifying
+        \\  -n, --name        (init) Project name (default: directory name)
         \\
         \\REPL Commands:
         \\  :help, :h         Show REPL help
@@ -251,9 +333,12 @@ fn printHelp() void {
         \\
         \\Examples:
         \\  kira run hello.ki     Run a program
+        \\  kira build hello.ki   Compile to hello.c
         \\  kira check lib.ki     Type-check without running
         \\  kira fmt hello.ki     Format a source file
         \\  kira fmt --check .    Check formatting
+        \\  kira init             Initialize project in current directory
+        \\  kira init --name app  Initialize with custom name
         \\  kira                  Start REPL
         \\
     ) catch {};
@@ -262,6 +347,183 @@ fn printHelp() void {
 fn printVersion() void {
     const stdout = std.fs.File.stdout();
     stdout.writeAll("Kira Programming Language v" ++ version ++ "\n") catch {};
+}
+
+/// Generate Markdown documentation for a Kira source file.
+fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+    _ = use_color;
+
+    // Read the file
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
+    defer allocator.free(source);
+
+    // Parse
+    var program = Kira.parse(allocator, source) catch {
+        stderr.writeAll("Error: failed to parse file\n") catch {};
+        return error.ParseError;
+    };
+    defer program.deinit();
+
+    // Generate documentation
+    const markdown = Kira.doc_gen.generateMarkdown(allocator, &program) catch {
+        stderr.writeAll("Error: failed to generate documentation\n") catch {};
+        return error.DocGenError;
+    };
+    defer allocator.free(markdown);
+
+    if (output_path) |out| {
+        // Write to file
+        const file = std.fs.cwd().createFile(out, .{}) catch {
+            stderr.writeAll("Error: could not create output file\n") catch {};
+            return error.WriteError;
+        };
+        defer file.close();
+        file.writeAll(markdown) catch {
+            stderr.writeAll("Error: could not write output file\n") catch {};
+            return error.WriteError;
+        };
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Documentation written to {s}\n", .{out}) catch return;
+        stdout.writeAll(msg) catch {};
+    } else {
+        // Write to stdout
+        stdout.writeAll(markdown) catch {};
+    }
+}
+
+/// Initialize a new Kira project in the current directory.
+fn initProject(allocator: Allocator, custom_name: ?[]const u8) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+    const cwd = std.fs.cwd();
+
+    // Determine project name: --name flag, or current directory name
+    const project_name_owned = custom_name == null;
+    const project_name = if (custom_name) |name|
+        name
+    else blk: {
+        const cwd_path = cwd.realpathAlloc(allocator, ".") catch {
+            stderr.writeAll("Error: could not determine current directory\n") catch {};
+            return error.InitFailed;
+        };
+        defer allocator.free(cwd_path);
+        break :blk allocator.dupe(u8, std.fs.path.basename(cwd_path)) catch return error.InitFailed;
+    };
+    defer if (project_name_owned) allocator.free(project_name);
+
+    // Check if kira.toml already exists
+    cwd.access("kira.toml", .{}) catch |err| {
+        if (err != error.FileNotFound) {
+            stderr.writeAll("Error: could not check for existing kira.toml\n") catch {};
+            return error.InitFailed;
+        }
+        // FileNotFound is expected — proceed
+        return initProjectFiles(allocator, stdout, stderr, cwd, project_name);
+    };
+
+    // kira.toml exists — don't overwrite
+    stderr.writeAll("Error: kira.toml already exists in this directory\n") catch {};
+    stderr.writeAll("Use a different directory or remove the existing kira.toml\n") catch {};
+    return error.InitFailed;
+}
+
+const InitError = error{
+    InitFailed,
+    OutOfMemory,
+};
+
+fn initProjectFiles(allocator: Allocator, stdout: std.fs.File, stderr: std.fs.File, cwd: std.fs.Dir, project_name: []const u8) InitError!void {
+    _ = stderr;
+
+    // Create kira.toml
+    const toml_content = std.fmt.allocPrint(allocator,
+        \\[package]
+        \\name = "{s}"
+        \\version = "0.1.0"
+        \\description = ""
+        \\license = ""
+        \\authors = []
+        \\
+        \\[dependencies]
+        \\
+        \\[modules]
+        \\main = "src/main.ki"
+        \\
+    , .{project_name}) catch return error.OutOfMemory;
+    defer allocator.free(toml_content);
+
+    const toml_file = cwd.createFile("kira.toml", .{ .exclusive = true }) catch return error.InitFailed;
+    defer toml_file.close();
+    toml_file.writeAll(toml_content) catch return error.InitFailed;
+
+    // Create src/ directory
+    cwd.makeDir("src") catch |err| {
+        if (err != error.PathAlreadyExists) return error.InitFailed;
+    };
+
+    // Create src/main.ki
+    const main_content =
+        \\// Welcome to Kira!
+        \\// A functional language with explicit types, explicit effects, and no surprises.
+        \\
+        \\let main: fn() -> string = fn() -> string {
+        \\    "Hello, Kira!"
+        \\}
+        \\
+    ;
+
+    const main_file = cwd.createFile("src/main.ki", .{ .exclusive = true }) catch |err| {
+        if (err == error.PathAlreadyExists) {
+            // src/main.ki already exists — skip it
+            writeInitSummary(stdout, project_name, false);
+            return;
+        }
+        return error.InitFailed;
+    };
+    defer main_file.close();
+    main_file.writeAll(main_content) catch return error.InitFailed;
+
+    // Create .gitignore
+    const gitignore_content =
+        \\# Build output
+        \\zig-out/
+        \\zig-cache/
+        \\.zig-cache/
+        \\
+        \\# Generated C files
+        \\*.c
+        \\
+        \\# Executables
+        \\*.o
+        \\*.out
+        \\
+        \\# Kira cache
+        \\.kira/
+        \\
+    ;
+
+    // Don't fail if .gitignore already exists — just skip it
+    if (cwd.createFile(".gitignore", .{ .exclusive = true })) |gitignore_file| {
+        defer gitignore_file.close();
+        gitignore_file.writeAll(gitignore_content) catch {};
+    } else |_| {}
+
+    writeInitSummary(stdout, project_name, true);
+}
+
+fn writeInitSummary(stdout: std.fs.File, project_name: []const u8, created_main: bool) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Created new Kira project '{s}'\n", .{project_name}) catch return;
+    stdout.writeAll(msg) catch {};
+    stdout.writeAll("\n  kira.toml\n") catch {};
+    if (created_main) {
+        stdout.writeAll("  src/main.ki\n") catch {};
+    }
+    stdout.writeAll("  .gitignore\n") catch {};
+    stdout.writeAll("\nRun 'kira run src/main.ki' to get started.\n") catch {};
 }
 
 /// Run a Kira source file
@@ -592,6 +854,146 @@ fn checkFile(allocator: Allocator, path: []const u8, use_color: bool) !void {
         const msg = std.fmt.bufPrint(&buf, "Check passed: {s}\n", .{path}) catch "Check passed\n";
         try stdout.writeAll(msg);
     }
+}
+
+/// Build a Kira source file to a native executable via C codegen.
+fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
+    defer allocator.free(source);
+
+    // Parse
+    var parse_result = Kira.parseWithErrors(allocator, source);
+    const renderer = Kira.diagnostic.DiagnosticRenderer.init(source, path, use_color);
+
+    if (parse_result.hasErrors()) {
+        defer parse_result.deinit();
+        for (parse_result.errors) |err| {
+            renderParseError(stderr, renderer, err) catch {};
+        }
+        return error.ParseError;
+    }
+
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        try stderr.writeAll("error[parse]: Unknown parse error\n");
+        return error.ParseError;
+    };
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| {
+        arena.deinit();
+    }
+    defer program.deinit();
+
+    // Resolve
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+
+    var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
+    defer loader.deinit();
+
+    loader.addSearchPath(".") catch {};
+    if (std.fs.path.dirname(path)) |dir| {
+        if (std.fs.path.dirname(dir)) |parent| {
+            if (parent.len > 0 and !std.mem.eql(u8, parent, ".")) {
+                loader.addSearchPath(parent) catch {};
+            }
+        }
+        if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
+            loader.addSearchPath(dir) catch {};
+        }
+    }
+    if (project_config.project_root) |root| {
+        loader.addSearchPath(root) catch {};
+    }
+
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
+        for (loader.getErrors()) |load_err| {
+            try formatModuleError(stderr, load_err, source, path);
+        }
+        for (resolver.getDiagnostics()) |diag| {
+            renderResolverDiagnostic(stderr, renderer, diag) catch {};
+        }
+        return error.ResolveError;
+    };
+
+    // Type check
+    var checker = Kira.TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    checker.check(&program) catch {
+        for (checker.getDiagnostics()) |diag| {
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
+        }
+        return error.TypeCheckError;
+    };
+
+    // Lower to IR
+    var lowerer = Kira.IRLowerer.init(allocator);
+    defer lowerer.deinit();
+
+    var ir_module = lowerer.lower(&program) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error[ir]: IR lowering failed: {}\n", .{err}) catch "error[ir]: IR lowering failed\n";
+        stderr.writeAll(msg) catch {};
+        return error.CompileError;
+    };
+    defer ir_module.deinit();
+
+    // Generate C code
+    var codegen_gen = Kira.codegen.CCodeGen.init(allocator);
+    defer codegen_gen.deinit();
+
+    codegen_gen.generateModule(&ir_module) catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error[codegen]: Code generation failed: {}\n", .{err}) catch "error[codegen]: Code generation failed\n";
+        stderr.writeAll(msg) catch {};
+        return error.CompileError;
+    };
+
+    // Determine output path
+    const c_output = codegen_gen.getOutput();
+
+    // Write C file
+    var c_path_buf: [512]u8 = undefined;
+    const c_path = output_path orelse blk: {
+        // Default: replace .ki with .c
+        if (std.mem.endsWith(u8, path, ".ki")) {
+            const base = path[0 .. path.len - 3];
+            const c_name = std.fmt.bufPrint(&c_path_buf, "{s}.c", .{base}) catch {
+                break :blk "output.c";
+            };
+            break :blk c_name;
+        }
+        break :blk "output.c";
+    };
+
+    const c_file = std.fs.cwd().createFile(c_path, .{}) catch {
+        stderr.writeAll("error: could not create output file\n") catch {};
+        return error.WriteError;
+    };
+    defer c_file.close();
+
+    c_file.writeAll(c_output) catch {
+        stderr.writeAll("error: could not write output file\n") catch {};
+        return error.WriteError;
+    };
+
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{c_path}) catch "Generated output\n";
+    try stdout.writeAll(msg);
 }
 
 /// Run tests in a Kira source file
@@ -1750,6 +2152,8 @@ test "parse args help" {
         .show_ast = false,
         .no_color = false,
         .fmt_check = false,
+        .output_path = null,
+        .init_name = null,
         .user_args = &.{},
     };
 }

@@ -15,6 +15,10 @@ pub const diagnostic = @import("diagnostic.zig");
 pub const lsp = @import("lsp/root.zig");
 pub const formatter = @import("formatter.zig");
 pub const ir = @import("ir/root.zig");
+pub const runtime = @import("runtime/root.zig");
+pub const codegen = @import("codegen.zig");
+pub const doc_gen = @import("doc_gen.zig");
+pub const interop = @import("interop/root.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -53,6 +57,13 @@ pub const LoadError = modules.LoadError;
 
 // Configuration exports
 pub const ProjectConfig = config.ProjectConfig;
+pub const ValidationError = config.ValidationError;
+pub const Dependency = config.Dependency;
+pub const VersionConstraint = config.VersionConstraint;
+pub const SemVer = config.SemVer;
+pub const DependencyResolver = config.DependencyResolver;
+pub const ResolvedDependency = config.ResolvedDependency;
+pub const DepSource = config.DepSource;
 
 // Diagnostic rendering exports
 pub const DiagnosticRenderer = diagnostic.DiagnosticRenderer;
@@ -299,6 +310,10 @@ test {
     _ = lsp;
     _ = formatter;
     _ = ir;
+    _ = runtime;
+    _ = codegen;
+    _ = doc_gen;
+    _ = interop;
 }
 
 test "tokenize simple expression" {

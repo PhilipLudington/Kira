@@ -318,6 +318,8 @@ pub const Instruction = struct {
         field_get: FieldGet,
         /// Access an array element by index value.
         index_get: IndexGet,
+        /// Get the length of an array or string.
+        array_len: ValueRef,
         /// Set a record field (produces new record or mutates in-place for var).
         field_set: FieldSet,
         /// Set an array element by index.
@@ -354,6 +356,10 @@ pub const Instruction = struct {
         param: u32,
         /// Captured variable (reserves ValueRef slot in instruction list).
         capture: u32,
+
+        // -- Parameter store (for TCO) --
+        /// Store a value into a function parameter slot (used by tail-call optimization).
+        store_param: StoreParam,
 
         // -- Method dispatch --
         /// Method call on an object (unresolved dispatch).
@@ -404,6 +410,11 @@ pub const Instruction = struct {
 
     pub const StoreVar = struct {
         target: ValueRef,
+        value: ValueRef,
+    };
+
+    pub const StoreParam = struct {
+        param_index: u32,
         value: ValueRef,
     };
 
@@ -545,6 +556,7 @@ pub const Instruction = struct {
             .tuple_get => |t| try writer.print("tuple_get %{d}.{d}", .{ t.tuple, t.index }),
             .field_get => |f| try writer.print("field_get %{d}.{s}", .{ f.object, f.field }),
             .index_get => |idx| try writer.print("index_get %{d}[%{d}]", .{ idx.object, idx.index }),
+            .array_len => |v| try writer.print("array_len %{d}", .{v}),
             .field_set => |f| try writer.print("field_set %{d}.{s} = %{d}", .{ f.object, f.field, f.value }),
             .index_set => |idx| try writer.print("index_set %{d}[%{d}] = %{d}", .{ idx.object, idx.index, idx.value }),
             .get_tag => |v| try writer.print("get_tag %{d}", .{v}),
@@ -580,6 +592,7 @@ pub const Instruction = struct {
             },
             .param => |idx| try writer.print("param {d}", .{idx}),
             .capture => |idx| try writer.print("capture {d}", .{idx}),
+            .store_param => |sp| try writer.print("store_param {d} = %{d}", .{ sp.param_index, sp.value }),
             .method_call => |mc| {
                 try writer.print("method_call %{d}.{s}(", .{ mc.object, mc.method });
                 for (mc.args, 0..) |a, i| {
