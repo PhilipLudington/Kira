@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const ast = @import("../ast/root.zig");
 const symbols = @import("../symbols/root.zig");
 const value_mod = @import("value.zig");
+const coverage_mod = @import("../coverage.zig");
 
 const Expression = ast.Expression;
 const Statement = ast.Statement;
@@ -73,6 +74,9 @@ pub const Interpreter = struct {
 
     /// Method table for impl block methods: "TypeName.methodName" -> FunctionValue
     method_table: std.StringHashMapUnmanaged(Value.FunctionValue),
+
+    /// Optional coverage tracker (set when running with --coverage)
+    coverage_tracker: ?*coverage_mod.CoverageTracker = null,
 
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
@@ -1655,6 +1659,9 @@ pub const Interpreter = struct {
 
     /// Evaluate a statement
     pub fn evalStatement(self: *Interpreter, stmt: *const Statement, env: *Environment) InterpreterError!void {
+        if (self.coverage_tracker) |tracker| {
+            tracker.recordHit(stmt.span);
+        }
         switch (stmt.kind) {
             .let_binding => |let| try self.evalLetBinding(let, env),
             .var_binding => |vb| try self.evalVarBinding(vb, env),

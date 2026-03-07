@@ -37,6 +37,10 @@ const Args = struct {
     bench_json: bool,
     /// Benchmark: number of iterations (0 = auto)
     bench_iterations: u32,
+    /// Test: emit coverage report
+    coverage: bool,
+    /// Test: emit JSON coverage report
+    coverage_json: bool,
 };
 
 pub fn main() !void {
@@ -134,14 +138,14 @@ pub fn main() !void {
         },
         .test_cmd => {
             if (args.file_path) |path| {
-                testFile(allocator, path, args.user_args, use_color) catch |err| {
+                testFile(allocator, path, args.user_args, use_color, args.coverage, args.coverage_json) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
             } else {
                 const stderr = std.fs.File.stderr();
                 stderr.writeAll("Error: 'test' command requires a file path\n") catch {};
-                stderr.writeAll("Usage: kira test <file.ki>\n") catch {};
+                stderr.writeAll("Usage: kira test [--coverage] [--coverage-json] <file.ki>\n") catch {};
                 std.process.exit(1);
             }
         },
@@ -188,6 +192,8 @@ fn parseArgs() !Args {
         .user_args = &.{},
         .bench_json = false,
         .bench_iterations = 0,
+        .coverage = false,
+        .coverage_json = false,
     };
 
     user_args_count = 0;
@@ -278,9 +284,19 @@ fn parseArgs() !Args {
             return result;
         } else if (std.mem.eql(u8, arg, "test")) {
             result.mode = .test_cmd;
-            if (args_iter.next()) |path| {
-                result.file_path = path;
-                file_path_seen = true;
+            while (args_iter.next()) |test_arg| {
+                if (std.mem.eql(u8, test_arg, "--coverage")) {
+                    result.coverage = true;
+                } else if (std.mem.eql(u8, test_arg, "--coverage-json")) {
+                    result.coverage = true;
+                    result.coverage_json = true;
+                } else if (!std.mem.startsWith(u8, test_arg, "-")) {
+                    result.file_path = test_arg;
+                    file_path_seen = true;
+                    break;
+                } else {
+                    return error.UnknownOption;
+                }
             }
         } else if (std.mem.eql(u8, arg, "bench")) {
             result.mode = .bench_cmd;
@@ -357,6 +373,8 @@ fn printHelp() void {
         \\  -o, --output      (build/doc) Output file path or directory
         \\  --check           (fmt) Check formatting without modifying
         \\  -n, --name        (init) Project name (default: directory name)
+        \\  --coverage        (test) Show coverage report after tests
+        \\  --coverage-json   (test) Emit JSON coverage report
         \\  --json            (bench) Emit JSON output for CI ingestion
         \\  --iterations N    (bench) Number of iterations per benchmark
         \\
@@ -1215,7 +1233,7 @@ fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, u
 }
 
 /// Run tests in a Kira source file
-fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8, use_color: bool) !void {
+fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8, use_color: bool, enable_coverage: bool, coverage_json: bool) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
@@ -1296,6 +1314,18 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
     interp.registerBuiltinMethods();
+
+    // Set up coverage tracking if requested
+    var tracker = if (enable_coverage)
+        Kira.CoverageTracker.init(allocator, source, path)
+    else
+        undefined;
+    defer if (enable_coverage) tracker.deinit();
+
+    if (enable_coverage) {
+        tracker.collectCoverableLines(program.declarations);
+        interp.coverage_tracker = &tracker;
+    }
 
     // Set environment arguments for std.env.args()
     if (user_args.len > 0) {
@@ -1380,11 +1410,35 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     } else {
         const summary = std.fmt.bufPrint(&summary_buf, "{d} passed, {d} failed out of {d} tests.\n", .{ pass_count, fail_count, test_count }) catch "Some tests failed.\n";
         try stderr.writeAll(summary);
+
+        // Still emit coverage report even if tests failed
+        if (enable_coverage) {
+            emitCoverageReport(&tracker, stdout, coverage_json);
+        }
         return error.TestsFailed;
     }
 
     if (test_count == 0) {
         try stdout.writeAll("No tests found.\n");
+    }
+
+    // Emit coverage report
+    if (enable_coverage) {
+        emitCoverageReport(&tracker, stdout, coverage_json);
+    }
+}
+
+fn emitCoverageReport(tracker: *const Kira.CoverageTracker, file: std.fs.File, json: bool) void {
+    if (json) {
+        tracker.emitJson(file) catch |err| {
+            const stderr = std.fs.File.stderr();
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Warning: coverage JSON output error: {}\n", .{err}) catch "Warning: coverage output error\n";
+            stderr.writeAll(msg) catch {};
+        };
+    } else {
+        tracker.emitSummary(file) catch {};
+        tracker.emitAnnotatedSource(file) catch {};
     }
 }
 
@@ -2761,6 +2815,8 @@ test "parse args help" {
         .user_args = &.{},
         .bench_json = false,
         .bench_iterations = 0,
+        .coverage = false,
+        .coverage_json = false,
     };
 }
 

@@ -19,6 +19,7 @@ pub const runtime = @import("runtime/root.zig");
 pub const codegen = @import("codegen.zig");
 pub const doc_gen = @import("doc_gen.zig");
 pub const interop = @import("interop/root.zig");
+pub const coverage = @import("coverage.zig");
 
 // Lexer exports
 pub const Token = lexer.Token;
@@ -85,6 +86,9 @@ pub const IRValueRef = ir.ValueRef;
 pub const IRBlockId = ir.BlockId;
 pub const IRLowerer = ir.Lowerer;
 pub const IRLowerError = ir.LowerError;
+
+// Coverage exports
+pub const CoverageTracker = coverage.CoverageTracker;
 
 // Interpreter exports
 pub const Value = interpreter_mod.Value;
@@ -314,6 +318,7 @@ test {
     _ = codegen;
     _ = doc_gen;
     _ = interop;
+    _ = coverage;
 }
 
 test "tokenize simple expression" {

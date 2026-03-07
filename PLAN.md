@@ -3,7 +3,7 @@
 ## Overview
 Productization and performance improvements for Kira. Closes the remaining roadmap gaps after Phase 4: searchable API docs, benchmark harness, test coverage reporting, and pure-function memoization. Scoped to this repository only.
 
-Current status: Phase 1 complete. Phase 2 next.
+Current status: Phase 2 complete. Phase 3 next.
 
 ## Phase 0: Searchable API Docs ✅
 **Status:** Complete (2026-03-06)
@@ -68,7 +68,8 @@ Current status: Phase 1 complete. Phase 2 next.
 
 ---
 
-## Phase 2: Coverage Reporting
+## Phase 2: Coverage Reporting ✅
+**Status:** Complete (2026-03-06)
 
 **Goal:** Add interpreter-level coverage instrumentation and reporting to `kira test`.
 **Estimated Effort:** 4-6 days
@@ -79,14 +80,14 @@ Current status: Phase 1 complete. Phase 2 next.
 - Terminal summary, machine-readable report, optional annotated source output
 
 ### Tasks
-- [ ] Instrument executable statements and branch arms during evaluation
-- [ ] Record coverage spans keyed by module path and source ranges
-- [ ] Add `--coverage` flag to `kira test`
-- [ ] Emit terminal coverage summary
-- [ ] Emit machine-readable coverage report
-- [ ] Add optional annotated source output
-- [ ] Define how property tests count toward coverage
-- [ ] Add CLI help text for `--coverage`
+- [x] Instrument executable statements and branch arms during evaluation
+- [x] Record coverage spans keyed by module path and source ranges
+- [x] Add `--coverage` flag to `kira test`
+- [x] Emit terminal coverage summary
+- [x] Emit machine-readable coverage report
+- [x] Add optional annotated source output
+- [x] Define how property tests count toward coverage
+- [x] Add CLI help text for `--coverage`
 
 ### Testing Strategy
 - Covered and uncovered lines reported correctly for simple functions.
