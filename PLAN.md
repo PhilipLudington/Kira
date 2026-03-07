@@ -16,7 +16,7 @@ with zero manual steps.
 Reference: [PLAN-interop.md](PLAN-interop.md) (original design),
 [DESIGN.md](DESIGN.md).
 
-Current status: Phase 1 complete.
+Current status: Phase 2 complete.
 
 ---
 
@@ -83,7 +83,8 @@ Before Phase 2, these must be true:
 
 ---
 
-## Phase 2: ADT Interop Convention
+## Phase 2: ADT Interop Convention ✅
+**Status:** Complete (2026-03-07)
 
 **Goal:** Define and implement a C-compatible representation for Kira algebraic
 data types so Klar can receive and pattern-match on them across the FFI boundary.
@@ -97,11 +98,11 @@ data types so Klar can receive and pattern-match on them across the FFI boundary
 - Klar extern block includes matching `extern struct`/`extern enum`
 
 ### Tasks
-- [ ] Write `docs/design/adt-interop.md` — define the C layout convention: tag enum (int32_t, 0-indexed by declaration order) + union of payloads for sum types; plain struct for product types. Define the threshold for opaque pointers (types > 64 bytes or recursive types). Cover: simple enums, single-payload variants, multi-payload variants, nested ADTs, and recursive types.
-- [ ] Thread ADT type information through IR — `ir.Function` params and return types need to reference user-defined types, not just primitives. Extend `astTypeToName` (from Phase 0) to handle named types, and add an `ir.TypeDef` struct to `ir.Module` that describes exported ADTs.
-- [ ] Implement ADT header generation in `src/interop/klar.zig` — for each exported sum type, emit a C `enum` for tags and a `struct` with tag + union. For product types, emit a plain C struct. Handle recursive types via pointer fields.
-- [ ] Implement ADT Klar extern block generation — emit `extern enum` for tags and `extern struct` for data layout matching the C structs.
-- [ ] Add tests: `type Shape = Circle(f64) | Rectangle(f64, f64)` produces correct tagged union in header and matching extern declarations in Klar block.
+- [x] Write `docs/design/adt-interop.md` — define the C layout convention: tag enum (int32_t, 0-indexed by declaration order) + union of payloads for sum types; plain struct for product types. Define the threshold for opaque pointers (types > 64 bytes or recursive types). Cover: simple enums, single-payload variants, multi-payload variants, nested ADTs, and recursive types.
+- [x] Thread ADT type information through IR — `ir.VariantDecl` and `ir.FieldDecl` gain `field_types`/`type_name` fields. `lowerTypeDecl` in `lower.zig` threads field types from AST variant/record fields into IR via `astTypeToName`. Added `astTupleFieldName` helper for positional field names.
+- [x] Implement ADT header generation in `src/interop/klar.zig` — `emitHeaderTypeDecls` emits tag enum, variant payload structs, and tagged union struct for sum types; plain C struct for product types. `kiraToCTypeAlloc` handles user-defined type references.
+- [x] Implement ADT Klar extern block generation — `emitKlarTypeDecls` emits `extern enum` for tags and `extern struct` for data layout matching the C structs.
+- [x] Add tests: `type Shape = Circle(f64) | Rectangle(f64, f64) | Point` produces correct tagged union in header and matching extern declarations in Klar block. Also tested product types, unit-only sum types (simple enums), and user-defined type name mapping.
 
 ### Testing Strategy
 Round-trip test: build a Kira module exporting a function that returns an ADT,

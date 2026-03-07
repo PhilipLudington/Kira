@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 const ir = @import("../ir/ir.zig");
 
 /// Map a Kira IR type to a C type string for header generation.
+/// Primitive types map to stdint types; user-defined types map to "kira_{Name}".
 pub fn kiraToCType(kira_type: []const u8) []const u8 {
     if (std.mem.eql(u8, kira_type, "i8")) return "int8_t";
     if (std.mem.eql(u8, kira_type, "i16")) return "int16_t";
@@ -34,7 +35,30 @@ pub fn kiraToCType(kira_type: []const u8) []const u8 {
     return "int64_t"; // Default for unknown types
 }
 
+/// Allocating version of kiraToCType that handles user-defined type names.
+/// For primitives, returns a static string (allocated = false).
+/// For user types, allocates "kira_{Name}" (allocated = true).
+fn kiraToCTypeAlloc(allocator: Allocator, kira_type: []const u8, module: *const ir.Module) !CTypeResult {
+    // Check if it's a known type decl name
+    for (module.type_decls.items) |td| {
+        if (std.mem.eql(u8, td.name, kira_type)) {
+            return .{
+                .c_type = try std.fmt.allocPrint(allocator, "kira_{s}", .{kira_type}),
+                .allocated = true,
+            };
+        }
+    }
+    return .{ .c_type = kiraToCType(kira_type), .allocated = false };
+}
+
+const CTypeResult = struct {
+    c_type: []const u8,
+    allocated: bool,
+};
+
 /// Map a Kira type name to the corresponding Klar FFI type.
+/// Primitive types map to Klar builtins; user-defined types pass through unchanged
+/// (they'll be declared as extern structs in the Klar block).
 pub fn kiraToKlarType(kira_type: []const u8) []const u8 {
     if (std.mem.eql(u8, kira_type, "i8")) return "i8";
     if (std.mem.eql(u8, kira_type, "i16")) return "i16";
@@ -52,6 +76,8 @@ pub fn kiraToKlarType(kira_type: []const u8) []const u8 {
     if (std.mem.eql(u8, kira_type, "char")) return "Char";
     if (std.mem.eql(u8, kira_type, "string")) return "CStr";
     if (std.mem.eql(u8, kira_type, "void")) return "Void";
+    // User-defined types: check if it looks like an ADT name (starts with uppercase)
+    if (kira_type.len > 0 and std.ascii.isUpper(kira_type[0])) return kira_type;
     return "i64";
 }
 
@@ -86,13 +112,18 @@ pub fn generateHeader(allocator: Allocator, module: *const ir.Module, module_nam
     try appendSlice(allocator, &output, "#include <stdbool.h>\n\n");
     try appendSlice(allocator, &output, "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
 
+    // Emit ADT type declarations
+    try emitHeaderTypeDecls(allocator, &output, module);
+
     // Declare all non-main functions
     for (module.functions.items) |func| {
         const name = func.name orelse continue;
         if (std.mem.eql(u8, name, "main")) continue;
 
         // Return type
-        try appendFmt(allocator, &output, "{s} ", .{kiraToCType(func.return_type_name)});
+        const ret_c = try kiraToCTypeAlloc(allocator, func.return_type_name, module);
+        defer if (ret_c.allocated) allocator.free(ret_c.c_type);
+        try appendFmt(allocator, &output, "{s} ", .{ret_c.c_type});
         try appendFmt(allocator, &output, "{s}(", .{name});
 
         // Parameters
@@ -101,7 +132,9 @@ pub fn generateHeader(allocator: Allocator, module: *const ir.Module, module_nam
         } else {
             for (func.params, 0..) |param, i| {
                 if (i > 0) try appendSlice(allocator, &output, ", ");
-                try appendFmt(allocator, &output, "{s} {s}", .{ kiraToCType(param.type_name), param.name });
+                const param_c = try kiraToCTypeAlloc(allocator, param.type_name, module);
+                defer if (param_c.allocated) allocator.free(param_c.c_type);
+                try appendFmt(allocator, &output, "{s} {s}", .{ param_c.c_type, param.name });
             }
         }
 
@@ -120,7 +153,11 @@ pub fn generateKlarExternBlock(allocator: Allocator, module: *const ir.Module) !
     var output = std.ArrayListUnmanaged(u8){};
     errdefer output.deinit(allocator);
 
-    try appendSlice(allocator, &output, "// Generated Klar extern block for Kira module\n");
+    try appendSlice(allocator, &output, "// Generated Klar extern block for Kira module\n\n");
+
+    // Emit ADT type declarations
+    try emitKlarTypeDecls(allocator, &output, module);
+
     try appendSlice(allocator, &output, "extern {\n");
 
     for (module.functions.items) |func| {
@@ -140,6 +177,130 @@ pub fn generateKlarExternBlock(allocator: Allocator, module: *const ir.Module) !
     try appendSlice(allocator, &output, "}\n");
 
     return output.toOwnedSlice(allocator);
+}
+
+/// Emit C type declarations for ADTs into the header.
+fn emitHeaderTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), module: *const ir.Module) !void {
+    if (module.type_decls.items.len == 0) return;
+
+    try appendSlice(allocator, output, "/* Type declarations */\n\n");
+
+    for (module.type_decls.items) |td| {
+        switch (td.kind) {
+            .sum_type => |st| {
+                // Tag enum
+                try appendFmt(allocator, output, "typedef enum {{\n", .{});
+                for (st.variants, 0..) |v, i| {
+                    if (i > 0) try appendSlice(allocator, output, ",\n");
+                    try appendFmt(allocator, output, "    KIRA_{s}_{s} = {d}", .{ td.name, v.name, v.tag });
+                }
+                try appendSlice(allocator, output, "\n");
+                try appendFmt(allocator, output, "}} kira_{s}_Tag;\n\n", .{td.name});
+
+                // Variant payload structs (only for variants with fields)
+                for (st.variants) |v| {
+                    if (v.field_count == 0) continue;
+                    try appendFmt(allocator, output, "typedef struct {{ ", .{});
+                    for (v.field_types, 0..) |ft, fi| {
+                        if (fi > 0) try appendSlice(allocator, output, " ");
+                        const c_type = try kiraToCTypeAlloc(allocator, ft.type_name, module);
+                        defer if (c_type.allocated) allocator.free(c_type.c_type);
+                        try appendFmt(allocator, output, "{s} {s};", .{ c_type.c_type, ft.name });
+                    }
+                    try appendFmt(allocator, output, " }} kira_{s}_{s};\n", .{ td.name, v.name });
+                }
+
+                // Tagged union struct
+                try appendFmt(allocator, output, "\ntypedef struct {{\n", .{});
+                try appendFmt(allocator, output, "    kira_{s}_Tag tag;\n", .{td.name});
+
+                // Check if any variant has a payload
+                var has_payload = false;
+                for (st.variants) |v| {
+                    if (v.field_count > 0) {
+                        has_payload = true;
+                        break;
+                    }
+                }
+
+                if (has_payload) {
+                    try appendSlice(allocator, output, "    union {\n");
+                    for (st.variants) |v| {
+                        if (v.field_count == 0) continue;
+                        try appendFmt(allocator, output, "        kira_{s}_{s} {s};\n", .{ td.name, v.name, v.name });
+                    }
+                    try appendSlice(allocator, output, "    } data;\n");
+                }
+
+                try appendFmt(allocator, output, "}} kira_{s};\n\n", .{td.name});
+            },
+            .product_type => |pt| {
+                try appendFmt(allocator, output, "typedef struct {{\n", .{});
+                for (pt.fields) |f| {
+                    const c_type = try kiraToCTypeAlloc(allocator, f.type_name, module);
+                    defer if (c_type.allocated) allocator.free(c_type.c_type);
+                    try appendFmt(allocator, output, "    {s} {s};\n", .{ c_type.c_type, f.name });
+                }
+                try appendFmt(allocator, output, "}} kira_{s};\n\n", .{td.name});
+            },
+        }
+    }
+}
+
+/// Emit Klar extern declarations for ADT types.
+fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), module: *const ir.Module) !void {
+    if (module.type_decls.items.len == 0) return;
+
+    for (module.type_decls.items) |td| {
+        switch (td.kind) {
+            .sum_type => |st| {
+                // Tag enum
+                try appendFmt(allocator, output, "extern enum kira_{s}_Tag {{\n", .{td.name});
+                for (st.variants) |v| {
+                    try appendFmt(allocator, output, "    {s} = {d}\n", .{ v.name, v.tag });
+                }
+                try appendSlice(allocator, output, "}\n\n");
+
+                // Variant payload structs
+                for (st.variants) |v| {
+                    if (v.field_count == 0) continue;
+                    try appendFmt(allocator, output, "extern struct kira_{s}_{s} {{\n", .{ td.name, v.name });
+                    for (v.field_types) |ft| {
+                        try appendFmt(allocator, output, "    {s}: {s}\n", .{ ft.name, kiraToKlarType(ft.type_name) });
+                    }
+                    try appendSlice(allocator, output, "}\n\n");
+                }
+
+                // Main tagged union struct
+                try appendFmt(allocator, output, "extern struct kira_{s} {{\n", .{td.name});
+                try appendFmt(allocator, output, "    tag: kira_{s}_Tag\n", .{td.name});
+
+                // Emit data field typed as the largest variant payload struct.
+                // This ensures the Klar struct matches the C struct's ABI size.
+                // Access other variants via unsafe ptr_cast.
+                var largest_variant: ?[]const u8 = null;
+                var largest_field_count: u32 = 0;
+                for (st.variants) |v| {
+                    if (v.field_count > largest_field_count) {
+                        largest_field_count = v.field_count;
+                        largest_variant = v.name;
+                    }
+                }
+                if (largest_variant) |lv| {
+                    try appendFmt(allocator, output, "    data: kira_{s}_{s}\n", .{ td.name, lv });
+                }
+
+                try appendSlice(allocator, output, "}\n\n");
+            },
+            .product_type => |pt| {
+                try appendFmt(allocator, output, "extern struct kira_{s} {{\n", .{td.name});
+                for (pt.fields) |f| {
+                    try appendFmt(allocator, output, "    {s}: {s}\n", .{ f.name, kiraToKlarType(f.type_name) });
+                }
+                try appendSlice(allocator, output, "}\n\n");
+            },
+        }
+    }
 }
 
 fn appendSlice(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
@@ -345,4 +506,223 @@ test "generateKlarExternBlock with typed params" {
     try std.testing.expect(std.mem.indexOf(u8, block, "fn greet(name: CStr) -> CStr") != null);
     try std.testing.expect(std.mem.indexOf(u8, block, "fn is_valid(flag: Bool) -> Bool") != null);
     try std.testing.expect(std.mem.indexOf(u8, block, "fn reset() -> Void") != null);
+}
+
+test "generateHeader with sum type Shape" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // type Shape = Circle(f64) | Rectangle(f64, f64) | Point
+    _ = try module.addTypeDecl(.{
+        .name = "Shape",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Circle",
+                    .tag = 0,
+                    .field_count = 1,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                    },
+                },
+                .{
+                    .name = "Rectangle",
+                    .tag = 1,
+                    .field_count = 2,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                        .{ .name = "_1", .index = 1, .type_name = "f64" },
+                    },
+                },
+                .{ .name = "Point", .tag = 2, .field_count = 0 },
+            },
+        } },
+    });
+
+    // fn area(s: Shape) -> f64
+    var func = ir.Function.init(arena);
+    func.name = "area";
+    func.return_type_name = "f64";
+    const p = try arena.alloc(ir.Function.Param, 1);
+    p[0] = .{ .name = "s", .value_ref = 0, .type_name = "Shape" };
+    func.params = p;
+    try module.functions.append(arena, func);
+
+    const header = try generateHeader(allocator, &module, "shapes");
+    defer allocator.free(header);
+
+    // Tag enum
+    try std.testing.expect(std.mem.indexOf(u8, header, "KIRA_Shape_Circle = 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "KIRA_Shape_Rectangle = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "KIRA_Shape_Point = 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Shape_Tag") != null);
+
+    // Variant payload structs
+    try std.testing.expect(std.mem.indexOf(u8, header, "double _0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Shape_Circle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Shape_Rectangle") != null);
+
+    // Main tagged union
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Shape_Tag tag;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "} kira_Shape;") != null);
+
+    // Function using Shape type
+    try std.testing.expect(std.mem.indexOf(u8, header, "double area(kira_Shape s)") != null);
+}
+
+test "generateHeader with product type Point" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Point = { x: f64, y: f64 }
+    _ = try module.addTypeDecl(.{
+        .name = "Point",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "x", .index = 0, .type_name = "f64" },
+                .{ .name = "y", .index = 1, .type_name = "f64" },
+            },
+        } },
+    });
+
+    const header = try generateHeader(allocator, &module, "geo");
+    defer allocator.free(header);
+
+    try std.testing.expect(std.mem.indexOf(u8, header, "double x;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "double y;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "} kira_Point;") != null);
+}
+
+test "generateKlarExternBlock with sum type Shape" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // type Shape = Circle(f64) | Rectangle(f64, f64) | Point
+    _ = try module.addTypeDecl(.{
+        .name = "Shape",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Circle",
+                    .tag = 0,
+                    .field_count = 1,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                    },
+                },
+                .{
+                    .name = "Rectangle",
+                    .tag = 1,
+                    .field_count = 2,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                        .{ .name = "_1", .index = 1, .type_name = "f64" },
+                    },
+                },
+                .{ .name = "Point", .tag = 2, .field_count = 0 },
+            },
+        } },
+    });
+
+    // fn make_circle(r: f64) -> Shape
+    var func = ir.Function.init(arena);
+    func.name = "make_circle";
+    func.return_type_name = "Shape";
+    const p = try arena.alloc(ir.Function.Param, 1);
+    p[0] = .{ .name = "r", .value_ref = 0, .type_name = "f64" };
+    func.params = p;
+    try module.functions.append(arena, func);
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    // Tag enum
+    try std.testing.expect(std.mem.indexOf(u8, block, "extern enum kira_Shape_Tag") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "Circle = 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "Rectangle = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "Point = 2") != null);
+
+    // Variant payload structs
+    try std.testing.expect(std.mem.indexOf(u8, block, "extern struct kira_Shape_Circle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "_0: f64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "extern struct kira_Shape_Rectangle") != null);
+
+    // Main tagged union struct (data field uses largest variant for ABI size)
+    try std.testing.expect(std.mem.indexOf(u8, block, "extern struct kira_Shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "tag: kira_Shape_Tag") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "data: kira_Shape_Rectangle") != null);
+
+    // Function using Shape as return type
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn make_circle(r: f64) -> Shape") != null);
+}
+
+test "generateKlarExternBlock with product type" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Point = { x: f64, y: f64 }
+    _ = try module.addTypeDecl(.{
+        .name = "Point",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "x", .index = 0, .type_name = "f64" },
+                .{ .name = "y", .index = 1, .type_name = "f64" },
+            },
+        } },
+    });
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    try std.testing.expect(std.mem.indexOf(u8, block, "extern struct kira_Point") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "x: f64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "y: f64") != null);
+}
+
+test "kiraToKlarType maps user-defined types" {
+    try std.testing.expectEqualStrings("Shape", kiraToKlarType("Shape"));
+    try std.testing.expectEqualStrings("Point", kiraToKlarType("Point"));
+    try std.testing.expectEqualStrings("Option", kiraToKlarType("Option"));
+    // Primitives still work
+    try std.testing.expectEqualStrings("i32", kiraToKlarType("i32"));
+    try std.testing.expectEqualStrings("Bool", kiraToKlarType("bool"));
+}
+
+test "generateHeader sum type with unit-only variants (simple enum)" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Color = Red | Green | Blue
+    _ = try module.addTypeDecl(.{
+        .name = "Color",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Red", .tag = 0, .field_count = 0 },
+                .{ .name = "Green", .tag = 1, .field_count = 0 },
+                .{ .name = "Blue", .tag = 2, .field_count = 0 },
+            },
+        } },
+    });
+
+    const header = try generateHeader(allocator, &module, "colors");
+    defer allocator.free(header);
+
+    // Tag enum
+    try std.testing.expect(std.mem.indexOf(u8, header, "KIRA_Color_Red = 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "KIRA_Color_Green = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "KIRA_Color_Blue = 2") != null);
+
+    // Should have tag but no union (all unit variants)
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Color_Tag tag;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "union") == null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "} kira_Color;") != null);
 }

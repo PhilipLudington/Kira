@@ -187,14 +187,34 @@ pub const Lowerer = struct {
             .sum_type => |st| blk: {
                 var variants = std.ArrayListUnmanaged(ir.VariantDecl){};
                 for (st.variants, 0..) |v, i| {
+                    var field_decls = std.ArrayListUnmanaged(ir.FieldDecl){};
                     const field_count: u32 = if (v.fields) |fields| switch (fields) {
-                        .tuple_fields => |tf| @intCast(tf.len),
-                        .record_fields => |rf| @intCast(rf.len),
+                        .tuple_fields => |tf| fc: {
+                            for (tf, 0..) |ft, fi| {
+                                field_decls.append(alloc, .{
+                                    .name = astTupleFieldName(alloc, fi) catch return LowerError.OutOfMemory,
+                                    .index = @intCast(fi),
+                                    .type_name = astTypeToName(ft),
+                                }) catch return LowerError.OutOfMemory;
+                            }
+                            break :fc @intCast(tf.len);
+                        },
+                        .record_fields => |rf| fc: {
+                            for (rf, 0..) |f, fi| {
+                                field_decls.append(alloc, .{
+                                    .name = f.name,
+                                    .index = @intCast(fi),
+                                    .type_name = astTypeToName(f.field_type),
+                                }) catch return LowerError.OutOfMemory;
+                            }
+                            break :fc @intCast(rf.len);
+                        },
                     } else 0;
                     variants.append(alloc, .{
                         .name = v.name,
                         .tag = @intCast(i),
                         .field_count = field_count,
+                        .field_types = field_decls.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
                     }) catch return LowerError.OutOfMemory;
                 }
                 break :blk .{ .sum_type = .{
@@ -207,6 +227,7 @@ pub const Lowerer = struct {
                     fields.append(alloc, .{
                         .name = f.name,
                         .index = @intCast(i),
+                        .type_name = astTypeToName(f.field_type),
                     }) catch return LowerError.OutOfMemory;
                 }
                 break :blk .{ .product_type = .{
@@ -1314,6 +1335,11 @@ pub const Lowerer = struct {
             .io_type => "io",
             else => "i64",
         };
+    }
+
+    /// Generate a positional field name like "_0", "_1", etc. for tuple-style variant fields.
+    fn astTupleFieldName(alloc: Allocator, index: usize) ![]const u8 {
+        return std.fmt.allocPrint(alloc, "_{d}", .{index});
     }
 
     /// Register a ValueRef as float-typed (for params/captures with float types).
