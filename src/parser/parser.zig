@@ -156,6 +156,13 @@ pub const Parser = struct {
 
         const kind: Declaration.DeclarationKind = if (self.check(.fn_keyword)) blk: {
             break :blk .{ .function_decl = try self.parseFunctionDecl(is_public) };
+        } else if (self.match(.memo)) blk: {
+            // memo fn name(...)
+            if (self.check(.effect)) {
+                return self.reportError("'memo' and 'effect' cannot be combined; memoized functions must be pure", null);
+            }
+            try self.consume(.fn_keyword, "expected 'fn' after 'memo'");
+            break :blk .{ .function_decl = try self.parseMemoFunctionDecl(is_public) };
         } else if (self.match(.effect)) blk: {
             // effect fn name(...)
             try self.consume(.fn_keyword, "expected 'fn' after 'effect'");
@@ -278,14 +285,18 @@ pub const Parser = struct {
 
     fn parseFunctionDecl(self: *Parser, is_public: bool) ParseError!Declaration.FunctionDecl {
         _ = self.advance(); // consume 'fn'
-        return self.parseFunctionDeclBody(is_public, false);
+        return self.parseFunctionDeclBody(is_public, false, false);
     }
 
     fn parseEffectFunctionDecl(self: *Parser, is_public: bool) ParseError!Declaration.FunctionDecl {
-        return self.parseFunctionDeclBody(is_public, true);
+        return self.parseFunctionDeclBody(is_public, true, false);
     }
 
-    fn parseFunctionDeclBody(self: *Parser, is_public: bool, is_effect: bool) ParseError!Declaration.FunctionDecl {
+    fn parseMemoFunctionDecl(self: *Parser, is_public: bool) ParseError!Declaration.FunctionDecl {
+        return self.parseFunctionDeclBody(is_public, false, true);
+    }
+
+    fn parseFunctionDeclBody(self: *Parser, is_public: bool, is_effect: bool, is_memoized: bool) ParseError!Declaration.FunctionDecl {
         const name = try self.consumeIdentifier("expected function name");
 
         // Parse optional generic parameters
@@ -315,6 +326,7 @@ pub const Parser = struct {
             .parameters = parameters,
             .return_type = return_type,
             .is_effect = is_effect,
+            .is_memoized = is_memoized,
             .is_public = is_public,
             .body = body,
             .where_clause = where_clause,
@@ -676,13 +688,14 @@ pub const Parser = struct {
             // Parse pub modifier if present
             const method_public = self.match(.pub_keyword);
 
+            const is_memo = self.match(.memo);
             const is_effect = self.match(.effect);
+            if (is_memo and is_effect) {
+                return self.reportError("'memo' and 'effect' cannot be combined; memoized functions must be pure", null);
+            }
             try self.consume(.fn_keyword, "expected 'fn' for impl method");
 
-            const method = if (is_effect)
-                try self.parseFunctionDeclBody(method_public, true)
-            else
-                try self.parseFunctionDeclBody(method_public, false);
+            const method = try self.parseFunctionDeclBody(method_public, is_effect, is_memo);
 
             try methods.append(self.allocator, method);
             self.skipNewlines();

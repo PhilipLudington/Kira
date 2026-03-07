@@ -60,6 +60,7 @@ pub const Symbol = struct {
         parameter_names: [][]const u8,
         return_type: *Type,
         is_effect: bool,
+        is_memoized: bool,
         has_body: bool, // false for trait method signatures
     };
 

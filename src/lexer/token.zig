@@ -33,6 +33,7 @@ pub const TokenType = enum {
     import,
     pub_keyword,
     effect,
+    memo,
     trait,
     impl,
     const_keyword,
@@ -136,6 +137,7 @@ pub const TokenType = enum {
             .import,
             .pub_keyword,
             .effect,
+            .memo,
             .trait,
             .impl,
             .const_keyword,
@@ -206,6 +208,7 @@ pub const TokenType = enum {
             .import => "import",
             .pub_keyword => "pub",
             .effect => "effect",
+            .memo => "memo",
             .trait => "trait",
             .impl => "impl",
             .const_keyword => "const",
@@ -306,6 +309,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "import", .import },
     .{ "pub", .pub_keyword },
     .{ "effect", .effect },
+    .{ "memo", .memo },
     .{ "trait", .trait },
     .{ "impl", .impl },
     .{ "const", .const_keyword },
@@ -341,11 +345,13 @@ test "keyword lookup" {
     try std.testing.expectEqual(TokenType.self_type, keywords.get("Self").?);
     try std.testing.expectEqual(TokenType.test_keyword, keywords.get("test").?);
     try std.testing.expectEqual(TokenType.bench_keyword, keywords.get("bench").?);
+    try std.testing.expectEqual(TokenType.memo, keywords.get("memo").?);
     try std.testing.expect(keywords.get("notakeyword") == null);
 }
 
 test "token type properties" {
     try std.testing.expect(TokenType.fn_keyword.isKeyword());
+    try std.testing.expect(TokenType.memo.isKeyword());
     try std.testing.expect(TokenType.test_keyword.isKeyword());
     try std.testing.expect(TokenType.bench_keyword.isKeyword());
     try std.testing.expect(TokenType.plus.isOperator());

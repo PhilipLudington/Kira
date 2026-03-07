@@ -1,0 +1,29 @@
+// Memoized Fibonacci example in Kira
+// Demonstrates the memo keyword for automatic function memoization
+
+// Memoized recursive fibonacci - exponential recursion becomes linear
+// because repeated calls with the same argument return cached results
+memo fn fibonacci(n: i32) -> i32 {
+    if n <= 0 {
+        return 0
+    }
+    if n == 1 {
+        return 1
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+// Entry point
+effect fn main() -> void {
+    std.io.println("Memoized Fibonacci Demo")
+    std.io.println("=======================")
+    std.io.println("")
+
+    // Compute fibonacci numbers - memoization makes this fast
+    var i: i32 = 0
+    while i <= 20 {
+        let fib: i32 = fibonacci(i)
+        std.io.println("fib(" + std.int.to_string(i) + ") = " + std.int.to_string(fib))
+        i = i + 1
+    }
+}

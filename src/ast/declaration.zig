@@ -53,6 +53,7 @@ pub const Declaration = struct {
         parameters: []Parameter,
         return_type: *Type,
         is_effect: bool,
+        is_memoized: bool,
         is_public: bool,
         body: ?[]Statement, // None for trait method signatures
         where_clause: ?[]WhereConstraint,

@@ -3,7 +3,7 @@
 ## Overview
 Productization and performance improvements for Kira. Closes the remaining roadmap gaps after Phase 4: searchable API docs, benchmark harness, test coverage reporting, and pure-function memoization. Scoped to this repository only.
 
-Current status: Phase 2 complete. Phase 3 next.
+Current status: All phases complete.
 
 ## Phase 0: Searchable API Docs ✅
 **Status:** Complete (2026-03-06)
@@ -97,7 +97,8 @@ Current status: Phase 2 complete. Phase 3 next.
 
 ---
 
-## Phase 3: Memoization of Pure Functions
+## Phase 3: Memoization of Pure Functions ✅
+**Status:** Complete (2026-03-06)
 
 **Goal:** Add opt-in memoization for eligible pure functions with explicit cache policy.
 **Estimated Effort:** 5-7 days
@@ -108,15 +109,15 @@ Current status: Phase 2 complete. Phase 3 next.
 - Explicit memory policy (unbounded, LRU, or per-function limit)
 
 ### Tasks
-- [ ] Define eligibility rules (pure, deterministic args, supported value types)
-- [ ] Implement annotation-based opt-in mechanism
-- [ ] Add interpreter-level memoization cache
-- [ ] Restrict cacheable arguments to primitives, tuples, enums, and immutable records
-- [ ] Implement initial memory policy (unbounded or LRU)
-- [ ] Document interactions with recursion and generic functions
-- [ ] Validate performance improvements using benchmark harness (Phase 1)
-- [ ] Add diagnostics for non-eligible functions
-- [ ] Gate behind `experimental` naming if necessary
+- [x] Define eligibility rules (pure, deterministic args, supported value types)
+- [x] Implement annotation-based opt-in mechanism
+- [x] Add interpreter-level memoization cache
+- [x] Restrict cacheable arguments to primitives, tuples, enums, and immutable records
+- [x] Implement initial memory policy (unbounded or LRU)
+- [x] Document interactions with recursion and generic functions
+- [x] Validate performance improvements using benchmark harness (Phase 1)
+- [x] Add diagnostics for non-eligible functions
+- [x] Gate behind `experimental` naming if necessary
 
 ### Testing Strategy
 - Repeated calls with identical inputs hit cache.

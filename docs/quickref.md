@@ -335,12 +335,22 @@ pub type PublicType = { ... }
 
 ## Effects Summary
 
-| Pure Function | Effect Function |
-|---------------|-----------------|
-| `fn name() -> T` | `effect fn name() -> T` |
-| No side effects | Can do I/O, time, etc. |
-| Same input = same output | May vary |
-| Cannot call effect functions | Can call any function |
+| Pure Function | Effect Function | Memoized Function |
+|---------------|-----------------|-------------------|
+| `fn name() -> T` | `effect fn name() -> T` | `memo fn name() -> T` |
+| No side effects | Can do I/O, time, etc. | No side effects + cached |
+| Same input = same output | May vary | Same input = cached output |
+| Cannot call effect functions | Can call any function | Cannot call effect functions |
+
+### Memoization
+
+```kira
+// Automatic caching of pure function results
+memo fn fib(n: i32) -> i32 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+```
 
 ---
 

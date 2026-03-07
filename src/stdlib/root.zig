@@ -84,6 +84,7 @@ pub fn makeBuiltin(
             .body = .{ .builtin = func },
             .captured_env = null,
             .is_effect = false,
+            .is_memoized = false,
         },
     };
 }
@@ -100,6 +101,7 @@ pub fn makeEffectBuiltin(
             .body = .{ .builtin = func },
             .captured_env = null,
             .is_effect = true,
+            .is_memoized = false,
         },
     };
 }

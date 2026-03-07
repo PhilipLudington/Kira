@@ -78,6 +78,65 @@ pub const Interpreter = struct {
     /// Optional coverage tracker (set when running with --coverage)
     coverage_tracker: ?*coverage_mod.CoverageTracker = null,
 
+    /// Memoization cache: function name -> argument hash -> cached result.
+    /// Used for functions declared with the `memo` keyword.
+    memo_cache: MemoCache = .{},
+
+    /// Memoization cache type. Maps function name to a per-function cache.
+    /// Each per-function cache is a list of (args, result) entries checked by equality.
+    /// Bounded to max_entries_per_function to prevent unbounded memory growth.
+    pub const MemoCache = struct {
+        /// Maps function name to entries for that function
+        entries: std.StringHashMapUnmanaged(FunctionCache) = .{},
+
+        /// Maximum number of cached entries per function.
+        /// Once reached, new entries are silently not cached (the function still
+        /// executes correctly, just without memoization for new argument combinations).
+        const max_entries_per_function: usize = 4096;
+
+        pub const CacheEntry = struct {
+            args: []const Value,
+            result: Value,
+        };
+
+        pub const FunctionCache = struct {
+            items: std.ArrayListUnmanaged(CacheEntry) = .{},
+        };
+
+        pub fn lookup(self: *MemoCache, func_name: []const u8, args: []const Value) ?Value {
+            const func_cache = self.entries.getPtr(func_name) orelse return null;
+            for (func_cache.items.items) |entry| {
+                if (entry.args.len != args.len) continue;
+                var match = true;
+                for (entry.args, args) |cached, actual| {
+                    if (!cached.eql(actual)) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return entry.result;
+            }
+            return null;
+        }
+
+        pub fn store(self: *MemoCache, allocator: Allocator, func_name: []const u8, args: []const Value, result: Value) void {
+            const func_cache = self.entries.getOrPut(allocator, func_name) catch return;
+            if (!func_cache.found_existing) {
+                func_cache.value_ptr.* = .{};
+            }
+            // Enforce per-function cache size limit
+            if (func_cache.value_ptr.items.items.len >= max_entries_per_function) return;
+            // Copy args for cache storage (shallow copy is safe: all pointed-to data
+            // is arena-allocated and lives for the interpreter's lifetime)
+            const cached_args = allocator.alloc(Value, args.len) catch return;
+            @memcpy(cached_args, args);
+            func_cache.value_ptr.items.append(allocator, .{
+                .args = cached_args,
+                .result = result,
+            }) catch return;
+        }
+    };
+
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) Interpreter {
         return .{
             .allocator = allocator,
@@ -137,6 +196,7 @@ pub const Interpreter = struct {
                     .body = .{ .builtin = method.builtin },
                     .captured_env = null,
                     .is_effect = false,
+                    .is_memoized = false,
                 }) catch unreachable;
             }
         }
@@ -262,6 +322,7 @@ pub const Interpreter = struct {
                             .body = if (f.body) |body| .{ .ast_body = body } else continue,
                             .captured_env = &self.global_env,
                             .is_effect = f.is_effect,
+                            .is_memoized = f.is_memoized,
                         },
                     };
                     exports.put(self.arenaAlloc(), f.name, func_value) catch continue;
@@ -418,6 +479,7 @@ pub const Interpreter = struct {
                                 .body = if (f.body) |body| .{ .ast_body = body } else continue,
                                 .captured_env = env,
                                 .is_effect = f.is_effect,
+                                .is_memoized = f.is_memoized,
                             },
                         };
                         module_fields.put(self.arenaAlloc(), f.name, func_value) catch continue;
@@ -624,6 +686,7 @@ pub const Interpreter = struct {
                         .body = if (f.body) |body| .{ .ast_body = body } else return,
                         .captured_env = env,
                         .is_effect = f.is_effect,
+                        .is_memoized = f.is_memoized,
                     },
                 };
                 try env.define(f.name, func_value, false);
@@ -660,6 +723,7 @@ pub const Interpreter = struct {
                                 .body = .{ .ast_body = body },
                                 .captured_env = env,
                                 .is_effect = method.is_effect,
+                                .is_memoized = method.is_memoized,
                             };
                             // Build key "TypeName.methodName"
                             const key = try std.fmt.allocPrint(self.arenaAlloc(), "{s}.{s}", .{ tn, method.name });
@@ -1200,6 +1264,36 @@ pub const Interpreter = struct {
 
     /// Call a function with given arguments (with tail-call optimization via trampoline)
     fn callFunction(self: *Interpreter, func: Value.FunctionValue, args: []const Value, caller_env: *Environment) InterpreterError!Value {
+        // Memoization: check cache for memoized functions
+        if (func.is_memoized) {
+            if (func.name) |name| {
+                // Verify all args are cacheable at runtime (defense-in-depth)
+                var all_cacheable = true;
+                for (args) |arg| {
+                    if (!arg.isCacheable()) {
+                        all_cacheable = false;
+                        break;
+                    }
+                }
+
+                if (all_cacheable) {
+                    if (self.memo_cache.lookup(name, args)) |cached| {
+                        return cached;
+                    }
+
+                    // Execute and cache the result
+                    const result = try self.callFunctionInner(func, args, caller_env);
+                    self.memo_cache.store(self.arenaAlloc(), name, args, result);
+                    return result;
+                }
+            }
+        }
+
+        return self.callFunctionInner(func, args, caller_env);
+    }
+
+    /// Inner function call implementation (with tail-call optimization via trampoline)
+    fn callFunctionInner(self: *Interpreter, func: Value.FunctionValue, args: []const Value, caller_env: *Environment) InterpreterError!Value {
         // Check recursion depth to prevent stack overflow (only on initial call, TCO doesn't increment)
         if (self.recursion_depth >= self.max_recursion_depth) {
             self.setErrorContext("maximum recursion depth ({d}) exceeded", .{self.max_recursion_depth});
@@ -1216,6 +1310,25 @@ pub const Interpreter = struct {
 
         // Trampoline loop (labeled so we can continue from inner loop)
         trampoline: while (true) {
+            // Memo cache lookup for trampoline iterations (tail calls to memoized functions)
+            if (current_func.is_memoized) {
+                if (current_func.name) |name| {
+                    // Only use cache if all args are cacheable
+                    var args_cacheable = true;
+                    for (current_args) |arg| {
+                        if (!arg.isCacheable()) {
+                            args_cacheable = false;
+                            break;
+                        }
+                    }
+                    if (args_cacheable) {
+                        if (self.memo_cache.lookup(name, current_args)) |cached| {
+                            return cached;
+                        }
+                    }
+                }
+            }
+
             switch (current_func.body) {
                 .ast_body => |body| {
                     // Check arity for AST functions
@@ -1420,6 +1533,7 @@ pub const Interpreter = struct {
                 .body = .{ .ast_body = closure.body },
                 .captured_env = env,
                 .is_effect = closure.is_effect,
+                .is_memoized = false, // closures are not memoized
             },
         };
     }

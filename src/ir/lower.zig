@@ -125,6 +125,7 @@ pub const Lowerer = struct {
         var func = Function.init(alloc);
         func.name = fd.name;
         func.is_effect = fd.is_effect;
+        func.is_memoized = fd.is_memoized;
 
         // Add to module first; all subsequent mutations go through the stored copy
         // via currentFunc(), which is safe even if the functions list reallocates.

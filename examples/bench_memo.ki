@@ -1,0 +1,32 @@
+// Benchmark comparing memoized vs non-memoized fibonacci
+// Run with: kira bench examples/bench_memo.ki
+
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+memo fn fibonacci_memo(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci_memo(n - 1) + fibonacci_memo(n - 2)
+}
+
+bench "fibonacci(20) without memo" {
+    fibonacci(20)
+}
+
+bench "fibonacci(20) with memo" {
+    fibonacci_memo(20)
+}
+
+bench "fibonacci(10) without memo" {
+    fibonacci(10)
+}
+
+bench "fibonacci(10) with memo" {
+    fibonacci_memo(10)
+}

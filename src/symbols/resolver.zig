@@ -261,6 +261,7 @@ pub const Resolver = struct {
             .parameter_names = try param_names.toOwnedSlice(self.allocator),
             .return_type = func.return_type,
             .is_effect = func.is_effect,
+            .is_memoized = func.is_memoized,
             .has_body = func.body != null,
         };
 
@@ -1359,6 +1360,7 @@ test "resolver catches undefined in full program" {
         .parameters = &[_]Declaration.Parameter{},
         .return_type = &return_type,
         .is_effect = false,
+        .is_memoized = false,
         .is_public = false,
         .body = &body,
         .where_clause = null,
@@ -1513,6 +1515,7 @@ test "resolver import binds pub symbols into importing scope" {
         .parameter_names = &[_][]const u8{},
         .return_type = &u64_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     };
     _ = try table.define(Symbol.function(0, "mk", fn_symbol, true, span));
@@ -1620,6 +1623,7 @@ test "resolver import supports alias bindings" {
         .parameter_names = &[_][]const u8{},
         .return_type = &u64_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     };
     _ = try table.define(Symbol.function(0, "mk", fn_symbol, true, span));
@@ -1676,6 +1680,7 @@ test "resolver resolve() handles imported aliases in type and value positions" {
         .parameter_names = &[_][]const u8{},
         .return_type = &u64_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     };
     _ = try table.define(Symbol.function(0, "mk", mk_symbol, true, span));
@@ -1719,6 +1724,7 @@ test "resolver resolve() handles imported aliases in type and value positions" {
         .parameters = &[_]Declaration.Parameter{},
         .return_type = &void_type,
         .is_effect = false,
+        .is_memoized = false,
         .is_public = false,
         .body = &body,
         .where_clause = null,
