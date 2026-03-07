@@ -129,6 +129,9 @@ pub const Value = union(enum) {
         /// Is this an effect function?
         is_effect: bool,
 
+        /// Is this function memoized?
+        is_memoized: bool,
+
         pub const FunctionBody = union(enum) {
             /// AST body (statements to execute)
             ast_body: []const Statement,
@@ -273,6 +276,111 @@ pub const Value = union(enum) {
             },
             .function, .reference, .io => false, // Functions and references are compared by identity
         };
+    }
+
+    /// Check if this value type is eligible for memoization cache keys.
+    /// Only deterministic, immutable value types can be used as cache keys.
+    pub fn isCacheable(self: Value) bool {
+        return switch (self) {
+            .integer, .string, .char, .boolean, .void, .none, .nil => true,
+            // NaN != NaN breaks cache lookup invariant, so exclude NaN floats
+            .float => |v| !std.math.isNan(v),
+            .tuple => |t| {
+                for (t) |v| {
+                    if (!v.isCacheable()) return false;
+                }
+                return true;
+            },
+            .record => |r| {
+                for (r.fields.values()) |v| {
+                    if (!v.isCacheable()) return false;
+                }
+                return true;
+            },
+            .variant => |v| {
+                if (v.fields) |fields| {
+                    switch (fields) {
+                        .tuple => |t| {
+                            for (t) |val| {
+                                if (!val.isCacheable()) return false;
+                            }
+                        },
+                        .record => |r| {
+                            for (r.values()) |val| {
+                                if (!val.isCacheable()) return false;
+                            }
+                        },
+                    }
+                }
+                return true;
+            },
+            .some => |v| v.isCacheable(),
+            .ok => |v| v.isCacheable(),
+            .err => |v| v.isCacheable(),
+            .cons => |c| c.head.isCacheable() and c.tail.isCacheable(),
+            // Functions, references, IO are not cacheable
+            .function, .reference, .io, .array => false,
+        };
+    }
+
+    /// Compute a hash for this value (for use as memoization cache key).
+    /// Only valid for cacheable value types.
+    pub fn hash(self: Value) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        self.hashInto(&hasher);
+        return hasher.final();
+    }
+
+    pub fn hashInto(self: Value, hasher: *std.hash.Wyhash) void {
+        // Mix in the tag to distinguish types
+        const tag = @intFromEnum(std.meta.activeTag(self));
+        hasher.update(std.mem.asBytes(&tag));
+
+        switch (self) {
+            .integer => |v| hasher.update(std.mem.asBytes(&v)),
+            .float => |v| hasher.update(std.mem.asBytes(&v)),
+            .string => |v| hasher.update(v),
+            .char => |v| hasher.update(std.mem.asBytes(&v)),
+            .boolean => |v| hasher.update(std.mem.asBytes(&v)),
+            .void, .none, .nil => {},
+            .tuple => |t| {
+                for (t) |v| v.hashInto(hasher);
+            },
+            .array => |a| {
+                for (a) |v| v.hashInto(hasher);
+            },
+            .record => |r| {
+                for (r.fields.keys(), r.fields.values()) |key, val| {
+                    hasher.update(key);
+                    val.hashInto(hasher);
+                }
+            },
+            .variant => |v| {
+                hasher.update(v.name);
+                if (v.fields) |fields| {
+                    switch (fields) {
+                        .tuple => |t| {
+                            for (t) |val| val.hashInto(hasher);
+                        },
+                        .record => |r| {
+                            for (r.keys(), r.values()) |key, val| {
+                                hasher.update(key);
+                                val.hashInto(hasher);
+                            }
+                        },
+                    }
+                }
+            },
+            .some => |v| v.hashInto(hasher),
+            .ok => |v| v.hashInto(hasher),
+            .err => |v| v.hashInto(hasher),
+            .cons => |c| {
+                c.head.hashInto(hasher);
+                c.tail.hashInto(hasher);
+            },
+            // Non-cacheable types: no meaningful hash, but handle for completeness
+            .function, .reference, .io => {},
+        }
     }
 
     /// Format a value for display
@@ -640,4 +748,138 @@ test "environment mutable assignment" {
 
     // Undefined variable cannot be assigned
     try std.testing.expectError(error.UndefinedVariable, env.assign("z", .{ .integer = 1 }));
+}
+
+test "value cacheability" {
+    // Primitives are cacheable
+    try std.testing.expect((Value{ .integer = 42 }).isCacheable());
+    try std.testing.expect((Value{ .float = 3.14 }).isCacheable());
+    try std.testing.expect((Value{ .string = "hello" }).isCacheable());
+    try std.testing.expect((Value{ .char = 'a' }).isCacheable());
+    try std.testing.expect((Value{ .boolean = true }).isCacheable());
+    try std.testing.expect((Value{ .void = {} }).isCacheable());
+    try std.testing.expect((Value{ .none = {} }).isCacheable());
+    try std.testing.expect((Value{ .nil = {} }).isCacheable());
+
+    // Tuples of cacheable values are cacheable
+    const tuple_vals = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
+    try std.testing.expect((Value{ .tuple = &tuple_vals }).isCacheable());
+
+    // Non-cacheable types
+    try std.testing.expect(!(Value{ .function = .{
+        .name = null,
+        .parameters = &.{},
+        .body = .{ .ast_body = &.{} },
+        .captured_env = null,
+        .is_effect = false,
+        .is_memoized = false,
+    } }).isCacheable());
+
+    const arr = [_]Value{.{ .integer = 1 }};
+    try std.testing.expect(!(Value{ .array = &arr }).isCacheable());
+
+    // NaN floats are not cacheable (NaN != NaN breaks cache invariant)
+    try std.testing.expect(!(Value{ .float = std.math.nan(f64) }).isCacheable());
+
+    // Tuple containing non-cacheable element is not cacheable
+    const mixed_tuple = [_]Value{ .{ .integer = 1 }, .{ .array = &arr } };
+    try std.testing.expect(!(Value{ .tuple = &mixed_tuple }).isCacheable());
+}
+
+test "value hashing" {
+    // Same values produce same hash
+    const a = Value{ .integer = 42 };
+    const b = Value{ .integer = 42 };
+    try std.testing.expectEqual(a.hash(), b.hash());
+
+    // Different values produce different hash
+    const c = Value{ .integer = 43 };
+    try std.testing.expect(a.hash() != c.hash());
+
+    // Different types produce different hash
+    const d = Value{ .string = "42" };
+    try std.testing.expect(a.hash() != d.hash());
+
+    // Bool hashing works
+    const t = Value{ .boolean = true };
+    const f = Value{ .boolean = false };
+    try std.testing.expect(t.hash() != f.hash());
+
+    // Float hashing
+    const f1 = Value{ .float = 1.5 };
+    const f2 = Value{ .float = 1.5 };
+    const f3 = Value{ .float = 2.5 };
+    try std.testing.expectEqual(f1.hash(), f2.hash());
+    try std.testing.expect(f1.hash() != f3.hash());
+
+    // Char hashing
+    const ch1 = Value{ .char = 'a' };
+    const ch2 = Value{ .char = 'b' };
+    try std.testing.expect(ch1.hash() != ch2.hash());
+
+    // Void/None/Nil have distinct hashes (different tags)
+    const void_v = Value{ .void = {} };
+    const none_v = Value{ .none = {} };
+    const nil_v = Value{ .nil = {} };
+    try std.testing.expect(void_v.hash() != none_v.hash());
+    try std.testing.expect(none_v.hash() != nil_v.hash());
+
+    // Tuple hashing
+    const t1 = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
+    const t2 = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
+    const t3 = [_]Value{ .{ .integer = 2 }, .{ .integer = 1 } };
+    try std.testing.expectEqual((Value{ .tuple = &t1 }).hash(), (Value{ .tuple = &t2 }).hash());
+    try std.testing.expect((Value{ .tuple = &t1 }).hash() != (Value{ .tuple = &t3 }).hash());
+}
+
+test "MemoCache lookup and store" {
+    const allocator = std.testing.allocator;
+
+    // Use an arena so we don't need to manually free cache internals
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var cache = @import("interpreter.zig").Interpreter.MemoCache{};
+
+    // Empty cache returns null
+    const args1 = [_]Value{.{ .integer = 5 }};
+    try std.testing.expect(cache.lookup("fib", &args1) == null);
+
+    // Store and retrieve
+    cache.store(arena_alloc, "fib", &args1, .{ .integer = 5 });
+    const result = cache.lookup("fib", &args1);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(i128, 5), result.?.integer);
+
+    // Different args return null
+    const args2 = [_]Value{.{ .integer = 6 }};
+    try std.testing.expect(cache.lookup("fib", &args2) == null);
+
+    // Different function name returns null
+    try std.testing.expect(cache.lookup("other", &args1) == null);
+
+    // Store another entry for same function
+    cache.store(arena_alloc, "fib", &args2, .{ .integer = 8 });
+    const result2 = cache.lookup("fib", &args2);
+    try std.testing.expect(result2 != null);
+    try std.testing.expectEqual(@as(i128, 8), result2.?.integer);
+
+    // Original entry still works
+    const result3 = cache.lookup("fib", &args1);
+    try std.testing.expect(result3 != null);
+    try std.testing.expectEqual(@as(i128, 5), result3.?.integer);
+
+    // Zero-arg function
+    cache.store(arena_alloc, "zero", &.{}, .{ .integer = 0 });
+    const result4 = cache.lookup("zero", &.{});
+    try std.testing.expect(result4 != null);
+    try std.testing.expectEqual(@as(i128, 0), result4.?.integer);
+
+    // Multi-arg function
+    const multi_args = [_]Value{ .{ .integer = 1 }, .{ .string = "hello" } };
+    cache.store(arena_alloc, "multi", &multi_args, .{ .boolean = true });
+    const result5 = cache.lookup("multi", &multi_args);
+    try std.testing.expect(result5 != null);
+    try std.testing.expect(result5.?.boolean);
 }

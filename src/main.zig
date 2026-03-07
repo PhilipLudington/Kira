@@ -12,6 +12,7 @@ const Mode = enum {
     fmt,
     build,
     test_cmd,
+    bench_cmd,
     lsp,
     doc,
     init,
@@ -32,6 +33,14 @@ const Args = struct {
     init_name: ?[]const u8,
     /// Arguments passed to the Kira program (after the file path)
     user_args: []const []const u8,
+    /// Benchmark: emit JSON output instead of human-readable
+    bench_json: bool,
+    /// Benchmark: number of iterations (0 = auto)
+    bench_iterations: u32,
+    /// Test: emit coverage report
+    coverage: bool,
+    /// Test: emit JSON coverage report
+    coverage_json: bool,
 };
 
 pub fn main() !void {
@@ -108,17 +117,10 @@ pub fn main() !void {
             }
         },
         .doc => {
-            if (args.file_path) |path| {
-                docFile(allocator, path, args.output_path, use_color) catch |err| {
-                    reportError(err);
-                    std.process.exit(1);
-                };
-            } else {
-                const stderr = std.fs.File.stderr();
-                stderr.writeAll("Error: 'doc' command requires a file path\n") catch {};
-                stderr.writeAll("Usage: kira doc <file.ki> [--output <path>]\n") catch {};
+            docPath(allocator, args.file_path orelse ".", args.output_path) catch |err| {
+                reportError(err);
                 std.process.exit(1);
-            }
+            };
         },
         .init => {
             initProject(allocator, args.init_name) catch |err| {
@@ -136,14 +138,27 @@ pub fn main() !void {
         },
         .test_cmd => {
             if (args.file_path) |path| {
-                testFile(allocator, path, args.user_args, use_color) catch |err| {
+                testFile(allocator, path, args.user_args, use_color, args.coverage, args.coverage_json) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
             } else {
                 const stderr = std.fs.File.stderr();
                 stderr.writeAll("Error: 'test' command requires a file path\n") catch {};
-                stderr.writeAll("Usage: kira test <file.ki>\n") catch {};
+                stderr.writeAll("Usage: kira test [--coverage] [--coverage-json] <file.ki>\n") catch {};
+                std.process.exit(1);
+            }
+        },
+        .bench_cmd => {
+            if (args.file_path) |path| {
+                benchPath(allocator, path, args.bench_json, args.bench_iterations, use_color) catch |err| {
+                    reportError(err);
+                    std.process.exit(1);
+                };
+            } else {
+                const stderr = std.fs.File.stderr();
+                stderr.writeAll("Error: 'bench' command requires a file path\n") catch {};
+                stderr.writeAll("Usage: kira bench [--json] [--iterations N] <file.ki>\n") catch {};
                 std.process.exit(1);
             }
         },
@@ -175,6 +190,10 @@ fn parseArgs() !Args {
         .output_path = null,
         .init_name = null,
         .user_args = &.{},
+        .bench_json = false,
+        .bench_iterations = 0,
+        .coverage = false,
+        .coverage_json = false,
     };
 
     user_args_count = 0;
@@ -265,9 +284,40 @@ fn parseArgs() !Args {
             return result;
         } else if (std.mem.eql(u8, arg, "test")) {
             result.mode = .test_cmd;
-            if (args_iter.next()) |path| {
-                result.file_path = path;
-                file_path_seen = true;
+            while (args_iter.next()) |test_arg| {
+                if (std.mem.eql(u8, test_arg, "--coverage")) {
+                    result.coverage = true;
+                } else if (std.mem.eql(u8, test_arg, "--coverage-json")) {
+                    result.coverage = true;
+                    result.coverage_json = true;
+                } else if (!std.mem.startsWith(u8, test_arg, "-")) {
+                    result.file_path = test_arg;
+                    file_path_seen = true;
+                    break;
+                } else {
+                    return error.UnknownOption;
+                }
+            }
+        } else if (std.mem.eql(u8, arg, "bench")) {
+            result.mode = .bench_cmd;
+            while (args_iter.next()) |bench_arg| {
+                if (std.mem.eql(u8, bench_arg, "--json")) {
+                    result.bench_json = true;
+                } else if (std.mem.eql(u8, bench_arg, "--iterations") or std.mem.eql(u8, bench_arg, "-n")) {
+                    if (args_iter.next()) |n_str| {
+                        result.bench_iterations = std.fmt.parseInt(u32, n_str, 10) catch {
+                            const err_stderr = std.fs.File.stderr();
+                            err_stderr.writeAll("Error: --iterations requires a positive integer\n") catch {};
+                            return error.InvalidArgument;
+                        };
+                    }
+                } else if (!std.mem.startsWith(u8, bench_arg, "-")) {
+                    result.file_path = bench_arg;
+                    file_path_seen = true;
+                    break;
+                } else {
+                    return error.UnknownOption;
+                }
             }
         } else if (std.mem.eql(u8, arg, "--tokens")) {
             result.show_tokens = true;
@@ -308,7 +358,8 @@ fn printHelp() void {
         \\  check <file.ki>   Type-check a program without running
         \\  fmt <file.ki>     Format a Kira source file
         \\  test <file.ki>    Run tests in a file
-        \\  doc <file.ki>     Generate API documentation (Markdown)
+        \\  bench <file.ki>   Run benchmarks in a file
+        \\  doc [path]        Generate API documentation for a file or project
         \\  init              Initialize a new Kira project
         \\  lsp               Start the LSP server
         \\  (no command)      Start the interactive REPL
@@ -319,9 +370,13 @@ fn printHelp() void {
         \\  --tokens          Show token stream (debug)
         \\  --ast             Show AST (debug)
         \\  --no-color        Disable colored output
-        \\  -o, --output      (build) Output file path
+        \\  -o, --output      (build/doc) Output file path or directory
         \\  --check           (fmt) Check formatting without modifying
         \\  -n, --name        (init) Project name (default: directory name)
+        \\  --coverage        (test) Show coverage report after tests
+        \\  --coverage-json   (test) Emit JSON coverage report
+        \\  --json            (bench) Emit JSON output for CI ingestion
+        \\  --iterations N    (bench) Number of iterations per benchmark
         \\
         \\REPL Commands:
         \\  :help, :h         Show REPL help
@@ -337,6 +392,10 @@ fn printHelp() void {
         \\  kira check lib.ki     Type-check without running
         \\  kira fmt hello.ki     Format a source file
         \\  kira fmt --check .    Check formatting
+        \\  kira doc src/main.ki  Generate Markdown for one file
+        \\  kira doc .            Generate project docs from kira.toml
+        \\  kira bench bench.ki   Run benchmarks in a file
+        \\  kira bench --json .   JSON output for CI
         \\  kira init             Initialize project in current directory
         \\  kira init --name app  Initialize with custom name
         \\  kira                  Start REPL
@@ -349,11 +408,49 @@ fn printVersion() void {
     stdout.writeAll("Kira Programming Language v" ++ version ++ "\n") catch {};
 }
 
+/// Generate documentation for a Kira source file or project.
+fn docPath(allocator: Allocator, path: []const u8, output_path: ?[]const u8) !void {
+    const path_kind = try classifyDocPath(path);
+
+    switch (path_kind) {
+        .source_file => try docFile(allocator, path, output_path),
+        .directory => try docProject(allocator, path, output_path),
+        .project_file => {
+            const root = std.fs.path.dirname(path) orelse ".";
+            try docProject(allocator, root, output_path);
+        },
+    }
+}
+
+const DocPathKind = enum {
+    source_file,
+    directory,
+    project_file,
+};
+
+fn classifyDocPath(path: []const u8) !DocPathKind {
+    if (std.mem.endsWith(u8, path, ".ki")) {
+        return .source_file;
+    }
+    if (std.mem.eql(u8, std.fs.path.basename(path), "kira.toml")) {
+        return .project_file;
+    }
+
+    if (std.fs.cwd().openDir(path, .{})) |opened_dir| {
+        var dir = opened_dir;
+        dir.close();
+        return .directory;
+    } else |_| {}
+
+    _ = std.fs.cwd().statFile(path) catch return error.FileNotFound;
+
+    return error.UnsupportedFileType;
+}
+
 /// Generate Markdown documentation for a Kira source file.
-fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool) !void {
+fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
-    _ = use_color;
 
     // Read the file
     const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
@@ -392,6 +489,145 @@ fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use
         // Write to stdout
         stdout.writeAll(markdown) catch {};
     }
+}
+
+fn docProject(allocator: Allocator, path: []const u8, output_path: ?[]const u8) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+
+    const loaded = project_config.loadFromDirectory(allocator, path) catch false;
+    if (!loaded or !project_config.isLoaded()) {
+        stderr.writeAll("Error: could not find kira.toml for project docs\n") catch {};
+        stderr.writeAll("Usage: kira doc <file.ki>        Generate docs for one file\n") catch {};
+        stderr.writeAll("       kira doc <directory>      Generate project docs (requires kira.toml)\n") catch {};
+        return error.FileNotFound;
+    }
+
+    const project_root = project_config.project_root orelse path;
+    const docs_output_dir = if (output_path) |out|
+        try allocator.dupe(u8, out)
+    else
+        try std.fs.path.join(allocator, &.{ project_root, "docs", "api" });
+    defer allocator.free(docs_output_dir);
+
+    makePathAny(docs_output_dir) catch {
+        stderr.writeAll("Error: could not create docs output directory\n") catch {};
+        return error.WriteError;
+    };
+
+    var modules = std.ArrayListUnmanaged(Kira.doc_gen.ModuleDoc){};
+    defer {
+        for (modules.items) |*module_doc| {
+            module_doc.deinit(allocator);
+        }
+        modules.deinit(allocator);
+    }
+
+    var module_names = std.ArrayListUnmanaged([]const u8){};
+    defer module_names.deinit(allocator);
+
+    var config_iter = project_config.modules.iterator();
+    while (config_iter.next()) |entry| {
+        try module_names.append(allocator, entry.key_ptr.*);
+    }
+
+    std.mem.sort([]const u8, module_names.items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
+
+    for (module_names.items) |module_name| {
+        const full_path = project_config.getFullModulePath(allocator, module_name) orelse continue;
+        defer allocator.free(full_path);
+
+        const source = loadFileContent(allocator, stderr, full_path) orelse {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Warning: could not read module '{s}' at {s}, skipping\n", .{ module_name, full_path }) catch "Warning: could not read module file, skipping\n";
+            stderr.writeAll(msg) catch {};
+            continue;
+        };
+        defer allocator.free(source);
+
+        var program = Kira.parse(allocator, source) catch {
+            stderr.writeAll("Error: failed to parse project module while generating docs\n") catch {};
+            return error.ParseError;
+        };
+        defer program.deinit();
+
+        program.source_path = full_path;
+
+        var module_doc = Kira.doc_gen.collectModuleDocs(allocator, &program) catch {
+            stderr.writeAll("Error: failed to collect module documentation\n") catch {};
+            return error.DocGenError;
+        };
+        errdefer module_doc.deinit(allocator);
+
+        const markdown = Kira.doc_gen.renderModuleMarkdown(allocator, module_doc) catch {
+            stderr.writeAll("Error: failed to render module documentation\n") catch {};
+            return error.DocGenError;
+        };
+        defer allocator.free(markdown);
+
+        const page_name = try Kira.doc_gen.modulePageFileName(allocator, module_doc.module_path);
+        defer allocator.free(page_name);
+        const page_path = try std.fs.path.join(allocator, &.{ docs_output_dir, page_name });
+        defer allocator.free(page_path);
+
+        try writeFileContents(page_path, markdown);
+        try modules.append(allocator, module_doc);
+    }
+
+    var project_docs = Kira.doc_gen.ProjectDocs{
+        .package_name = if (project_config.package_name) |name| try allocator.dupe(u8, name) else null,
+        .modules = try modules.toOwnedSlice(allocator),
+    };
+    modules = .{};
+    defer project_docs.deinit(allocator);
+
+    const index_markdown = Kira.doc_gen.renderProjectIndexMarkdown(allocator, project_docs) catch {
+        stderr.writeAll("Error: failed to render project docs index\n") catch {};
+        return error.DocGenError;
+    };
+    defer allocator.free(index_markdown);
+
+    const search_json = Kira.doc_gen.generateSearchIndexJson(allocator, project_docs) catch {
+        stderr.writeAll("Error: failed to render project docs search index\n") catch {};
+        return error.DocGenError;
+    };
+    defer allocator.free(search_json);
+
+    const index_path = try std.fs.path.join(allocator, &.{ docs_output_dir, "index.md" });
+    defer allocator.free(index_path);
+    const search_index_path = try std.fs.path.join(allocator, &.{ docs_output_dir, "search-index.json" });
+    defer allocator.free(search_index_path);
+
+    try writeFileContents(index_path, index_markdown);
+    try writeFileContents(search_index_path, search_json);
+
+    var summary_buf: [512]u8 = undefined;
+    const summary = std.fmt.bufPrint(
+        &summary_buf,
+        "Project documentation written to {s} ({d} module pages)\n",
+        .{ docs_output_dir, project_docs.modules.len },
+    ) catch "Project documentation generated\n";
+    try stdout.writeAll(summary);
+}
+
+fn writeFileContents(path: []const u8, contents: []const u8) !void {
+    const file = if (std.fs.path.isAbsolute(path))
+        std.fs.createFileAbsolute(path, .{}) catch return error.WriteError
+    else
+        std.fs.cwd().createFile(path, .{}) catch return error.WriteError;
+    defer file.close();
+    file.writeAll(contents) catch return error.WriteError;
+}
+
+fn makePathAny(path: []const u8) !void {
+    try std.fs.cwd().makePath(path);
 }
 
 /// Initialize a new Kira project in the current directory.
@@ -997,7 +1233,7 @@ fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, u
 }
 
 /// Run tests in a Kira source file
-fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8, use_color: bool) !void {
+fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u8, use_color: bool, enable_coverage: bool, coverage_json: bool) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
@@ -1078,6 +1314,18 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
     interp.registerBuiltinMethods();
+
+    // Set up coverage tracking if requested
+    var tracker = if (enable_coverage)
+        Kira.CoverageTracker.init(allocator, source, path)
+    else
+        undefined;
+    defer if (enable_coverage) tracker.deinit();
+
+    if (enable_coverage) {
+        tracker.collectCoverableLines(program.declarations);
+        interp.coverage_tracker = &tracker;
+    }
 
     // Set environment arguments for std.env.args()
     if (user_args.len > 0) {
@@ -1162,12 +1410,442 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     } else {
         const summary = std.fmt.bufPrint(&summary_buf, "{d} passed, {d} failed out of {d} tests.\n", .{ pass_count, fail_count, test_count }) catch "Some tests failed.\n";
         try stderr.writeAll(summary);
+
+        // Still emit coverage report even if tests failed
+        if (enable_coverage) {
+            emitCoverageReport(&tracker, stdout, coverage_json);
+        }
         return error.TestsFailed;
     }
 
     if (test_count == 0) {
         try stdout.writeAll("No tests found.\n");
     }
+
+    // Emit coverage report
+    if (enable_coverage) {
+        emitCoverageReport(&tracker, stdout, coverage_json);
+    }
+}
+
+fn emitCoverageReport(tracker: *const Kira.CoverageTracker, file: std.fs.File, json: bool) void {
+    if (json) {
+        tracker.emitJson(file) catch |err| {
+            const stderr = std.fs.File.stderr();
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Warning: coverage JSON output error: {}\n", .{err}) catch "Warning: coverage output error\n";
+            stderr.writeAll(msg) catch {};
+        };
+    } else {
+        tracker.emitSummary(file) catch {};
+        tracker.emitAnnotatedSource(file) catch {};
+    }
+}
+
+/// Run benchmarks from a file or directory.
+/// If path is a directory, discover .ki files under bench/ subdirectory.
+fn benchPath(allocator: Allocator, path: []const u8, json_output: bool, requested_iterations: u32, use_color: bool) !void {
+    const stderr = std.fs.File.stderr();
+
+    // Check if path is a directory
+    const stat = std.fs.cwd().statFile(path) catch {
+        // Not a stat-able path — try as file directly
+        return benchFile(allocator, path, json_output, requested_iterations, use_color);
+    };
+
+    if (stat.kind != .directory) {
+        return benchFile(allocator, path, json_output, requested_iterations, use_color);
+    }
+
+    // Directory mode: look for bench/ subdirectory
+    var bench_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bench_dir = std.fmt.bufPrint(&bench_dir_buf, "{s}/bench", .{path}) catch
+        return error.PathTooLong;
+
+    var dir = std.fs.cwd().openDir(bench_dir, .{ .iterate = true }) catch {
+        var err_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&err_buf, "No bench/ directory found under '{s}'\n", .{path}) catch "No bench/ directory found\n";
+        stderr.writeAll(msg) catch {};
+        return error.NoBenchDir;
+    };
+    defer dir.close();
+
+    var file_count: u32 = 0;
+    var iter = dir.iterate();
+    while (iter.next() catch |err| {
+        var err_buf2: [256]u8 = undefined;
+        const err_msg = std.fmt.bufPrint(&err_buf2, "Error reading bench/ directory: {}\n", .{err}) catch "Error reading bench/ directory\n";
+        stderr.writeAll(err_msg) catch {};
+        return error.DirectoryReadError;
+    }) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".ki")) continue;
+
+        var file_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/bench/{s}", .{ path, entry.name }) catch continue;
+
+        benchFile(allocator, file_path, json_output, requested_iterations, use_color) catch |err| {
+            var err_buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&err_buf, "Error benchmarking '{s}': {}\n", .{ entry.name, err }) catch "Benchmark error\n";
+            stderr.writeAll(msg) catch {};
+        };
+        file_count += 1;
+    }
+
+    if (file_count == 0) {
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "No .ki files found in '{s}'\n", .{bench_dir}) catch "No .ki files found in bench/\n";
+        stderr.writeAll(msg) catch {};
+    }
+}
+
+/// Run benchmarks in a Kira source file
+fn benchFile(allocator: Allocator, path: []const u8, json_output: bool, requested_iterations: u32, use_color: bool) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
+    defer allocator.free(source);
+
+    var parse_result = Kira.parseWithErrors(allocator, source);
+    const renderer = Kira.diagnostic.DiagnosticRenderer.init(source, path, use_color);
+
+    if (parse_result.hasErrors()) {
+        defer parse_result.deinit();
+        for (parse_result.errors) |err| {
+            renderParseError(stderr, renderer, err) catch {};
+        }
+        return error.ParseError;
+    }
+
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        return error.ParseError;
+    };
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| {
+        arena.deinit();
+    }
+    defer program.deinit();
+
+    // Create symbol table and resolve
+    var table = Kira.SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+
+    var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
+    defer loader.deinit();
+    loader.addSearchPath(".") catch {};
+    if (std.fs.path.dirname(path)) |dir| {
+        if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
+            loader.addSearchPath(dir) catch {};
+        }
+    }
+    if (project_config.project_root) |root| {
+        loader.addSearchPath(root) catch {};
+    }
+
+    var resolver = Kira.Resolver.initWithLoader(allocator, &table, &loader);
+    defer resolver.deinit();
+
+    resolver.resolve(&program) catch {
+        for (loader.getErrors()) |load_err| {
+            try formatModuleError(stderr, load_err, source, path);
+        }
+        for (resolver.getDiagnostics()) |diag| {
+            renderResolverDiagnostic(stderr, renderer, diag) catch {};
+        }
+        return error.ResolveError;
+    };
+
+    // Type check
+    var checker = Kira.TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+    checker.check(&program) catch {
+        for (checker.getDiagnostics()) |diag| {
+            renderTypeCheckDiagnostic(stderr, renderer, diag) catch {};
+        }
+        return error.TypeCheckError;
+    };
+
+    // Create interpreter
+    var interp = Kira.Interpreter.init(allocator, &table);
+    defer interp.deinit();
+
+    const arena_alloc = interp.arenaAlloc();
+    try Kira.interpreter_mod.registerBuiltins(arena_alloc, &interp.global_env);
+    try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
+    interp.registerBuiltinMethods();
+
+    // Register declarations from loaded modules
+    var modules_iter = loader.loadedModulesIterator();
+    while (modules_iter.next()) |entry| {
+        if (entry.value_ptr.program) |mod_program| {
+            var path_segments = std.ArrayListUnmanaged([]const u8){};
+            defer path_segments.deinit(allocator);
+            var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
+            while (path_iter.next()) |segment| {
+                path_segments.append(allocator, segment) catch continue;
+            }
+            if (path_segments.items.len > 0) {
+                interp.registerModuleNamespace(path_segments.items, mod_program.declarations, &interp.global_env) catch {};
+            }
+            for (mod_program.declarations) |*mod_decl| {
+                if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
+                    interp.registerDeclaration(mod_decl, &interp.global_env) catch {};
+                }
+            }
+        }
+    }
+
+    // Register non-bench declarations
+    for (program.declarations) |*decl| {
+        if (decl.kind != .bench_decl) {
+            interp.registerDeclaration(decl, &interp.global_env) catch {};
+        }
+    }
+
+    // Collect benchmarks
+    var bench_count: u32 = 0;
+    var fail_count: u32 = 0;
+
+    if (!json_output) {
+        try stdout.writeAll("\nRunning benchmarks...\n\n");
+    } else {
+        try stdout.writeAll("{\"benchmarks\":[");
+    }
+
+    var first_json = true;
+
+    for (program.declarations) |*decl| {
+        if (decl.kind == .bench_decl) {
+            const bench_decl = decl.kind.bench_decl;
+            bench_count += 1;
+
+            // Determine iteration count: use requested, or auto-calibrate
+            const iterations: u32 = if (requested_iterations > 0) requested_iterations else calibrateIterations(&interp, bench_decl.body);
+
+            // Warmup: run 10% of iterations (at least 1)
+            const warmup_count = @max(iterations / 10, 1);
+            var bench_failed = false;
+            for (0..warmup_count) |_| {
+                for (bench_decl.body) |*stmt| {
+                    _ = interp.evalStatement(stmt, &interp.global_env) catch |err| {
+                        bench_failed = true;
+                        var err_buf: [512]u8 = undefined;
+                        const err_msg = std.fmt.bufPrint(&err_buf, "  FAIL: bench \"{s}\" - {}\n", .{ bench_decl.name, err }) catch "  FAIL\n";
+                        stderr.writeAll(err_msg) catch {};
+                        break;
+                    };
+                    if (bench_failed) break;
+                }
+                if (bench_failed) break;
+            }
+
+            if (bench_failed) {
+                fail_count += 1;
+                continue;
+            }
+
+            // Timed runs
+            var total_ns: u64 = 0;
+            var min_ns: u64 = std.math.maxInt(u64);
+            var max_ns: u64 = 0;
+
+            for (0..iterations) |_| {
+                var timer = std.time.Timer.start() catch {
+                    bench_failed = true;
+                    break;
+                };
+
+                for (bench_decl.body) |*stmt| {
+                    _ = interp.evalStatement(stmt, &interp.global_env) catch |err| {
+                        bench_failed = true;
+                        var err_buf: [512]u8 = undefined;
+                        const err_msg = std.fmt.bufPrint(&err_buf, "  FAIL: bench \"{s}\" - {}\n", .{ bench_decl.name, err }) catch "  FAIL\n";
+                        stderr.writeAll(err_msg) catch {};
+                        break;
+                    };
+                    if (bench_failed) break;
+                }
+                if (bench_failed) break;
+
+                const elapsed = timer.read();
+                total_ns += elapsed;
+                if (elapsed < min_ns) min_ns = elapsed;
+                if (elapsed > max_ns) max_ns = elapsed;
+            }
+
+            if (bench_failed) {
+                fail_count += 1;
+                continue;
+            }
+
+            const mean_ns = total_ns / iterations;
+
+            if (json_output) {
+                if (!first_json) {
+                    try stdout.writeAll(",");
+                }
+                first_json = false;
+
+                // Escape bench name for JSON (handle " and \)
+                var escaped_name_buf: [512]u8 = undefined;
+                const escaped_name = escapeJsonString(bench_decl.name, &escaped_name_buf);
+
+                var json_buf: [2048]u8 = undefined;
+                const json_entry = std.fmt.bufPrint(&json_buf, "{{\"name\":\"{s}\",\"iterations\":{d},\"total_ns\":{d},\"mean_ns\":{d},\"min_ns\":{d},\"max_ns\":{d}}}", .{
+                    escaped_name, iterations, total_ns, mean_ns, min_ns, max_ns,
+                }) catch {
+                    stderr.writeAll("Warning: benchmark entry too large for JSON buffer, skipping\n") catch {};
+                    continue;
+                };
+                try stdout.writeAll(json_entry);
+            } else {
+                var line_buf: [512]u8 = undefined;
+                var mean_buf: [32]u8 = undefined;
+                var min_buf2: [32]u8 = undefined;
+                var max_buf2: [32]u8 = undefined;
+                const mean_str = formatNanos(&mean_buf, mean_ns);
+                const min_str = formatNanos(&min_buf2, min_ns);
+                const max_str = formatNanos(&max_buf2, max_ns);
+                const line = std.fmt.bufPrint(&line_buf, "  bench \"{s}\"\n    {d} iterations, mean {s}, min {s}, max {s}\n", .{
+                    bench_decl.name,
+                    iterations,
+                    mean_str,
+                    min_str,
+                    max_str,
+                }) catch continue;
+                try stdout.writeAll(line);
+            }
+        }
+    }
+
+    if (json_output) {
+        try stdout.writeAll("]}\n");
+    } else {
+        try stdout.writeAll("\n");
+        var summary_buf: [256]u8 = undefined;
+        if (fail_count > 0) {
+            const summary = std.fmt.bufPrint(&summary_buf, "{d} benchmarks run, {d} failed.\n", .{ bench_count, fail_count }) catch "Benchmarks completed with failures.\n";
+            try stderr.writeAll(summary);
+            return error.BenchmarkFailed;
+        } else if (bench_count == 0) {
+            try stdout.writeAll("No benchmarks found.\n");
+        } else {
+            const summary = std.fmt.bufPrint(&summary_buf, "{d} benchmarks completed.\n", .{bench_count}) catch "Benchmarks completed.\n";
+            try stdout.writeAll(summary);
+        }
+    }
+}
+
+/// Auto-calibrate iterations: run the body 3 times and use the median to scale to ~100ms total.
+/// Multiple samples reduce the impact of OS scheduling jitter and interpreter startup overhead.
+fn calibrateIterations(interp: *Kira.Interpreter, body: []const Kira.Statement) u32 {
+    var samples: [3]u64 = undefined;
+    for (&samples) |*sample| {
+        var timer = std.time.Timer.start() catch return 100;
+        for (body) |*stmt| {
+            _ = interp.evalStatement(stmt, &interp.global_env) catch return 100;
+        }
+        sample.* = timer.read();
+    }
+
+    // Sort and take median
+    std.mem.sort(u64, &samples, {}, std.sort.asc(u64));
+    const median_ns = samples[1];
+    if (median_ns == 0) return 10_000;
+
+    // Target ~100ms of total runtime
+    const target_ns: u64 = 100_000_000;
+    const estimated: u64 = target_ns / median_ns;
+    // Clamp between 1 and 1,000,000
+    return @intCast(@min(@max(estimated, 1), 1_000_000));
+}
+
+fn formatNanos(buf: *[32]u8, ns: u64) []const u8 {
+    if (ns < 1_000) {
+        return std.fmt.bufPrint(buf, "{d} ns", .{ns}) catch "? ns";
+    } else if (ns < 1_000_000) {
+        return std.fmt.bufPrint(buf, "{d}.{d:0>2} us", .{
+            ns / 1_000,
+            (ns % 1_000) / 10,
+        }) catch "? us";
+    } else if (ns < 1_000_000_000) {
+        return std.fmt.bufPrint(buf, "{d}.{d:0>2} ms", .{
+            ns / 1_000_000,
+            (ns % 1_000_000) / 10_000,
+        }) catch "? ms";
+    } else {
+        return std.fmt.bufPrint(buf, "{d}.{d:0>2} s", .{
+            ns / 1_000_000_000,
+            (ns % 1_000_000_000) / 10_000_000,
+        }) catch "? s";
+    }
+}
+
+/// Escape a string for safe embedding in JSON. Handles special characters
+/// including quotes, backslashes, control characters, and \r.
+fn escapeJsonString(input: []const u8, buf: *[512]u8) []const u8 {
+    var pos: usize = 0;
+    for (input) |c| {
+        switch (c) {
+            '"' => {
+                if (pos + 2 > buf.len) break;
+                buf[pos] = '\\';
+                buf[pos + 1] = '"';
+                pos += 2;
+            },
+            '\\' => {
+                if (pos + 2 > buf.len) break;
+                buf[pos] = '\\';
+                buf[pos + 1] = '\\';
+                pos += 2;
+            },
+            '\n' => {
+                if (pos + 2 > buf.len) break;
+                buf[pos] = '\\';
+                buf[pos + 1] = 'n';
+                pos += 2;
+            },
+            '\r' => {
+                if (pos + 2 > buf.len) break;
+                buf[pos] = '\\';
+                buf[pos + 1] = 'r';
+                pos += 2;
+            },
+            '\t' => {
+                if (pos + 2 > buf.len) break;
+                buf[pos] = '\\';
+                buf[pos + 1] = 't';
+                pos += 2;
+            },
+            else => {
+                if (c < 0x20) {
+                    // Control characters: encode as \u00XX (6 bytes)
+                    if (pos + 6 > buf.len) break;
+                    const hex = "0123456789abcdef";
+                    buf[pos] = '\\';
+                    buf[pos + 1] = 'u';
+                    buf[pos + 2] = '0';
+                    buf[pos + 3] = '0';
+                    buf[pos + 4] = hex[c >> 4];
+                    buf[pos + 5] = hex[c & 0x0f];
+                    pos += 6;
+                } else {
+                    if (pos + 1 > buf.len) break;
+                    buf[pos] = c;
+                    pos += 1;
+                }
+            },
+        }
+    }
+    return buf[0..pos];
 }
 
 /// Start LSP server
@@ -2155,6 +2833,10 @@ test "parse args help" {
         .output_path = null,
         .init_name = null,
         .user_args = &.{},
+        .bench_json = false,
+        .bench_iterations = 0,
+        .coverage = false,
+        .coverage_json = false,
     };
 }
 

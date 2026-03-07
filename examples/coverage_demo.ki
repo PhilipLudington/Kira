@@ -1,0 +1,24 @@
+// Coverage demo: some branches are intentionally not tested
+// Run with: kira test --coverage examples/coverage_demo.ki
+
+fn classify(n: i32) -> string {
+    if n > 0 {
+        return "positive"
+    } else if n < 0 {
+        return "negative"
+    } else {
+        return "zero"
+    }
+}
+
+fn unused_function(x: i32) -> i32 {
+    return x * 2
+}
+
+test "classify positive" {
+    std.assert.assert_eq("positive", classify(5))
+}
+
+test "classify zero" {
+    std.assert.assert_eq("zero", classify(0))
+}

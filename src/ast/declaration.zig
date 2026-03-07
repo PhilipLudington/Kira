@@ -39,6 +39,9 @@ pub const Declaration = struct {
 
         // Test declaration
         test_decl: TestDecl,
+
+        // Benchmark declaration
+        bench_decl: BenchDecl,
     };
 
     /// Function declaration
@@ -50,6 +53,7 @@ pub const Declaration = struct {
         parameters: []Parameter,
         return_type: *Type,
         is_effect: bool,
+        is_memoized: bool,
         is_public: bool,
         body: ?[]Statement, // None for trait method signatures
         where_clause: ?[]WhereConstraint,
@@ -202,6 +206,13 @@ pub const Declaration = struct {
         body: []Statement,
     };
 
+    /// Benchmark declaration
+    /// `bench "description" { body }`
+    pub const BenchDecl = struct {
+        name: []const u8,
+        body: []Statement,
+    };
+
     /// Create a new declaration with the given kind and span
     pub fn init(kind: DeclarationKind, span: Span) Declaration {
         return .{ .kind = kind, .span = span, .doc_comment = null };
@@ -220,7 +231,7 @@ pub const Declaration = struct {
             .trait_decl => |t| t.is_public,
             .const_decl => |c| c.is_public,
             .let_decl => |l| l.is_public,
-            .impl_block, .module_decl, .import_decl, .test_decl => false,
+            .impl_block, .module_decl, .import_decl, .test_decl, .bench_decl => false,
         };
     }
 
@@ -233,6 +244,7 @@ pub const Declaration = struct {
             .const_decl => |c| c.name,
             .let_decl => |l| l.name,
             .test_decl => |t| t.name,
+            .bench_decl => |b| b.name,
             .impl_block, .module_decl, .import_decl => null,
         };
     }

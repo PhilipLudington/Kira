@@ -1405,3 +1405,202 @@ test "interpreter: array mutation does not alias" {
     // a[0] should still be 1, not 99
     try testing.expectEqual(@as(i128, 1), r.value.?.integer);
 }
+
+// ============================================================================
+// Memoization Tests
+// ============================================================================
+
+test "interpreter: memo fn produces correct results" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\memo fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\fn main() -> i32 {
+        \\    return add(3, 4)
+        \\}
+    ;
+
+    const result = try evalSource(allocator, source);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i128, 7), result.?.integer);
+}
+
+test "interpreter: memo fn caches repeated calls" {
+    const allocator = testing.allocator;
+
+    // Call the same memoized function twice with identical args.
+    // Verify the cache has exactly one entry afterward.
+    const source =
+        \\memo fn double(x: i32) -> i32 {
+        \\    return x * 2
+        \\}
+        \\fn main() -> i32 {
+        \\    let a: i32 = double(5)
+        \\    let b: i32 = double(5)
+        \\    return a + b
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 20), r.value.?.integer);
+
+    // Verify the cache contains exactly 1 entry for "double"
+    const func_cache = r.interp.memo_cache.entries.getPtr("double");
+    try testing.expect(func_cache != null);
+    try testing.expectEqual(@as(usize, 1), func_cache.?.count);
+}
+
+test "interpreter: memo fn with different args creates separate entries" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\memo fn square(x: i32) -> i32 {
+        \\    return x * x
+        \\}
+        \\fn main() -> i32 {
+        \\    let a: i32 = square(3)
+        \\    let b: i32 = square(4)
+        \\    let c: i32 = square(3)
+        \\    return a + b + c
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    // 9 + 16 + 9 = 34
+    try testing.expectEqual(@as(i128, 34), r.value.?.integer);
+
+    // Cache has 2 entries: one for square(3), one for square(4)
+    const func_cache = r.interp.memo_cache.entries.getPtr("square");
+    try testing.expect(func_cache != null);
+    try testing.expectEqual(@as(usize, 2), func_cache.?.count);
+}
+
+test "interpreter: memo fn recursive fibonacci correct" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\memo fn fib(n: i32) -> i32 {
+        \\    if n <= 1 {
+        \\        return n
+        \\    }
+        \\    return fib(n - 1) + fib(n - 2)
+        \\}
+        \\fn main() -> i32 {
+        \\    return fib(15)
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 610), r.value.?.integer);
+
+    // Cache should have entries for each unique argument fib was called with
+    const func_cache = r.interp.memo_cache.entries.getPtr("fib");
+    try testing.expect(func_cache != null);
+    // fib(0)..fib(15) but fib(0) might be reached via the trampoline lookup
+    // instead of callFunction in some cases; verify at least 14 entries cached
+    try testing.expect(func_cache.?.count >= 14);
+}
+
+test "interpreter: memo fn zero arguments" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\memo fn constant() -> i32 {
+        \\    return 42
+        \\}
+        \\fn main() -> i32 {
+        \\    let a: i32 = constant()
+        \\    let b: i32 = constant()
+        \\    return a + b
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 84), r.value.?.integer);
+
+    // Cache has exactly 1 entry for the zero-arg call
+    const func_cache = r.interp.memo_cache.entries.getPtr("constant");
+    try testing.expect(func_cache != null);
+    try testing.expectEqual(@as(usize, 1), func_cache.?.count);
+}
+
+test "interpreter: memo fn with string arguments" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\memo fn greet(name: string) -> string {
+        \\    return "Hello, " + name
+        \\}
+        \\fn main() -> string {
+        \\    let a: string = greet("world")
+        \\    let b: string = greet("world")
+        \\    return a
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("Hello, world", r.value.?.string);
+
+    // Should be cached
+    const func_cache = r.interp.memo_cache.entries.getPtr("greet");
+    try testing.expect(func_cache != null);
+    try testing.expectEqual(@as(usize, 1), func_cache.?.count);
+}
+
+test "interpreter: non-memo fn does not cache" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\fn main() -> i32 {
+        \\    return add(1, 2) + add(1, 2)
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqual(@as(i128, 6), r.value.?.integer);
+
+    // No cache entries for non-memo functions
+    try testing.expectEqual(@as(usize, 0), r.interp.memo_cache.entries.count());
+}
+
+test "typechecker: memo generic function rejected" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\memo fn identity[T](x: T) -> T {
+        \\    return x
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
+test "parser: memo effect fn rejected" {
+    const source =
+        \\memo effect fn greet() -> void {
+        \\    std.io.println("hello")
+        \\}
+    ;
+
+    // Should fail at parse time
+    const result = Kira.parse(testing.allocator, source);
+    try testing.expectError(error.UnexpectedToken, result);
+}

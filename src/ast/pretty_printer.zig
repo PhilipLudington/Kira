@@ -610,6 +610,9 @@ pub const PrettyPrinter = struct {
             .test_decl => |td| {
                 try self.writeFmt("test \"{s}\" {{ {d} statements }}", .{ td.name, td.body.len });
             },
+            .bench_decl => |bd| {
+                try self.writeFmt("bench \"{s}\" {{ {d} statements }}", .{ bd.name, bd.body.len });
+            },
         }
     }
 

@@ -80,6 +80,7 @@ fn makeBuiltin(
             .body = .{ .builtin = func },
             .captured_env = null,
             .is_effect = true, // Most builtins are effectful
+            .is_memoized = false,
         },
     };
 }
@@ -777,6 +778,7 @@ test "prop_test passing property" {
         }.f },
         .captured_env = null,
         .is_effect = false,
+        .is_memoized = false,
     };
 
     const result = try builtinPropTest(ctx, &.{
@@ -804,6 +806,7 @@ test "prop_test failing property" {
         }.f },
         .captured_env = null,
         .is_effect = false,
+        .is_memoized = false,
     };
 
     const result = builtinPropTest(ctx, &.{

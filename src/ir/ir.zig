@@ -128,6 +128,8 @@ pub const Function = struct {
     captures: []const Capture,
     /// Whether this is an effect function.
     is_effect: bool,
+    /// Whether this function is memoized.
+    is_memoized: bool,
     /// Basic blocks that make up the function body.
     blocks: std.ArrayListUnmanaged(BasicBlock),
     /// All instructions across all blocks, referenced by index.
@@ -154,6 +156,7 @@ pub const Function = struct {
             .params = &.{},
             .captures = &.{},
             .is_effect = false,
+            .is_memoized = false,
             .blocks = .{},
             .instructions = .{},
             .entry_block = 0,

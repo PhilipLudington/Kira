@@ -3069,11 +3069,45 @@ pub const TypeChecker = struct {
                 try self.scopeLeave();
                 std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
             },
+            .bench_decl => |b| {
+                // Type check the bench body - benchmarks are implicitly effect functions
+                const saved_in_effect = self.in_effect_function;
+                self.in_effect_function = true;
+                defer self.in_effect_function = saved_in_effect;
+
+                const entry_scope_id = self.symbol_table.current_scope_id;
+                _ = try self.symbol_table.enterScope(.function);
+                errdefer self.scopeCleanup();
+                for (b.body) |*stmt| {
+                    _ = try self.checkStatement(stmt);
+                }
+                try self.scopeLeave();
+                std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
+            },
         }
     }
 
     /// Check function declaration
     fn checkFunctionDecl(self: *TypeChecker, func: *const Declaration.FunctionDecl) TypeCheckError!void {
+        // Validate memoization eligibility
+        if (func.is_memoized) {
+            // Defense-in-depth: parser already rejects memo+effect, but validate here too
+            if (func.is_effect) {
+                try self.addDiagnostic(try errors_mod.simpleError(
+                    self.allocator,
+                    "memoized functions must be pure; 'memo' and 'effect' cannot be combined",
+                    func.return_type.span,
+                ));
+            }
+            if (func.generic_params) |gp| {
+                try self.addDiagnostic(try errors_mod.simpleError(
+                    self.allocator,
+                    "memoized functions cannot be generic; different instantiations would alias cache entries",
+                    gp[0].span,
+                ));
+            }
+        }
+
         // Save current state
         const saved_return_type = self.current_return_type;
         const saved_effect = self.current_effect;
@@ -3998,6 +4032,7 @@ test "effect: pure main function without effect keyword is allowed" {
         .parameters = &[_]Declaration.Parameter{},
         .return_type = &return_type,
         .is_effect = false,
+        .is_memoized = false,
         .is_public = true,
         .body = null,
         .where_clause = null,
@@ -4048,6 +4083,7 @@ test "effect: main function with effect keyword allowed" {
         .parameters = &[_]Declaration.Parameter{},
         .return_type = &return_type,
         .is_effect = true, // IS an effect function
+        .is_memoized = false,
         .is_public = true,
         .body = null,
         .where_clause = null,
@@ -4904,6 +4940,7 @@ test "trait bounds: generic function call with satisfied bound" {
         .parameter_names = param_names,
         .return_type = &bool_return_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     }, true, span);
 
@@ -4988,6 +5025,7 @@ test "trait bounds: generic function call with unsatisfied bound" {
         .parameter_names = param_names,
         .return_type = &bool_return_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     }, true, span);
 
@@ -5073,6 +5111,7 @@ test "method resolution: trait method on concrete type resolves return type" {
         .parameter_names = param_names,
         .return_type = &string_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     }, true, span));
 
@@ -5215,6 +5254,7 @@ test "method resolution: wrong argument count produces error" {
         .parameter_names = param_names,
         .return_type = &string_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     }, true, span));
 
@@ -5303,6 +5343,7 @@ test "method resolution: inherent method (impl without trait)" {
         .parameter_names = param_names,
         .return_type = &f64_type,
         .is_effect = false,
+        .is_memoized = false,
         .has_body = true,
     }, true, span));
 

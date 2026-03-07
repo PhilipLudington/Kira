@@ -1,0 +1,45 @@
+//! Basic math utilities.
+//! Provides arithmetic helpers and numeric constants.
+
+module mathlib.math
+
+/// The ratio of a circle's circumference to its diameter.
+pub const PI: f64 = 3.14159265358979
+
+/// The base of the natural logarithm.
+pub const E: f64 = 2.71828182845905
+
+/// Return the absolute value of x.
+pub fn abs(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0 - x
+    }
+    return x
+}
+
+/// Return the larger of two values.
+pub fn max(a: f64, b: f64) -> f64 {
+    if a >= b { return a }
+    return b
+}
+
+/// Return the smaller of two values.
+pub fn min(a: f64, b: f64) -> f64 {
+    if a <= b { return a }
+    return b
+}
+
+/// Clamp x to the range [lo, hi].
+pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+    return max(lo, min(x, hi))
+}
+
+/// Compute the area of a circle with the given radius.
+pub fn circle_area(radius: f64) -> f64 {
+    return PI * radius * radius
+}
+
+// Private helper — should not appear in docs.
+fn square(x: f64) -> f64 {
+    return x * x
+}

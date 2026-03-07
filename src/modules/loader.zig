@@ -665,6 +665,7 @@ pub const ModuleLoader = struct {
             .parameter_names = try param_names.toOwnedSlice(self.allocator),
             .return_type = func.return_type,
             .is_effect = func.is_effect,
+            .is_memoized = func.is_memoized,
             .has_body = func.body != null,
         };
 

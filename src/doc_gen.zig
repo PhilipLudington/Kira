@@ -1,7 +1,7 @@
 //! Documentation generator for Kira.
 //!
-//! Extracts doc comments (/// and //!) from parsed AST and generates
-//! Markdown API reference documentation.
+//! Builds an intermediate documentation model from parsed AST and renders
+//! Markdown and search index output from that model.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -11,277 +11,405 @@ const Type = ast.Type;
 const Program = ast.Program;
 const pretty_printer = @import("ast/pretty_printer.zig");
 
+pub const SymbolKind = enum {
+    function,
+    type,
+    trait,
+    constant,
+    value,
+
+    pub fn label(self: SymbolKind) []const u8 {
+        return switch (self) {
+            .function => "function",
+            .type => "type",
+            .trait => "trait",
+            .constant => "constant",
+            .value => "value",
+        };
+    }
+
+    pub fn heading(self: SymbolKind) []const u8 {
+        return switch (self) {
+            .function => "Functions",
+            .type => "Types",
+            .trait => "Traits",
+            .constant => "Constants",
+            .value => "Values",
+        };
+    }
+};
+
+pub const SymbolDoc = struct {
+    name: []const u8,
+    kind: SymbolKind,
+    signature: []const u8,
+    summary: ?[]const u8,
+    docs: ?[]const u8,
+
+    pub fn deinit(self: *SymbolDoc, allocator: Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.signature);
+        if (self.summary) |summary| allocator.free(summary);
+        if (self.docs) |docs| allocator.free(docs);
+    }
+};
+
+pub const ModuleDoc = struct {
+    module_path: []const u8,
+    source_path: ?[]const u8,
+    summary: ?[]const u8,
+    docs: ?[]const u8,
+    symbols: []SymbolDoc,
+
+    pub fn deinit(self: *ModuleDoc, allocator: Allocator) void {
+        allocator.free(self.module_path);
+        if (self.source_path) |path| allocator.free(path);
+        if (self.summary) |summary| allocator.free(summary);
+        if (self.docs) |docs| allocator.free(docs);
+        for (self.symbols) |*symbol| {
+            symbol.deinit(allocator);
+        }
+        allocator.free(self.symbols);
+    }
+};
+
+pub const ProjectDocs = struct {
+    package_name: ?[]const u8,
+    modules: []ModuleDoc,
+
+    pub fn deinit(self: *ProjectDocs, allocator: Allocator) void {
+        if (self.package_name) |name| allocator.free(name);
+        for (self.modules) |*module| {
+            module.deinit(allocator);
+        }
+        allocator.free(self.modules);
+    }
+};
+
 /// Generate Markdown documentation from a parsed Kira program.
 /// Caller owns the returned slice.
 pub fn generateMarkdown(allocator: Allocator, program: *const Program) ![]u8 {
-    var output = std.ArrayListUnmanaged(u8){};
-    errdefer output.deinit(allocator);
+    var module_doc = try collectModuleDocs(allocator, program);
+    defer module_doc.deinit(allocator);
+    return renderModuleMarkdown(allocator, module_doc);
+}
 
-    // Module header
-    if (program.module_decl) |mod| {
-        const path_str = joinPath(allocator, mod.path) catch null;
-        defer if (path_str) |p| allocator.free(p);
-        try appendFmt(allocator, &output, "# Module `{s}`\n\n", .{path_str orelse "unknown"});
-    } else {
-        try appendSlice(allocator, &output, "# API Reference\n\n");
+/// Collect documentation from a parsed program into a ModuleDoc.
+/// Caller owns the returned ModuleDoc and must call deinit.
+pub fn collectModuleDocs(allocator: Allocator, program: *const Program) !ModuleDoc {
+    const module_path = try duplicateModulePath(allocator, program);
+    errdefer allocator.free(module_path);
+
+    const source_path = if (program.source_path) |path| try allocator.dupe(u8, path) else null;
+    errdefer if (source_path) |path| allocator.free(path);
+
+    const docs = if (program.module_doc) |doc| try allocator.dupe(u8, doc) else null;
+    errdefer if (docs) |doc| allocator.free(doc);
+
+    const summary = if (program.module_doc) |doc| try extractSummary(allocator, doc) else null;
+    errdefer if (summary) |text| allocator.free(text);
+
+    var symbols = std.ArrayListUnmanaged(SymbolDoc){};
+    errdefer {
+        for (symbols.items) |*symbol| {
+            symbol.deinit(allocator);
+        }
+        symbols.deinit(allocator);
     }
-
-    // Module-level documentation
-    if (program.module_doc) |doc| {
-        try appendSlice(allocator, &output, doc);
-        try appendSlice(allocator, &output, "\n\n");
-    }
-
-    try appendSlice(allocator, &output, "---\n\n");
-
-    // Collect public declarations by category
-    var functions = std.ArrayListUnmanaged(*const Declaration){};
-    defer functions.deinit(allocator);
-    var types = std.ArrayListUnmanaged(*const Declaration){};
-    defer types.deinit(allocator);
-    var traits = std.ArrayListUnmanaged(*const Declaration){};
-    defer traits.deinit(allocator);
-    var constants = std.ArrayListUnmanaged(*const Declaration){};
-    defer constants.deinit(allocator);
 
     for (program.declarations) |*decl| {
         if (!decl.isPublic()) continue;
-        switch (decl.kind) {
-            .function_decl => try functions.append(allocator, decl),
-            .type_decl => try types.append(allocator, decl),
-            .trait_decl => try traits.append(allocator, decl),
-            .const_decl => try constants.append(allocator, decl),
-            .let_decl => try functions.append(allocator, decl),
-            else => {},
+        const symbol_doc = collectSymbolDoc(allocator, decl) catch |err| switch (err) {
+            error.UnsupportedDeclaration => continue,
+            else => return err,
+        };
+        try symbols.append(allocator, symbol_doc);
+    }
+
+    sortSymbols(symbols.items);
+
+    return .{
+        .module_path = module_path,
+        .source_path = source_path,
+        .summary = summary,
+        .docs = docs,
+        .symbols = try symbols.toOwnedSlice(allocator),
+    };
+}
+
+/// Render a ModuleDoc as a Markdown page.
+/// Caller owns the returned slice.
+pub fn renderModuleMarkdown(allocator: Allocator, module_doc: ModuleDoc) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    try appendFmt(allocator, &output, "# Module `{s}`\n\n", .{module_doc.module_path});
+    if (module_doc.source_path) |source_path| {
+        try appendFmt(allocator, &output, "_Source: `{s}`_\n\n", .{source_path});
+    }
+
+    if (module_doc.docs) |docs| {
+        try appendSlice(allocator, &output, docs);
+        try appendSlice(allocator, &output, "\n\n");
+    }
+
+    var wrote_any_section = false;
+    const section_order = [_]SymbolKind{ .type, .trait, .function, .value, .constant };
+    for (section_order) |kind| {
+        if (!hasSymbolsOfKind(module_doc.symbols, kind)) continue;
+        wrote_any_section = true;
+        try appendFmt(allocator, &output, "## {s}\n\n", .{kind.heading()});
+        for (module_doc.symbols) |symbol| {
+            if (symbol.kind != kind) continue;
+            try renderSymbolMarkdown(allocator, &output, symbol);
         }
     }
 
-    // Types section
-    if (types.items.len > 0) {
-        try appendSlice(allocator, &output, "## Types\n\n");
-        for (types.items) |decl| {
-            try renderTypeDecl(allocator, &output, decl);
-        }
-    }
-
-    // Traits section
-    if (traits.items.len > 0) {
-        try appendSlice(allocator, &output, "## Traits\n\n");
-        for (traits.items) |decl| {
-            try renderTraitDecl(allocator, &output, decl);
-        }
-    }
-
-    // Functions section
-    if (functions.items.len > 0) {
-        try appendSlice(allocator, &output, "## Functions\n\n");
-        for (functions.items) |decl| {
-            try renderFunctionDecl(allocator, &output, decl);
-        }
-    }
-
-    // Constants section
-    if (constants.items.len > 0) {
-        try appendSlice(allocator, &output, "## Constants\n\n");
-        for (constants.items) |decl| {
-            try renderConstDecl(allocator, &output, decl);
-        }
+    if (!wrote_any_section) {
+        try appendSlice(allocator, &output, "_No public declarations found._\n");
     }
 
     return output.toOwnedSlice(allocator);
 }
 
-fn renderFunctionDecl(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), decl: *const Declaration) !void {
+/// Render a top-level index page linking to each module's page.
+/// Caller owns the returned slice.
+pub fn renderProjectIndexMarkdown(allocator: Allocator, project_docs: ProjectDocs) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    if (project_docs.package_name) |package_name| {
+        try appendFmt(allocator, &output, "# API Reference for `{s}`\n\n", .{package_name});
+    } else {
+        try appendSlice(allocator, &output, "# API Reference\n\n");
+    }
+
+    try appendSlice(allocator, &output, "Generated module pages:\n\n");
+    for (project_docs.modules) |module_doc| {
+        const file_name = try modulePageFileName(allocator, module_doc.module_path);
+        defer allocator.free(file_name);
+
+        try appendFmt(allocator, &output, "- [`{s}`]({s})", .{ module_doc.module_path, file_name });
+        if (module_doc.summary) |summary| {
+            try appendFmt(allocator, &output, " - {s}", .{summary});
+        }
+        try appendSlice(allocator, &output, "\n");
+    }
+
+    try appendSlice(allocator, &output, "\nArtifacts:\n\n");
+    try appendSlice(allocator, &output, "- `search-index.json` for symbol search consumers\n");
+
+    return output.toOwnedSlice(allocator);
+}
+
+/// Generate a JSON search index from project documentation.
+/// Caller owns the returned slice.
+pub fn generateSearchIndexJson(allocator: Allocator, project_docs: ProjectDocs) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    try appendSlice(allocator, &output, "[\n");
+    var first = true;
+    for (project_docs.modules) |module_doc| {
+        const page_name = try modulePageFileName(allocator, module_doc.module_path);
+        defer allocator.free(page_name);
+
+        for (module_doc.symbols) |symbol| {
+            if (!first) {
+                try appendSlice(allocator, &output, ",\n");
+            }
+            first = false;
+
+            try appendSlice(allocator, &output, "  {\n");
+            try appendJsonField(allocator, &output, "module_path", module_doc.module_path, true);
+            try appendJsonField(allocator, &output, "symbol_name", symbol.name, true);
+            try appendJsonField(allocator, &output, "symbol_kind", symbol.kind.label(), true);
+            if (symbol.summary) |summary| {
+                try appendJsonField(allocator, &output, "summary", summary, true);
+            } else {
+                try appendSlice(allocator, &output, "    \"summary\": null,\n");
+            }
+            try appendJsonField(allocator, &output, "signature", symbol.signature, true);
+
+            const anchor = try anchorForName(allocator, symbol.name);
+            defer allocator.free(anchor);
+            const page = try std.fmt.allocPrint(allocator, "{s}#{s}", .{ page_name, anchor });
+            defer allocator.free(page);
+            try appendJsonField(allocator, &output, "page", page, false);
+            try appendSlice(allocator, &output, "  }");
+        }
+    }
+    try appendSlice(allocator, &output, "\n]\n");
+
+    return output.toOwnedSlice(allocator);
+}
+
+/// Convert a module path (e.g. "foo.bar") to a page filename (e.g. "foo_bar.md").
+/// Caller owns the returned slice.
+pub fn modulePageFileName(allocator: Allocator, module_path: []const u8) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    for (module_path) |c| {
+        const out_char: u8 = switch (c) {
+            '.', '/', '\\', ' ' => '_',
+            else => c,
+        };
+        try output.append(allocator, out_char);
+    }
+    try output.appendSlice(allocator, ".md");
+    return output.toOwnedSlice(allocator);
+}
+
+fn collectSymbolDoc(allocator: Allocator, decl: *const Declaration) !SymbolDoc {
+    const name = try allocator.dupe(u8, decl.name() orelse "unknown");
+    errdefer allocator.free(name);
+
+    const docs = if (decl.doc_comment) |doc| try allocator.dupe(u8, doc) else null;
+    errdefer if (docs) |doc| allocator.free(doc);
+
+    const summary = if (decl.doc_comment) |doc| try extractSummary(allocator, doc) else null;
+    errdefer if (summary) |text| allocator.free(text);
+
+    const signature, const kind = try collectSignatureAndKind(allocator, decl);
+    errdefer allocator.free(signature);
+
+    return .{
+        .name = name,
+        .kind = kind,
+        .signature = signature,
+        .summary = summary,
+        .docs = docs,
+    };
+}
+
+fn collectSignatureAndKind(allocator: Allocator, decl: *const Declaration) !struct { []u8, SymbolKind } {
     switch (decl.kind) {
         .function_decl => |f| {
-            try appendFmt(allocator, output, "### `{s}`\n\n", .{f.name});
-            try appendSlice(allocator, output, "```kira\n");
-            if (f.is_effect) try appendSlice(allocator, output, "effect ");
-            try appendFmt(allocator, output, "fn {s}", .{f.name});
-            try renderGenericParams(allocator, output, f.generic_params);
-            try appendSlice(allocator, output, "(");
+            var output = std.ArrayListUnmanaged(u8){};
+            errdefer output.deinit(allocator);
+            if (f.is_effect) try appendSlice(allocator, &output, "effect ");
+            try appendFmt(allocator, &output, "fn {s}", .{f.name});
+            try appendGenericParams(allocator, &output, f.generic_params);
+            try appendSlice(allocator, &output, "(");
             for (f.parameters, 0..) |param, i| {
-                if (i > 0) try appendSlice(allocator, output, ", ");
-                try appendFmt(allocator, output, "{s}: ", .{param.name});
-                try appendTypeStr(allocator, output, param.param_type.*);
+                if (i > 0) try appendSlice(allocator, &output, ", ");
+                try appendFmt(allocator, &output, "{s}: ", .{param.name});
+                try appendTypeStr(allocator, &output, param.param_type.*);
             }
-            try appendSlice(allocator, output, ") -> ");
-            try appendTypeStr(allocator, output, f.return_type.*);
-            try appendSlice(allocator, output, "\n```\n\n");
-            if (decl.doc_comment) |doc| {
-                try appendSlice(allocator, output, doc);
-                try appendSlice(allocator, output, "\n\n");
-            }
+            try appendSlice(allocator, &output, ") -> ");
+            try appendTypeStr(allocator, &output, f.return_type.*);
+            return .{ try output.toOwnedSlice(allocator), .function };
         },
         .let_decl => |l| {
-            try appendFmt(allocator, output, "### `{s}`\n\n", .{l.name});
-            try appendSlice(allocator, output, "```kira\n");
-            try appendFmt(allocator, output, "let {s}: ", .{l.name});
-            try appendTypeStr(allocator, output, l.binding_type.*);
-            try appendSlice(allocator, output, "\n```\n\n");
-            if (decl.doc_comment) |doc| {
-                try appendSlice(allocator, output, doc);
-                try appendSlice(allocator, output, "\n\n");
-            }
+            var output = std.ArrayListUnmanaged(u8){};
+            errdefer output.deinit(allocator);
+            try appendFmt(allocator, &output, "let {s}", .{l.name});
+            try appendGenericParams(allocator, &output, l.generic_params);
+            try appendSlice(allocator, &output, ": ");
+            try appendTypeStr(allocator, &output, l.binding_type.*);
+            return .{ try output.toOwnedSlice(allocator), .value };
         },
-        else => {},
-    }
-}
-
-fn renderTypeDecl(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), decl: *const Declaration) !void {
-    const td = switch (decl.kind) {
-        .type_decl => |t| t,
-        else => return,
-    };
-
-    try appendFmt(allocator, output, "### `{s}`\n\n", .{td.name});
-
-    if (decl.doc_comment) |doc| {
-        try appendSlice(allocator, output, doc);
-        try appendSlice(allocator, output, "\n\n");
-    }
-
-    switch (td.definition) {
-        .sum_type => |st| {
-            try appendSlice(allocator, output, "```kira\ntype ");
-            try appendFmt(allocator, output, "{s}", .{td.name});
-            try renderGenericParams(allocator, output, td.generic_params);
-            try appendSlice(allocator, output, " =\n");
-            for (st.variants) |variant| {
-                try appendFmt(allocator, output, "    | {s}", .{variant.name});
-                if (variant.fields) |fields| {
-                    switch (fields) {
-                        .tuple_fields => |tf| {
-                            try appendSlice(allocator, output, "(");
-                            for (tf, 0..) |field_type, i| {
-                                if (i > 0) try appendSlice(allocator, output, ", ");
-                                try appendTypeStr(allocator, output, field_type.*);
+        .type_decl => |t| {
+            var output = std.ArrayListUnmanaged(u8){};
+            errdefer output.deinit(allocator);
+            try appendSlice(allocator, &output, "type ");
+            try appendFmt(allocator, &output, "{s}", .{t.name});
+            try appendGenericParams(allocator, &output, t.generic_params);
+            try appendSlice(allocator, &output, " = ");
+            switch (t.definition) {
+                .sum_type => |sum_type| {
+                    for (sum_type.variants, 0..) |variant, i| {
+                        if (i > 0) try appendSlice(allocator, &output, " ");
+                        try appendFmt(allocator, &output, "| {s}", .{variant.name});
+                        if (variant.fields) |fields| {
+                            switch (fields) {
+                                .tuple_fields => |tfs| {
+                                    try appendSlice(allocator, &output, "(");
+                                    for (tfs, 0..) |tf, j| {
+                                        if (j > 0) try appendSlice(allocator, &output, ", ");
+                                        try appendTypeStr(allocator, &output, tf.*);
+                                    }
+                                    try appendSlice(allocator, &output, ")");
+                                },
+                                .record_fields => |rfs| {
+                                    try appendSlice(allocator, &output, " { ");
+                                    for (rfs, 0..) |rf, j| {
+                                        if (j > 0) try appendSlice(allocator, &output, ", ");
+                                        try appendFmt(allocator, &output, "{s}: ", .{rf.name});
+                                        try appendTypeStr(allocator, &output, rf.field_type.*);
+                                    }
+                                    try appendSlice(allocator, &output, " }");
+                                },
                             }
-                            try appendSlice(allocator, output, ")");
-                        },
-                        .record_fields => |rf| {
-                            try appendSlice(allocator, output, " { ");
-                            for (rf, 0..) |field, i| {
-                                if (i > 0) try appendSlice(allocator, output, ", ");
-                                try appendFmt(allocator, output, "{s}: ", .{field.name});
-                                try appendTypeStr(allocator, output, field.field_type.*);
-                            }
-                            try appendSlice(allocator, output, " }");
-                        },
+                        }
                     }
+                },
+                .product_type => |product_type| {
+                    try appendSlice(allocator, &output, "{ ");
+                    for (product_type.fields, 0..) |field, i| {
+                        if (i > 0) try appendSlice(allocator, &output, ", ");
+                        try appendFmt(allocator, &output, "{s}: ", .{field.name});
+                        try appendTypeStr(allocator, &output, field.field_type.*);
+                    }
+                    try appendSlice(allocator, &output, " }");
+                },
+                .type_alias => |alias| {
+                    try appendTypeStr(allocator, &output, alias.*);
+                },
+            }
+            return .{ try output.toOwnedSlice(allocator), .type };
+        },
+        .trait_decl => |trait_decl| {
+            var output = std.ArrayListUnmanaged(u8){};
+            errdefer output.deinit(allocator);
+            try appendSlice(allocator, &output, "trait ");
+            try appendFmt(allocator, &output, "{s}", .{trait_decl.name});
+            try appendGenericParams(allocator, &output, trait_decl.generic_params);
+            if (trait_decl.super_traits) |supers| {
+                try appendSlice(allocator, &output, ": ");
+                for (supers, 0..) |super_trait, i| {
+                    if (i > 0) try appendSlice(allocator, &output, " + ");
+                    try appendFmt(allocator, &output, "{s}", .{super_trait});
                 }
-                try appendSlice(allocator, output, "\n");
             }
-            try appendSlice(allocator, output, "```\n\n");
+            return .{ try output.toOwnedSlice(allocator), .trait };
         },
-        .product_type => |pt| {
-            try appendSlice(allocator, output, "```kira\ntype ");
-            try appendFmt(allocator, output, "{s}", .{td.name});
-            try renderGenericParams(allocator, output, td.generic_params);
-            try appendSlice(allocator, output, " = {\n");
-            for (pt.fields) |field| {
-                try appendFmt(allocator, output, "    {s}: ", .{field.name});
-                try appendTypeStr(allocator, output, field.field_type.*);
-                try appendSlice(allocator, output, "\n");
-            }
-            try appendSlice(allocator, output, "}\n```\n\n");
+        .const_decl => |const_decl| {
+            var output = std.ArrayListUnmanaged(u8){};
+            errdefer output.deinit(allocator);
+            try appendFmt(allocator, &output, "const {s}: ", .{const_decl.name});
+            try appendTypeStr(allocator, &output, const_decl.const_type.*);
+            return .{ try output.toOwnedSlice(allocator), .constant };
         },
-        .type_alias => |alias| {
-            try appendSlice(allocator, output, "```kira\ntype ");
-            try appendFmt(allocator, output, "{s}", .{td.name});
-            try renderGenericParams(allocator, output, td.generic_params);
-            try appendSlice(allocator, output, " = ");
-            try appendTypeStr(allocator, output, alias.*);
-            try appendSlice(allocator, output, "\n```\n\n");
-        },
+        else => return error.UnsupportedDeclaration,
     }
 }
 
-fn renderTraitDecl(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), decl: *const Declaration) !void {
-    const td = switch (decl.kind) {
-        .trait_decl => |t| t,
-        else => return,
-    };
-
-    try appendFmt(allocator, output, "### `{s}`\n\n", .{td.name});
-
-    if (decl.doc_comment) |doc| {
-        try appendSlice(allocator, output, doc);
-        try appendSlice(allocator, output, "\n\n");
-    }
-
-    try appendSlice(allocator, output, "```kira\ntrait ");
-    try appendFmt(allocator, output, "{s}", .{td.name});
-    if (td.super_traits) |supers| {
-        try appendSlice(allocator, output, ": ");
-        for (supers, 0..) |s, i| {
-            if (i > 0) try appendSlice(allocator, output, " + ");
-            try appendFmt(allocator, output, "{s}", .{s});
-        }
-    }
-    try appendSlice(allocator, output, " {\n");
-
-    for (td.methods) |method| {
-        try appendFmt(allocator, output, "    fn {s}(", .{method.name});
-        for (method.parameters, 0..) |param, i| {
-            if (i > 0) try appendSlice(allocator, output, ", ");
-            try appendFmt(allocator, output, "{s}: ", .{param.name});
-            try appendTypeStr(allocator, output, param.param_type.*);
-        }
-        try appendSlice(allocator, output, ") -> ");
-        try appendTypeStr(allocator, output, method.return_type.*);
-        try appendSlice(allocator, output, "\n");
-    }
-
-    try appendSlice(allocator, output, "}\n```\n\n");
-
-    // Document individual methods
-    if (td.methods.len > 0) {
-        try appendSlice(allocator, output, "**Methods:**\n\n");
-        for (td.methods) |method| {
-            try appendFmt(allocator, output, "- `{s}(", .{method.name});
-            for (method.parameters, 0..) |param, i| {
-                if (i > 0) try appendSlice(allocator, output, ", ");
-                try appendFmt(allocator, output, "{s}: ", .{param.name});
-                try appendTypeStr(allocator, output, param.param_type.*);
-            }
-            try appendSlice(allocator, output, ") -> ");
-            try appendTypeStr(allocator, output, method.return_type.*);
-            try appendSlice(allocator, output, "`\n");
-        }
-        try appendSlice(allocator, output, "\n");
-    }
-}
-
-fn renderConstDecl(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), decl: *const Declaration) !void {
-    const cd = switch (decl.kind) {
-        .const_decl => |c| c,
-        else => return,
-    };
-
-    try appendFmt(allocator, output, "### `{s}`\n\n", .{cd.name});
-    try appendSlice(allocator, output, "```kira\nconst ");
-    try appendFmt(allocator, output, "{s}: ", .{cd.name});
-    try appendTypeStr(allocator, output, cd.const_type.*);
+fn renderSymbolMarkdown(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), symbol: SymbolDoc) !void {
+    try appendFmt(allocator, output, "### `{s}`\n\n", .{symbol.name});
+    try appendSlice(allocator, output, "```kira\n");
+    try appendSlice(allocator, output, symbol.signature);
     try appendSlice(allocator, output, "\n```\n\n");
-    if (decl.doc_comment) |doc| {
-        try appendSlice(allocator, output, doc);
+    if (symbol.docs) |docs| {
+        try appendSlice(allocator, output, docs);
         try appendSlice(allocator, output, "\n\n");
     }
 }
 
-fn renderGenericParams(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), params: ?[]Declaration.GenericParam) !void {
+fn appendGenericParams(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), params: ?[]Declaration.GenericParam) !void {
     const gp = params orelse return;
     if (gp.len == 0) return;
+
     try appendSlice(allocator, output, "[");
     for (gp, 0..) |p, i| {
         if (i > 0) try appendSlice(allocator, output, ", ");
         try appendFmt(allocator, output, "{s}", .{p.name});
         if (p.constraints) |bounds| {
             try appendSlice(allocator, output, ": ");
-            for (bounds, 0..) |b, j| {
+            for (bounds, 0..) |bound, j| {
                 if (j > 0) try appendSlice(allocator, output, " + ");
-                try appendFmt(allocator, output, "{s}", .{b});
+                try appendFmt(allocator, output, "{s}", .{bound});
             }
         }
     }
@@ -295,6 +423,109 @@ fn appendTypeStr(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), typ:
     };
     defer allocator.free(type_str);
     try appendSlice(allocator, output, type_str);
+}
+
+fn duplicateModulePath(allocator: Allocator, program: *const Program) ![]u8 {
+    if (program.module_decl) |mod| {
+        return joinPath(allocator, mod.path);
+    }
+    if (program.source_path) |source_path| {
+        return allocator.dupe(u8, std.fs.path.stem(source_path));
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
+fn extractSummary(allocator: Allocator, docs: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, docs, " \t\r\n");
+    const summary_line = std.mem.sliceTo(trimmed, '\n');
+    return allocator.dupe(u8, std.mem.trim(u8, summary_line, " \t\r\n"));
+}
+
+fn anchorForName(allocator: Allocator, name: []const u8) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    for (name) |c| {
+        if (std.ascii.isAlphanumeric(c)) {
+            try output.append(allocator, std.ascii.toLower(c));
+        } else if (c == '-' or c == '_' or c == ' ') {
+            try output.append(allocator, '-');
+        }
+    }
+
+    if (output.items.len == 0) {
+        try output.appendSlice(allocator, "symbol");
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn hasSymbolsOfKind(symbols: []const SymbolDoc, kind: SymbolKind) bool {
+    for (symbols) |symbol| {
+        if (symbol.kind == kind) return true;
+    }
+    return false;
+}
+
+fn sortSymbols(symbols: []SymbolDoc) void {
+    std.mem.sort(SymbolDoc, symbols, {}, struct {
+        fn lessThan(_: void, lhs: SymbolDoc, rhs: SymbolDoc) bool {
+            const lhs_rank = symbolSortRank(lhs.kind);
+            const rhs_rank = symbolSortRank(rhs.kind);
+            if (lhs_rank != rhs_rank) return lhs_rank < rhs_rank;
+            return std.mem.lessThan(u8, lhs.name, rhs.name);
+        }
+    }.lessThan);
+}
+
+fn symbolSortRank(kind: SymbolKind) u8 {
+    return switch (kind) {
+        .type => 0,
+        .trait => 1,
+        .function => 2,
+        .value => 3,
+        .constant => 4,
+    };
+}
+
+fn appendJsonField(
+    allocator: Allocator,
+    output: *std.ArrayListUnmanaged(u8),
+    key: []const u8,
+    value: []const u8,
+    trailing_comma: bool,
+) !void {
+    try appendFmt(allocator, output, "    \"{s}\": ", .{key});
+    try appendJsonString(allocator, output, value);
+    if (trailing_comma) {
+        try appendSlice(allocator, output, ",\n");
+    } else {
+        try appendSlice(allocator, output, "\n");
+    }
+}
+
+fn appendJsonString(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    try appendSlice(allocator, output, "\"");
+    for (value) |c| {
+        switch (c) {
+            '\\' => try appendSlice(allocator, output, "\\\\"),
+            '"' => try appendSlice(allocator, output, "\\\""),
+            '\n' => try appendSlice(allocator, output, "\\n"),
+            '\r' => try appendSlice(allocator, output, "\\r"),
+            '\t' => try appendSlice(allocator, output, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    // Control characters: encode as \u00XX
+                    const hex = "0123456789abcdef";
+                    const escape = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
+                    try output.appendSlice(allocator, &escape);
+                } else {
+                    try output.append(allocator, c);
+                }
+            },
+        }
+    }
+    try appendSlice(allocator, output, "\"");
 }
 
 fn appendSlice(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
@@ -328,7 +559,8 @@ test "generateMarkdown empty program" {
     const md = try generateMarkdown(allocator, &program);
     defer allocator.free(md);
 
-    try std.testing.expect(std.mem.indexOf(u8, md, "# API Reference") != null);
+    try std.testing.expect(std.mem.indexOf(u8, md, "# Module `unknown`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, md, "_No public declarations found._") != null);
 }
 
 test "generateMarkdown with module doc" {
@@ -347,4 +579,218 @@ test "generateMarkdown with module doc" {
     defer allocator.free(md);
 
     try std.testing.expect(std.mem.indexOf(u8, md, "This is the module documentation.") != null);
+}
+
+test "project docs index and search include public symbols" {
+    const allocator = std.testing.allocator;
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const return_type = try allocator.create(Type);
+    defer allocator.destroy(return_type);
+    return_type.* = .{
+        .kind = .{ .primitive = .i64 },
+        .span = span,
+    };
+
+    const param_type = try allocator.create(Type);
+    defer allocator.destroy(param_type);
+    param_type.* = .{
+        .kind = .{ .primitive = .i64 },
+        .span = span,
+    };
+
+    const decls = try allocator.alloc(Declaration, 2);
+    defer allocator.free(decls);
+    var params = [_]Declaration.Parameter{
+        .{ .name = "x", .param_type = param_type, .span = span },
+    };
+
+    decls[0] = Declaration.initWithDoc(.{
+        .function_decl = .{
+            .name = "compute",
+            .generic_params = null,
+            .parameters = &params,
+            .return_type = return_type,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = true,
+            .body = null,
+            .where_clause = null,
+        },
+    }, span, "Compute a result.");
+
+    decls[1] = Declaration.init(.{
+        .function_decl = .{
+            .name = "privateHelper",
+            .generic_params = null,
+            .parameters = &.{},
+            .return_type = return_type,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    }, span);
+
+    var path = [_][]const u8{ "demo", "core" };
+    var program = Program{
+        .module_decl = .{ .path = &path },
+        .imports = &.{},
+        .declarations = decls,
+        .module_doc = "Demo module.\nMore details.",
+        .source_path = "src/demo/core.ki",
+        .arena = null,
+    };
+
+    var modules = try allocator.alloc(ModuleDoc, 1);
+    modules[0] = try collectModuleDocs(allocator, &program);
+    const package_name = try allocator.dupe(u8, "demo");
+    var project_docs = ProjectDocs{
+        .package_name = package_name,
+        .modules = modules,
+    };
+    defer project_docs.deinit(allocator);
+
+    const index_md = try renderProjectIndexMarkdown(allocator, project_docs);
+    defer allocator.free(index_md);
+    const search_json = try generateSearchIndexJson(allocator, project_docs);
+    defer allocator.free(search_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, index_md, "[`demo.core`](demo_core.md)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, search_json, "\"symbol_name\": \"compute\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, search_json, "privateHelper") == null);
+}
+
+test "modulePageFileName converts dots and slashes" {
+    const allocator = std.testing.allocator;
+
+    const case1 = try modulePageFileName(allocator, "foo.bar");
+    defer allocator.free(case1);
+    try std.testing.expectEqualStrings("foo_bar.md", case1);
+
+    const case2 = try modulePageFileName(allocator, "a/b\\c d");
+    defer allocator.free(case2);
+    try std.testing.expectEqualStrings("a_b_c_d.md", case2);
+
+    const case3 = try modulePageFileName(allocator, "simple");
+    defer allocator.free(case3);
+    try std.testing.expectEqualStrings("simple.md", case3);
+
+    const case4 = try modulePageFileName(allocator, "");
+    defer allocator.free(case4);
+    try std.testing.expectEqualStrings(".md", case4);
+}
+
+test "anchorForName handles special characters and empty input" {
+    const allocator = std.testing.allocator;
+
+    const case1 = try anchorForName(allocator, "hello_world");
+    defer allocator.free(case1);
+    try std.testing.expectEqualStrings("hello-world", case1);
+
+    const case2 = try anchorForName(allocator, "MyType");
+    defer allocator.free(case2);
+    try std.testing.expectEqualStrings("mytype", case2);
+
+    const case3 = try anchorForName(allocator, "foo bar");
+    defer allocator.free(case3);
+    try std.testing.expectEqualStrings("foo-bar", case3);
+
+    const case4 = try anchorForName(allocator, "");
+    defer allocator.free(case4);
+    try std.testing.expectEqualStrings("symbol", case4);
+
+    const case5 = try anchorForName(allocator, "!!!@@@");
+    defer allocator.free(case5);
+    try std.testing.expectEqualStrings("symbol", case5);
+}
+
+test "extractSummary returns first line" {
+    const allocator = std.testing.allocator;
+
+    const case1 = try extractSummary(allocator, "First line.\nSecond line.");
+    defer allocator.free(case1);
+    try std.testing.expectEqualStrings("First line.", case1);
+
+    const case2 = try extractSummary(allocator, "  Only line  ");
+    defer allocator.free(case2);
+    try std.testing.expectEqualStrings("Only line", case2);
+
+    const case3 = try extractSummary(allocator, "   \n   ");
+    defer allocator.free(case3);
+    try std.testing.expectEqualStrings("", case3);
+}
+
+test "sum type variant payloads rendered in signature" {
+    const allocator = std.testing.allocator;
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const tuple_type = try allocator.create(Type);
+    defer allocator.destroy(tuple_type);
+    tuple_type.* = .{
+        .kind = .{ .primitive = .f64 },
+        .span = span,
+    };
+
+    var tuple_fields = [_]*Type{tuple_type};
+    var variants = [_]Declaration.Variant{
+        .{ .name = "None", .fields = null, .span = span },
+        .{ .name = "Circle", .fields = .{ .tuple_fields = &tuple_fields }, .span = span },
+    };
+
+    const decls = try allocator.alloc(Declaration, 1);
+    defer allocator.free(decls);
+    decls[0] = Declaration.initWithDoc(.{
+        .type_decl = .{
+            .name = "Shape",
+            .generic_params = null,
+            .is_public = true,
+            .definition = .{
+                .sum_type = .{ .variants = &variants },
+            },
+        },
+    }, span, "A shape type.");
+
+    var program = Program{
+        .module_decl = null,
+        .imports = &.{},
+        .declarations = decls,
+        .module_doc = null,
+        .source_path = null,
+        .arena = null,
+    };
+
+    const md = try generateMarkdown(allocator, &program);
+    defer allocator.free(md);
+
+    // Variant with payload should include the type
+    try std.testing.expect(std.mem.indexOf(u8, md, "| Circle(f64)") != null);
+    // Variant without payload should be plain
+    try std.testing.expect(std.mem.indexOf(u8, md, "| None ") != null or std.mem.indexOf(u8, md, "| None|") != null);
+}
+
+test "renderModuleMarkdown includes source path" {
+    const allocator = std.testing.allocator;
+
+    const module_doc = ModuleDoc{
+        .module_path = try allocator.dupe(u8, "test.mod"),
+        .source_path = try allocator.dupe(u8, "src/test/mod.ki"),
+        .summary = null,
+        .docs = null,
+        .symbols = try allocator.alloc(SymbolDoc, 0),
+    };
+    var md = module_doc;
+    defer md.deinit(allocator);
+
+    const result = try renderModuleMarkdown(allocator, md);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "_Source: `src/test/mod.ki`_") != null);
 }

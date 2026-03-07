@@ -109,7 +109,10 @@ pub const Lowerer = struct {
             .const_decl => |*cd| try self.lowerConstDecl(cd),
             .type_decl => |*td| try self.lowerTypeDecl(td),
             .let_decl => |*ld| try self.lowerLetDecl(ld),
+            // Note: test and bench IR functions are emitted unconditionally.
+            // A future build-mode flag could strip them from production output.
             .test_decl => |*td| try self.lowerTestDecl(td),
+            .bench_decl => |*bd| try self.lowerBenchDecl(bd),
             // Traits, impls, modules, imports are compile-time only — nothing to emit
             .trait_decl, .impl_block, .module_decl, .import_decl => {},
         }
@@ -122,6 +125,7 @@ pub const Lowerer = struct {
         var func = Function.init(alloc);
         func.name = fd.name;
         func.is_effect = fd.is_effect;
+        func.is_memoized = fd.is_memoized;
 
         // Add to module first; all subsequent mutations go through the stored copy
         // via currentFunc(), which is safe even if the functions list reallocates.
@@ -243,6 +247,36 @@ pub const Lowerer = struct {
         self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         try self.lowerStatements(td.body);
+
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
+            const void_ref = try self.emit(.{ .const_void = {} });
+            self.setTerminator(.{ .ret = void_ref });
+        }
+
+        self.popScope();
+        self.current_func_idx = null;
+    }
+
+    fn lowerBenchDecl(self: *Lowerer, bd: *const Declaration.BenchDecl) LowerError!void {
+        const alloc = self.irAlloc();
+
+        // Lower bench blocks as functions named "bench:<name>"
+        var func = Function.init(alloc);
+        var name_buf = std.ArrayListUnmanaged(u8){};
+        name_buf.appendSlice(alloc, "bench:") catch return LowerError.OutOfMemory;
+        name_buf.appendSlice(alloc, bd.name) catch return LowerError.OutOfMemory;
+        func.name = name_buf.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        func.is_effect = true;
+
+        const func_idx = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        self.current_func_idx = func_idx;
+        errdefer self.current_func_idx = null;
+
+        try self.pushScope();
+        errdefer self.popScope();
+        self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+
+        try self.lowerStatements(bd.body);
 
         if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             const void_ref = try self.emit(.{ .const_void = {} });

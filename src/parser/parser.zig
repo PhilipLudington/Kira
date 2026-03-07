@@ -156,6 +156,13 @@ pub const Parser = struct {
 
         const kind: Declaration.DeclarationKind = if (self.check(.fn_keyword)) blk: {
             break :blk .{ .function_decl = try self.parseFunctionDecl(is_public) };
+        } else if (self.match(.memo)) blk: {
+            // memo fn name(...)
+            if (self.check(.effect)) {
+                return self.reportError("'memo' and 'effect' cannot be combined; memoized functions must be pure", null);
+            }
+            try self.consume(.fn_keyword, "expected 'fn' after 'memo'");
+            break :blk .{ .function_decl = try self.parseMemoFunctionDecl(is_public) };
         } else if (self.match(.effect)) blk: {
             // effect fn name(...)
             try self.consume(.fn_keyword, "expected 'fn' after 'effect'");
@@ -175,6 +182,11 @@ pub const Parser = struct {
                 return self.reportError("test declarations cannot be public", null);
             }
             break :blk .{ .test_decl = try self.parseTestDecl() };
+        } else if (self.check(.bench_keyword)) blk: {
+            if (is_public) {
+                return self.reportError("bench declarations cannot be public", null);
+            }
+            break :blk .{ .bench_decl = try self.parseBenchDecl() };
         } else if (self.check(.identifier) and std.mem.eql(u8, self.peek().lexeme, "use")) {
             // Provide helpful error for users coming from Rust/other languages
             return self.reportError("'use' is not supported in Kira; use 'import' instead", null);
@@ -273,14 +285,18 @@ pub const Parser = struct {
 
     fn parseFunctionDecl(self: *Parser, is_public: bool) ParseError!Declaration.FunctionDecl {
         _ = self.advance(); // consume 'fn'
-        return self.parseFunctionDeclBody(is_public, false);
+        return self.parseFunctionDeclBody(is_public, false, false);
     }
 
     fn parseEffectFunctionDecl(self: *Parser, is_public: bool) ParseError!Declaration.FunctionDecl {
-        return self.parseFunctionDeclBody(is_public, true);
+        return self.parseFunctionDeclBody(is_public, true, false);
     }
 
-    fn parseFunctionDeclBody(self: *Parser, is_public: bool, is_effect: bool) ParseError!Declaration.FunctionDecl {
+    fn parseMemoFunctionDecl(self: *Parser, is_public: bool) ParseError!Declaration.FunctionDecl {
+        return self.parseFunctionDeclBody(is_public, false, true);
+    }
+
+    fn parseFunctionDeclBody(self: *Parser, is_public: bool, is_effect: bool, is_memoized: bool) ParseError!Declaration.FunctionDecl {
         const name = try self.consumeIdentifier("expected function name");
 
         // Parse optional generic parameters
@@ -310,6 +326,7 @@ pub const Parser = struct {
             .parameters = parameters,
             .return_type = return_type,
             .is_effect = is_effect,
+            .is_memoized = is_memoized,
             .is_public = is_public,
             .body = body,
             .where_clause = where_clause,
@@ -671,13 +688,14 @@ pub const Parser = struct {
             // Parse pub modifier if present
             const method_public = self.match(.pub_keyword);
 
+            const is_memo = self.match(.memo);
             const is_effect = self.match(.effect);
+            if (is_memo and is_effect) {
+                return self.reportError("'memo' and 'effect' cannot be combined; memoized functions must be pure", null);
+            }
             try self.consume(.fn_keyword, "expected 'fn' for impl method");
 
-            const method = if (is_effect)
-                try self.parseFunctionDeclBody(method_public, true)
-            else
-                try self.parseFunctionDeclBody(method_public, false);
+            const method = try self.parseFunctionDeclBody(method_public, is_effect, is_memo);
 
             try methods.append(self.allocator, method);
             self.skipNewlines();
@@ -748,6 +766,26 @@ pub const Parser = struct {
         const body = try self.parseBlock();
 
         return Declaration.TestDecl{
+            .name = name,
+            .body = body,
+        };
+    }
+
+    fn parseBenchDecl(self: *Parser) ParseError!Declaration.BenchDecl {
+        _ = self.advance(); // consume 'bench'
+
+        // Expect a string literal for the benchmark name
+        if (!self.check(.string_literal)) {
+            return self.reportError("expected bench name as string literal", null);
+        }
+        const name_token = self.advance();
+        std.debug.assert(name_token.lexeme.len >= 2); // At minimum opening + closing quote
+        const name = name_token.lexeme[1 .. name_token.lexeme.len - 1]; // Strip quotes
+
+        self.skipNewlines();
+        const body = try self.parseBlock();
+
+        return Declaration.BenchDecl{
             .name = name,
             .body = body,
         };

@@ -181,6 +181,7 @@ pub const Formatter = struct {
             .const_decl => |cd| try self.formatConstDecl(cd),
             .let_decl => |ld| try self.formatLetDecl(ld),
             .test_decl => |td| try self.formatTestDecl(td),
+            .bench_decl => |bd| try self.formatBenchDecl(bd),
         }
     }
 
@@ -416,6 +417,18 @@ pub const Formatter = struct {
         try self.write("\" {\n");
         self.indent();
         try self.formatStatements(td.body);
+        self.dedent();
+        try self.writeIndent();
+        try self.writeByte('}');
+    }
+
+    fn formatBenchDecl(self: *Formatter, bd: Declaration.BenchDecl) anyerror!void {
+        try self.writeIndent();
+        try self.write("bench \"");
+        try self.write(bd.name);
+        try self.write("\" {\n");
+        self.indent();
+        try self.formatStatements(bd.body);
         self.dedent();
         try self.writeIndent();
         try self.writeByte('}');

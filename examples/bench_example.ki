@@ -1,0 +1,28 @@
+// Example benchmark file
+// Run with: kira bench examples/bench_example.ki
+
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+bench "fibonacci 10" {
+    fibonacci(10)
+}
+
+bench "fibonacci 20" {
+    fibonacci(20)
+}
+
+bench "factorial 12" {
+    factorial(12)
+}

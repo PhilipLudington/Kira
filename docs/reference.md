@@ -877,6 +877,38 @@ effect fn benchmark(f: fn() -> void) -> i64 {
 }
 ```
 
+### Memoized Functions
+
+The `memo` keyword enables automatic memoization for pure functions. Repeated calls with identical arguments return cached results instead of re-executing the function body.
+
+```kira
+memo fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+```
+
+#### Eligibility Rules
+
+A function can be declared `memo` if:
+- It is **pure** (not an `effect` function)
+- It is **not generic** (no type parameters)
+- Its arguments are cacheable types: primitives (`i32`, `f64`, `string`, `char`, `bool`), tuples, records, enums/variants, and `Option`/`Result` types
+
+#### Restrictions
+
+- `memo effect fn` is a compile error — memoized functions must be pure
+- `memo fn name[T]` is a compile error — generic functions cannot be memoized
+- The cache is unbounded and lives for the duration of the program
+
+#### When to Use
+
+Memoization is most useful for:
+- Recursive functions with overlapping subproblems (e.g., Fibonacci, dynamic programming)
+- Expensive pure computations called repeatedly with the same inputs
+
 ---
 
 ## Operators

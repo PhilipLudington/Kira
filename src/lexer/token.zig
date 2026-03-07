@@ -33,6 +33,7 @@ pub const TokenType = enum {
     import,
     pub_keyword,
     effect,
+    memo,
     trait,
     impl,
     const_keyword,
@@ -66,6 +67,7 @@ pub const TokenType = enum {
     // Special keywords
     where,
     test_keyword,
+    bench_keyword,
 
     // Arithmetic operators
     plus, // +
@@ -135,6 +137,7 @@ pub const TokenType = enum {
             .import,
             .pub_keyword,
             .effect,
+            .memo,
             .trait,
             .impl,
             .const_keyword,
@@ -160,6 +163,7 @@ pub const TokenType = enum {
             .as_keyword,
             .where,
             .test_keyword,
+            .bench_keyword,
             => true,
             else => false,
         };
@@ -204,6 +208,7 @@ pub const TokenType = enum {
             .import => "import",
             .pub_keyword => "pub",
             .effect => "effect",
+            .memo => "memo",
             .trait => "trait",
             .impl => "impl",
             .const_keyword => "const",
@@ -229,6 +234,7 @@ pub const TokenType = enum {
             .as_keyword => "as",
             .where => "where",
             .test_keyword => "test",
+            .bench_keyword => "bench",
             .plus => "+",
             .minus => "-",
             .star => "*",
@@ -303,6 +309,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "import", .import },
     .{ "pub", .pub_keyword },
     .{ "effect", .effect },
+    .{ "memo", .memo },
     .{ "trait", .trait },
     .{ "impl", .impl },
     .{ "const", .const_keyword },
@@ -328,6 +335,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "as", .as_keyword },
     .{ "where", .where },
     .{ "test", .test_keyword },
+    .{ "bench", .bench_keyword },
 });
 
 test "keyword lookup" {
@@ -336,12 +344,16 @@ test "keyword lookup" {
     try std.testing.expectEqual(TokenType.shadow_keyword, keywords.get("shadow").?);
     try std.testing.expectEqual(TokenType.self_type, keywords.get("Self").?);
     try std.testing.expectEqual(TokenType.test_keyword, keywords.get("test").?);
+    try std.testing.expectEqual(TokenType.bench_keyword, keywords.get("bench").?);
+    try std.testing.expectEqual(TokenType.memo, keywords.get("memo").?);
     try std.testing.expect(keywords.get("notakeyword") == null);
 }
 
 test "token type properties" {
     try std.testing.expect(TokenType.fn_keyword.isKeyword());
+    try std.testing.expect(TokenType.memo.isKeyword());
     try std.testing.expect(TokenType.test_keyword.isKeyword());
+    try std.testing.expect(TokenType.bench_keyword.isKeyword());
     try std.testing.expect(TokenType.plus.isOperator());
     try std.testing.expect(!TokenType.identifier.isKeyword());
     try std.testing.expect(!TokenType.identifier.isOperator());
