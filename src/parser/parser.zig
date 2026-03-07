@@ -175,6 +175,11 @@ pub const Parser = struct {
                 return self.reportError("test declarations cannot be public", null);
             }
             break :blk .{ .test_decl = try self.parseTestDecl() };
+        } else if (self.check(.bench_keyword)) blk: {
+            if (is_public) {
+                return self.reportError("bench declarations cannot be public", null);
+            }
+            break :blk .{ .bench_decl = try self.parseBenchDecl() };
         } else if (self.check(.identifier) and std.mem.eql(u8, self.peek().lexeme, "use")) {
             // Provide helpful error for users coming from Rust/other languages
             return self.reportError("'use' is not supported in Kira; use 'import' instead", null);
@@ -748,6 +753,26 @@ pub const Parser = struct {
         const body = try self.parseBlock();
 
         return Declaration.TestDecl{
+            .name = name,
+            .body = body,
+        };
+    }
+
+    fn parseBenchDecl(self: *Parser) ParseError!Declaration.BenchDecl {
+        _ = self.advance(); // consume 'bench'
+
+        // Expect a string literal for the benchmark name
+        if (!self.check(.string_literal)) {
+            return self.reportError("expected bench name as string literal", null);
+        }
+        const name_token = self.advance();
+        std.debug.assert(name_token.lexeme.len >= 2); // At minimum opening + closing quote
+        const name = name_token.lexeme[1 .. name_token.lexeme.len - 1]; // Strip quotes
+
+        self.skipNewlines();
+        const body = try self.parseBlock();
+
+        return Declaration.BenchDecl{
             .name = name,
             .body = body,
         };

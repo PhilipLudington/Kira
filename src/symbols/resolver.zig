@@ -221,6 +221,9 @@ pub const Resolver = struct {
                 // Tests don't introduce new symbols, they're just executed later
                 // The test body will be resolved when the test is run
             },
+            .bench_decl => {
+                // Benchmarks don't introduce new symbols, they're executed by `kira bench`
+            },
         }
     }
 

@@ -3,7 +3,7 @@
 ## Overview
 Productization and performance improvements for Kira. Closes the remaining roadmap gaps after Phase 4: searchable API docs, benchmark harness, test coverage reporting, and pure-function memoization. Scoped to this repository only.
 
-Current status: Phase 0 complete. Phase 1 next.
+Current status: Phase 1 complete. Phase 2 next.
 
 ## Phase 0: Searchable API Docs ✅
 **Status:** Complete (2026-03-06)
@@ -37,7 +37,8 @@ Current status: Phase 0 complete. Phase 1 next.
 
 ---
 
-## Phase 1: Benchmark Harness
+## Phase 1: Benchmark Harness ✅
+**Status:** Complete (2026-03-06)
 
 **Goal:** Add `kira bench` CLI command with package-oriented benchmark discovery and execution.
 **Estimated Effort:** 3-5 days
@@ -49,15 +50,15 @@ Current status: Phase 0 complete. Phase 1 next.
 - Machine-readable JSON output option
 
 ### Tasks
-- [ ] Add `kira bench` command to CLI
-- [ ] Implement benchmark file discovery under `bench/`
-- [ ] Support annotated benchmark declarations within package modules
-- [ ] Implement warmup and repeated sampling
-- [ ] Emit standard benchmark output (iterations, total/mean time, min/max)
-- [ ] Add JSON output mode for CI ingestion
-- [ ] Prevent benchmark bodies from being optimized away
-- [ ] Add CLI help text for `kira bench`
-- [ ] Add benchmark examples under `examples/`
+- [x] Add `kira bench` command to CLI
+- [x] Implement benchmark file discovery under `bench/`
+- [x] Support annotated benchmark declarations within package modules
+- [x] Implement warmup and repeated sampling
+- [x] Emit standard benchmark output (iterations, total/mean time, min/max)
+- [x] Add JSON output mode for CI ingestion
+- [x] Prevent benchmark bodies from being optimized away
+- [x] Add CLI help text for `kira bench`
+- [x] Add benchmark examples under `examples/`
 
 ### Testing Strategy
 - Benchmark discovery across a simple package works correctly.

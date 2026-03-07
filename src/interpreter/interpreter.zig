@@ -668,6 +668,10 @@ pub const Interpreter = struct {
                 // Tests are skipped during normal execution
                 // They are collected and run separately in test mode
             },
+            .bench_decl => {
+                // Benchmarks are skipped during normal execution
+                // They are collected and run separately in bench mode
+            },
         }
     }
 

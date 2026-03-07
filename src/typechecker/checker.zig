@@ -3069,6 +3069,21 @@ pub const TypeChecker = struct {
                 try self.scopeLeave();
                 std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
             },
+            .bench_decl => |b| {
+                // Type check the bench body - benchmarks are implicitly effect functions
+                const saved_in_effect = self.in_effect_function;
+                self.in_effect_function = true;
+                defer self.in_effect_function = saved_in_effect;
+
+                const entry_scope_id = self.symbol_table.current_scope_id;
+                _ = try self.symbol_table.enterScope(.function);
+                errdefer self.scopeCleanup();
+                for (b.body) |*stmt| {
+                    _ = try self.checkStatement(stmt);
+                }
+                try self.scopeLeave();
+                std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);
+            },
         }
     }
 
