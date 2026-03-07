@@ -513,7 +513,16 @@ fn appendJsonString(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), v
             '\n' => try appendSlice(allocator, output, "\\n"),
             '\r' => try appendSlice(allocator, output, "\\r"),
             '\t' => try appendSlice(allocator, output, "\\t"),
-            else => try output.append(allocator, c),
+            else => {
+                if (c < 0x20) {
+                    // Control characters: encode as \u00XX
+                    const hex = "0123456789abcdef";
+                    const escape = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
+                    try output.appendSlice(allocator, &escape);
+                } else {
+                    try output.append(allocator, c);
+                }
+            },
         }
     }
     try appendSlice(allocator, output, "\"");

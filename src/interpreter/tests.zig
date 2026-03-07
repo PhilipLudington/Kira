@@ -1451,7 +1451,7 @@ test "interpreter: memo fn caches repeated calls" {
     // Verify the cache contains exactly 1 entry for "double"
     const func_cache = r.interp.memo_cache.entries.getPtr("double");
     try testing.expect(func_cache != null);
-    try testing.expectEqual(@as(usize, 1), func_cache.?.items.items.len);
+    try testing.expectEqual(@as(usize, 1), func_cache.?.count);
 }
 
 test "interpreter: memo fn with different args creates separate entries" {
@@ -1478,7 +1478,7 @@ test "interpreter: memo fn with different args creates separate entries" {
     // Cache has 2 entries: one for square(3), one for square(4)
     const func_cache = r.interp.memo_cache.entries.getPtr("square");
     try testing.expect(func_cache != null);
-    try testing.expectEqual(@as(usize, 2), func_cache.?.items.items.len);
+    try testing.expectEqual(@as(usize, 2), func_cache.?.count);
 }
 
 test "interpreter: memo fn recursive fibonacci correct" {
@@ -1506,7 +1506,7 @@ test "interpreter: memo fn recursive fibonacci correct" {
     try testing.expect(func_cache != null);
     // fib(0)..fib(15) but fib(0) might be reached via the trampoline lookup
     // instead of callFunction in some cases; verify at least 14 entries cached
-    try testing.expect(func_cache.?.items.items.len >= 14);
+    try testing.expect(func_cache.?.count >= 14);
 }
 
 test "interpreter: memo fn zero arguments" {
@@ -1531,7 +1531,7 @@ test "interpreter: memo fn zero arguments" {
     // Cache has exactly 1 entry for the zero-arg call
     const func_cache = r.interp.memo_cache.entries.getPtr("constant");
     try testing.expect(func_cache != null);
-    try testing.expectEqual(@as(usize, 1), func_cache.?.items.items.len);
+    try testing.expectEqual(@as(usize, 1), func_cache.?.count);
 }
 
 test "interpreter: memo fn with string arguments" {
@@ -1556,7 +1556,7 @@ test "interpreter: memo fn with string arguments" {
     // Should be cached
     const func_cache = r.interp.memo_cache.entries.getPtr("greet");
     try testing.expect(func_cache != null);
-    try testing.expectEqual(@as(usize, 1), func_cache.?.items.items.len);
+    try testing.expectEqual(@as(usize, 1), func_cache.?.count);
 }
 
 test "interpreter: non-memo fn does not cache" {

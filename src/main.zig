@@ -1789,39 +1789,59 @@ fn formatNanos(buf: *[32]u8, ns: u64) []const u8 {
     }
 }
 
-/// Escape a string for safe embedding in JSON. Handles " and \ characters.
+/// Escape a string for safe embedding in JSON. Handles special characters
+/// including quotes, backslashes, control characters, and \r.
 fn escapeJsonString(input: []const u8, buf: *[512]u8) []const u8 {
     var pos: usize = 0;
     for (input) |c| {
-        if (pos + 2 > buf.len) break; // Truncate if too long
         switch (c) {
             '"' => {
+                if (pos + 2 > buf.len) break;
                 buf[pos] = '\\';
-                pos += 1;
-                buf[pos] = '"';
-                pos += 1;
+                buf[pos + 1] = '"';
+                pos += 2;
             },
             '\\' => {
+                if (pos + 2 > buf.len) break;
                 buf[pos] = '\\';
-                pos += 1;
-                buf[pos] = '\\';
-                pos += 1;
+                buf[pos + 1] = '\\';
+                pos += 2;
             },
             '\n' => {
+                if (pos + 2 > buf.len) break;
                 buf[pos] = '\\';
-                pos += 1;
-                buf[pos] = 'n';
-                pos += 1;
+                buf[pos + 1] = 'n';
+                pos += 2;
+            },
+            '\r' => {
+                if (pos + 2 > buf.len) break;
+                buf[pos] = '\\';
+                buf[pos + 1] = 'r';
+                pos += 2;
             },
             '\t' => {
+                if (pos + 2 > buf.len) break;
                 buf[pos] = '\\';
-                pos += 1;
-                buf[pos] = 't';
-                pos += 1;
+                buf[pos + 1] = 't';
+                pos += 2;
             },
             else => {
-                buf[pos] = c;
-                pos += 1;
+                if (c < 0x20) {
+                    // Control characters: encode as \u00XX (6 bytes)
+                    if (pos + 6 > buf.len) break;
+                    const hex = "0123456789abcdef";
+                    buf[pos] = '\\';
+                    buf[pos + 1] = 'u';
+                    buf[pos + 2] = '0';
+                    buf[pos + 3] = '0';
+                    buf[pos + 4] = hex[c >> 4];
+                    buf[pos + 5] = hex[c & 0x0f];
+                    pos += 6;
+                } else {
+                    if (pos + 1 > buf.len) break;
+                    buf[pos] = c;
+                    pos += 1;
+                }
             },
         }
     }

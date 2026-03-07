@@ -83,7 +83,8 @@ pub const Interpreter = struct {
     memo_cache: MemoCache = .{},
 
     /// Memoization cache type. Maps function name to a per-function cache.
-    /// Each per-function cache is a list of (args, result) entries checked by equality.
+    /// Each per-function cache uses a HashMap keyed on argument hash for O(1)
+    /// lookup, with equality checking to handle hash collisions.
     /// Bounded to max_entries_per_function to prevent unbounded memory growth.
     pub const MemoCache = struct {
         /// Maps function name to entries for that function
@@ -99,13 +100,30 @@ pub const Interpreter = struct {
             result: Value,
         };
 
+        /// Per-function cache using argument hash for O(1) lookup.
+        /// Collisions are handled by storing a list of entries per hash bucket.
         pub const FunctionCache = struct {
-            items: std.ArrayListUnmanaged(CacheEntry) = .{},
+            buckets: std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(CacheEntry)) = .{},
+            count: usize = 0,
         };
+
+        /// Hash a slice of argument values into a single u64 key.
+        fn hashArgs(args: []const Value) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            // Mix in arg count to distinguish e.g. (1,) from (1, <default>)
+            const len = args.len;
+            hasher.update(std.mem.asBytes(&len));
+            for (args) |arg| {
+                arg.hashInto(&hasher);
+            }
+            return hasher.final();
+        }
 
         pub fn lookup(self: *MemoCache, func_name: []const u8, args: []const Value) ?Value {
             const func_cache = self.entries.getPtr(func_name) orelse return null;
-            for (func_cache.items.items) |entry| {
+            const key = hashArgs(args);
+            const bucket = func_cache.buckets.getPtr(key) orelse return null;
+            for (bucket.items) |entry| {
                 if (entry.args.len != args.len) continue;
                 var match = true;
                 for (entry.args, args) |cached, actual| {
@@ -125,15 +143,21 @@ pub const Interpreter = struct {
                 func_cache.value_ptr.* = .{};
             }
             // Enforce per-function cache size limit
-            if (func_cache.value_ptr.items.items.len >= max_entries_per_function) return;
+            if (func_cache.value_ptr.count >= max_entries_per_function) return;
             // Copy args for cache storage (shallow copy is safe: all pointed-to data
             // is arena-allocated and lives for the interpreter's lifetime)
             const cached_args = allocator.alloc(Value, args.len) catch return;
             @memcpy(cached_args, args);
-            func_cache.value_ptr.items.append(allocator, .{
+            const key = hashArgs(args);
+            const bucket = func_cache.value_ptr.buckets.getOrPut(allocator, key) catch return;
+            if (!bucket.found_existing) {
+                bucket.value_ptr.* = .{};
+            }
+            bucket.value_ptr.append(allocator, .{
                 .args = cached_args,
                 .result = result,
             }) catch return;
+            func_cache.value_ptr.count += 1;
         }
     };
 

@@ -239,43 +239,58 @@ pub const CoverageTracker = struct {
         }) catch return;
         try file.writeAll(summary);
 
+        // Collect and sort covered/uncovered lines for deterministic output
+        var covered = std.ArrayListUnmanaged(u32){};
+        defer covered.deinit(self.allocator);
+        var uncovered = std.ArrayListUnmanaged(u32){};
+        defer uncovered.deinit(self.allocator);
+
+        var cl_iter = self.coverable_lines.iterator();
+        while (cl_iter.next()) |entry| {
+            if (self.line_hits.contains(entry.key_ptr.*)) {
+                try covered.append(self.allocator, entry.key_ptr.*);
+            } else {
+                try uncovered.append(self.allocator, entry.key_ptr.*);
+            }
+        }
+
+        std.mem.sort(u32, covered.items, {}, std.sort.asc(u32));
+        std.mem.sort(u32, uncovered.items, {}, std.sort.asc(u32));
+
         // Covered lines array
         try file.writeAll("\"covered\":[");
-        var first = true;
-        var covered_iter = self.coverable_lines.iterator();
-        while (covered_iter.next()) |entry| {
-            if (self.line_hits.contains(entry.key_ptr.*)) {
-                if (!first) try file.writeAll(",");
-                const line_str = std.fmt.bufPrint(&buf, "{d}", .{entry.key_ptr.*}) catch continue;
-                try file.writeAll(line_str);
-                first = false;
-            }
+        for (covered.items, 0..) |line, i| {
+            if (i > 0) try file.writeAll(",");
+            const line_str = std.fmt.bufPrint(&buf, "{d}", .{line}) catch continue;
+            try file.writeAll(line_str);
         }
         try file.writeAll("],");
 
         // Uncovered lines array
         try file.writeAll("\"uncovered\":[");
-        first = true;
-        var uncov_iter = self.coverable_lines.iterator();
-        while (uncov_iter.next()) |entry| {
-            if (!self.line_hits.contains(entry.key_ptr.*)) {
-                if (!first) try file.writeAll(",");
-                const line_str = std.fmt.bufPrint(&buf, "{d}", .{entry.key_ptr.*}) catch continue;
-                try file.writeAll(line_str);
-                first = false;
-            }
+        for (uncovered.items, 0..) |line, i| {
+            if (i > 0) try file.writeAll(",");
+            const line_str = std.fmt.bufPrint(&buf, "{d}", .{line}) catch continue;
+            try file.writeAll(line_str);
         }
         try file.writeAll("],");
 
-        // Per-line hit counts
-        try file.writeAll("\"hits\":{");
-        first = true;
+        // Collect and sort hit line numbers for deterministic output
+        var hit_lines = std.ArrayListUnmanaged(u32){};
+        defer hit_lines.deinit(self.allocator);
         var hits_iter = self.line_hits.iterator();
         while (hits_iter.next()) |entry| {
-            if (!first) try file.writeAll(",");
-            const hit_str = std.fmt.bufPrint(&buf, "\"{d}\":{d}", .{ entry.key_ptr.*, entry.value_ptr.* }) catch continue;
+            try hit_lines.append(self.allocator, entry.key_ptr.*);
+        }
+        std.mem.sort(u32, hit_lines.items, {}, std.sort.asc(u32));
+
+        // Per-line hit counts
+        try file.writeAll("\"hits\":{");
+        for (hit_lines.items, 0..) |line, i| {
+            if (i > 0) try file.writeAll(",");
+            const count = self.line_hits.get(line) orelse continue;
+            const hit_str = std.fmt.bufPrint(&buf, "\"{d}\":{d}", .{ line, count }) catch continue;
             try file.writeAll(hit_str);
-            first = false;
         }
         try file.writeAll("}}\n");
     }
