@@ -15,10 +15,20 @@ const ir = @import("../ir/ir.zig");
 
 /// Map a Kira IR type to a C type string for header generation.
 pub fn kiraToCType(kira_type: []const u8) []const u8 {
+    if (std.mem.eql(u8, kira_type, "i8")) return "int8_t";
+    if (std.mem.eql(u8, kira_type, "i16")) return "int16_t";
     if (std.mem.eql(u8, kira_type, "i32") or std.mem.eql(u8, kira_type, "int")) return "int32_t";
     if (std.mem.eql(u8, kira_type, "i64")) return "int64_t";
+    if (std.mem.eql(u8, kira_type, "i128")) return "__int128";
+    if (std.mem.eql(u8, kira_type, "u8")) return "uint8_t";
+    if (std.mem.eql(u8, kira_type, "u16")) return "uint16_t";
+    if (std.mem.eql(u8, kira_type, "u32")) return "uint32_t";
+    if (std.mem.eql(u8, kira_type, "u64")) return "uint64_t";
+    if (std.mem.eql(u8, kira_type, "u128")) return "unsigned __int128";
+    if (std.mem.eql(u8, kira_type, "f32")) return "float";
     if (std.mem.eql(u8, kira_type, "f64") or std.mem.eql(u8, kira_type, "float")) return "double";
     if (std.mem.eql(u8, kira_type, "bool")) return "bool";
+    if (std.mem.eql(u8, kira_type, "char")) return "uint32_t";
     if (std.mem.eql(u8, kira_type, "string")) return "const char*";
     if (std.mem.eql(u8, kira_type, "void")) return "void";
     return "int64_t"; // Default for unknown types
@@ -26,10 +36,20 @@ pub fn kiraToCType(kira_type: []const u8) []const u8 {
 
 /// Map a Kira type name to the corresponding Klar FFI type.
 pub fn kiraToKlarType(kira_type: []const u8) []const u8 {
+    if (std.mem.eql(u8, kira_type, "i8")) return "i8";
+    if (std.mem.eql(u8, kira_type, "i16")) return "i16";
     if (std.mem.eql(u8, kira_type, "i32")) return "i32";
     if (std.mem.eql(u8, kira_type, "i64")) return "i64";
+    if (std.mem.eql(u8, kira_type, "i128")) return "i128";
+    if (std.mem.eql(u8, kira_type, "u8")) return "u8";
+    if (std.mem.eql(u8, kira_type, "u16")) return "u16";
+    if (std.mem.eql(u8, kira_type, "u32")) return "u32";
+    if (std.mem.eql(u8, kira_type, "u64")) return "u64";
+    if (std.mem.eql(u8, kira_type, "u128")) return "u128";
+    if (std.mem.eql(u8, kira_type, "f32")) return "f32";
     if (std.mem.eql(u8, kira_type, "f64")) return "f64";
     if (std.mem.eql(u8, kira_type, "bool")) return "Bool";
+    if (std.mem.eql(u8, kira_type, "char")) return "Char";
     if (std.mem.eql(u8, kira_type, "string")) return "CStr";
     if (std.mem.eql(u8, kira_type, "void")) return "Void";
     return "i64";
@@ -71,8 +91,8 @@ pub fn generateHeader(allocator: Allocator, module: *const ir.Module, module_nam
         const name = func.name orelse continue;
         if (std.mem.eql(u8, name, "main")) continue;
 
-        // Return type — use int64_t as default (matches codegen)
-        try appendSlice(allocator, &output, "int64_t ");
+        // Return type
+        try appendFmt(allocator, &output, "{s} ", .{kiraToCType(func.return_type_name)});
         try appendFmt(allocator, &output, "{s}(", .{name});
 
         // Parameters
@@ -81,7 +101,7 @@ pub fn generateHeader(allocator: Allocator, module: *const ir.Module, module_nam
         } else {
             for (func.params, 0..) |param, i| {
                 if (i > 0) try appendSlice(allocator, &output, ", ");
-                try appendFmt(allocator, &output, "int64_t {s}", .{param.name});
+                try appendFmt(allocator, &output, "{s} {s}", .{ kiraToCType(param.type_name), param.name });
             }
         }
 
@@ -111,10 +131,10 @@ pub fn generateKlarExternBlock(allocator: Allocator, module: *const ir.Module) !
 
         for (func.params, 0..) |param, i| {
             if (i > 0) try appendSlice(allocator, &output, ", ");
-            try appendFmt(allocator, &output, "{s}: i64", .{param.name});
+            try appendFmt(allocator, &output, "{s}: {s}", .{ param.name, kiraToKlarType(param.type_name) });
         }
 
-        try appendSlice(allocator, &output, ") -> i64\n");
+        try appendFmt(allocator, &output, ") -> {s}\n", .{kiraToKlarType(func.return_type_name)});
     }
 
     try appendSlice(allocator, &output, "}\n");
@@ -203,4 +223,126 @@ test "generateKlarExternBlock" {
 
     try std.testing.expect(std.mem.indexOf(u8, block, "extern {") != null);
     try std.testing.expect(std.mem.indexOf(u8, block, "fn multiply(x: i64, y: i64) -> i64") != null);
+}
+
+test "generateHeader with typed params (i32, f64, bool, string, void)" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn add(a: i32, b: i32) -> i32
+    var func1 = ir.Function.init(arena);
+    func1.name = "add";
+    func1.return_type_name = "i32";
+    const p1 = try arena.alloc(ir.Function.Param, 2);
+    p1[0] = .{ .name = "a", .value_ref = 0, .type_name = "i32" };
+    p1[1] = .{ .name = "b", .value_ref = 1, .type_name = "i32" };
+    func1.params = p1;
+    try module.functions.append(arena, func1);
+
+    // fn scale(x: f64) -> f64
+    var func2 = ir.Function.init(arena);
+    func2.name = "scale";
+    func2.return_type_name = "f64";
+    const p2 = try arena.alloc(ir.Function.Param, 1);
+    p2[0] = .{ .name = "x", .value_ref = 0, .type_name = "f64" };
+    func2.params = p2;
+    try module.functions.append(arena, func2);
+
+    // fn greet(name: string) -> string
+    var func3 = ir.Function.init(arena);
+    func3.name = "greet";
+    func3.return_type_name = "string";
+    const p3 = try arena.alloc(ir.Function.Param, 1);
+    p3[0] = .{ .name = "name", .value_ref = 0, .type_name = "string" };
+    func3.params = p3;
+    try module.functions.append(arena, func3);
+
+    // fn is_valid(flag: bool) -> bool
+    var func4 = ir.Function.init(arena);
+    func4.name = "is_valid";
+    func4.return_type_name = "bool";
+    const p4 = try arena.alloc(ir.Function.Param, 1);
+    p4[0] = .{ .name = "flag", .value_ref = 0, .type_name = "bool" };
+    func4.params = p4;
+    try module.functions.append(arena, func4);
+
+    // fn reset() -> void
+    var func5 = ir.Function.init(arena);
+    func5.name = "reset";
+    func5.return_type_name = "void";
+    func5.params = &.{};
+    try module.functions.append(arena, func5);
+
+    const header = try generateHeader(allocator, &module, "typed");
+    defer allocator.free(header);
+
+    try std.testing.expect(std.mem.indexOf(u8, header, "int32_t add(int32_t a, int32_t b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "double scale(double x)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "const char* greet(const char* name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "bool is_valid(bool flag)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "void reset(void)") != null);
+}
+
+test "generateKlarExternBlock with typed params" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn add(a: i32, b: i32) -> i32
+    var func1 = ir.Function.init(arena);
+    func1.name = "add";
+    func1.return_type_name = "i32";
+    const p1 = try arena.alloc(ir.Function.Param, 2);
+    p1[0] = .{ .name = "a", .value_ref = 0, .type_name = "i32" };
+    p1[1] = .{ .name = "b", .value_ref = 1, .type_name = "i32" };
+    func1.params = p1;
+    try module.functions.append(arena, func1);
+
+    // fn scale(x: f64) -> f64
+    var func2 = ir.Function.init(arena);
+    func2.name = "scale";
+    func2.return_type_name = "f64";
+    const p2 = try arena.alloc(ir.Function.Param, 1);
+    p2[0] = .{ .name = "x", .value_ref = 0, .type_name = "f64" };
+    func2.params = p2;
+    try module.functions.append(arena, func2);
+
+    // fn greet(name: string) -> string
+    var func3 = ir.Function.init(arena);
+    func3.name = "greet";
+    func3.return_type_name = "string";
+    const p3 = try arena.alloc(ir.Function.Param, 1);
+    p3[0] = .{ .name = "name", .value_ref = 0, .type_name = "string" };
+    func3.params = p3;
+    try module.functions.append(arena, func3);
+
+    // fn is_valid(flag: bool) -> bool
+    var func4 = ir.Function.init(arena);
+    func4.name = "is_valid";
+    func4.return_type_name = "bool";
+    const p4 = try arena.alloc(ir.Function.Param, 1);
+    p4[0] = .{ .name = "flag", .value_ref = 0, .type_name = "bool" };
+    func4.params = p4;
+    try module.functions.append(arena, func4);
+
+    // fn reset() -> void
+    var func5 = ir.Function.init(arena);
+    func5.name = "reset";
+    func5.return_type_name = "void";
+    func5.params = &.{};
+    try module.functions.append(arena, func5);
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn add(a: i32, b: i32) -> i32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn scale(x: f64) -> f64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn greet(name: CStr) -> CStr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn is_valid(flag: Bool) -> Bool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn reset() -> Void") != null);
 }

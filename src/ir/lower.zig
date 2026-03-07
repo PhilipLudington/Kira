@@ -150,10 +150,12 @@ pub const Lowerer = struct {
             params.append(alloc, .{
                 .name = param.name,
                 .value_ref = vref,
+                .type_name = astTypeToName(param.param_type),
             }) catch return LowerError.OutOfMemory;
             try self.defineVar(param.name, vref);
         }
         self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        self.currentFunc().?.return_type_name = astTypeToName(fd.return_type);
 
         // Lower body statements
         try self.lowerStatements(body);
@@ -920,10 +922,12 @@ pub const Lowerer = struct {
                 params.append(alloc, .{
                     .name = param.name,
                     .value_ref = vref,
+                    .type_name = astTypeToName(param.param_type),
                 }) catch return LowerError.OutOfMemory;
                 try self.defineVar(param.name, vref);
             }
             self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+            self.currentFunc().?.return_type_name = astTypeToName(cl.return_type);
 
             // Define captures in the closure's scope, propagating float status
             var captures = std.ArrayListUnmanaged(Function.Capture){};
@@ -1297,6 +1301,18 @@ pub const Lowerer = struct {
         return switch (param_type.kind) {
             .primitive => |p| p.isFloat(),
             else => false,
+        };
+    }
+
+    /// Map an AST type to its canonical name for interop.
+    fn astTypeToName(ast_type: *const Type) []const u8 {
+        return switch (ast_type.kind) {
+            .primitive => |p| p.toString(),
+            .named => |n| n.name,
+            .option_type => "option",
+            .result_type => "result",
+            .io_type => "io",
+            else => "i64",
         };
     }
 

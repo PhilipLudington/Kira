@@ -136,11 +136,15 @@ pub const Function = struct {
     instructions: std.ArrayListUnmanaged(Instruction),
     /// Entry block (always 0 for well-formed functions).
     entry_block: BlockId,
+    /// Source-level return type name for interop (e.g. "i32", "f64", "void").
+    return_type_name: []const u8 = "i64",
 
     pub const Param = struct {
         name: []const u8,
         /// The ValueRef assigned to this parameter.
         value_ref: ValueRef,
+        /// Source-level type name for interop (e.g. "i32", "f64", "string").
+        type_name: []const u8 = "i64",
     };
 
     pub const Capture = struct {
