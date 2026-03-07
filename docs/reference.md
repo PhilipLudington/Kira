@@ -16,6 +16,7 @@ Complete syntax and semantics reference for the Kira programming language.
 10. [Effects System](#effects-system)
 11. [Operators](#operators)
 12. [Keywords](#keywords)
+13. [Building Libraries](#building-libraries)
 
 ---
 
@@ -1022,6 +1023,74 @@ Memoization is most useful for:
 | `Err(e)` | `Result[T, E]` |
 | `Cons(h, t)` | `List[T]` |
 | `Nil` | `List[T]` |
+
+---
+
+## Building Libraries
+
+Kira modules can be compiled as libraries for consumption by other languages
+(notably Klar) via the C ABI.
+
+### `--lib` Flag
+
+```bash
+kira build --lib mylib.ki
+```
+
+Produces three files:
+
+| File | Contents |
+|------|----------|
+| `mylib.c` | C source (all functions, no `main` wrapper) |
+| `mylib.h` | C header with `#include` guard and typed function declarations |
+| `mylib.kl` | Klar `extern` block ready to paste into a Klar project |
+
+All public, non-`main` functions are exported. Parameter and return types are
+mapped from Kira types to their C and Klar equivalents:
+
+| Kira | C | Klar |
+|------|---|------|
+| `i32` | `int32_t` | `i32` |
+| `i64` | `int64_t` | `i64` |
+| `f64` | `double` | `f64` |
+| `bool` | `bool` | `Bool` |
+| `string` | `const char*` | `CStr` |
+| `void` | `void` | `Void` |
+
+### `--emit-header` Flag
+
+```bash
+kira build --emit-header mylib.ki
+```
+
+Runs parse, resolve, type-check, and IR lowering, then generates only the `.h`
+and `.kl` files — no C codegen. Useful for tooling and AI agents that only need
+the interface description.
+
+### Workflow: Calling Kira from Klar
+
+1. Write a Kira library module (no `main` needed):
+
+```kira
+// mylib.ki
+pub fn add(a: i32, b: i32) -> i32 = a + b
+pub fn greet(name: string) -> string = "Hello, " ++ name
+```
+
+2. Build with `--lib`:
+
+```bash
+kira build --lib mylib.ki
+```
+
+3. Compile the generated C to an object file:
+
+```bash
+cc -c mylib.c -o mylib.o
+```
+
+4. In your Klar project, include the generated `mylib.kl` extern block and
+   link against `mylib.o`.
 
 ---
 

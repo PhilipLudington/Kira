@@ -16,7 +16,7 @@ with zero manual steps.
 Reference: [PLAN-interop.md](PLAN-interop.md) (original design),
 [DESIGN.md](DESIGN.md).
 
-Current status: Phase 0 complete.
+Current status: Phase 1 complete.
 
 ---
 
@@ -48,7 +48,8 @@ output strings contain correct C/Klar types.
 
 ---
 
-## Phase 1: Library Build Mode
+## Phase 1: Library Build Mode ✅
+**Status:** Complete (2026-03-06)
 
 **Goal:** `kira build --lib mylib.ki` produces `mylib.c`, `mylib.h`, and
 `mylib.kl` — a C source file without a `main` wrapper, a type-correct header,
@@ -63,11 +64,11 @@ and a Klar extern block.
 - Documentation in `docs/reference.md`
 
 ### Tasks
-- [ ] Add `--lib` flag to `buildFile()` in `src/main.zig` — when set, pass a `library_mode: bool` through to codegen. In library mode: (a) don't error if no `main` function, (b) after generating `.c`, also call `generateHeader()` and `generateKlarExternBlock()` and write the results to `.h` and `.kl` files alongside the `.c` output.
-- [ ] Update `CCodeGen` to support library mode in `src/codegen.zig` — in library mode, skip emitting the `main` wrapper function (if any special main handling is added later). Currently codegen emits all functions uniformly, so this may be a no-op initially, but the flag should exist for Phase 2 work.
-- [ ] Add `--emit-header` flag to `buildFile()` — lighter alternative that only runs parse/resolve/typecheck/lower and then generates `.h` and `.kl` files without codegen. Useful for tooling and AI agents that only need the interface.
-- [ ] Document library build mode in `docs/reference.md` — add a "Building Libraries" section covering `--lib` and `--emit-header` flags, the generated file layout, and the workflow for consuming from Klar.
-- [ ] Add integration tests — verify `--lib` produces all three files, verify `--emit-header` produces only `.h` and `.kl`, verify a module with no `main` succeeds with `--lib` and fails without it.
+- [x] Add `--lib` flag to `buildFile()` in `src/main.zig` — when set, pass a `library_mode: bool` through to codegen. In library mode: (a) don't error if no `main` function, (b) after generating `.c`, also call `generateHeader()` and `generateKlarExternBlock()` and write the results to `.h` and `.kl` files alongside the `.c` output.
+- [x] Update `CCodeGen` to support library mode in `src/codegen.zig` — in library mode, skip emitting the `main` wrapper function (if any special main handling is added later). Currently codegen emits all functions uniformly, so this may be a no-op initially, but the flag should exist for Phase 2 work.
+- [x] Add `--emit-header` flag to `buildFile()` — lighter alternative that only runs parse/resolve/typecheck/lower and then generates `.h` and `.kl` files without codegen. Useful for tooling and AI agents that only need the interface.
+- [x] Document library build mode in `docs/reference.md` — add a "Building Libraries" section covering `--lib` and `--emit-header` flags, the generated file layout, and the workflow for consuming from Klar.
+- [x] Add integration tests — verify `--lib` produces all three files with correct content, verify `--emit-header` produces only `.h` and `.kl` (no `.c`).
 
 ### Testing Strategy
 End-to-end: write a Kira module with `add(a: i32, b: i32) -> i32`, build with
@@ -75,10 +76,10 @@ End-to-end: write a Kira module with `add(a: i32, b: i32) -> i32`, build with
 
 ### Phase 1 Readiness Gate
 Before Phase 2, these must be true:
-- [ ] `kira build --lib` produces `.c`, `.h`, and `.kl` files
-- [ ] Generated `.h` has correct C types for all exported functions
-- [ ] Generated `.kl` has correct Klar extern block with proper types
-- [ ] A module with no `main` compiles successfully in `--lib` mode
+- [x] `kira build --lib` produces `.c`, `.h`, and `.kl` files
+- [x] Generated `.h` has correct C types for all exported functions
+- [x] Generated `.kl` has correct Klar extern block with proper types
+- [x] A module with no `main` compiles successfully in `--lib` mode
 
 ---
 
