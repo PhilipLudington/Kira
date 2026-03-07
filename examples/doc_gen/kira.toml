@@ -1,0 +1,9 @@
+# Doc generation example project
+# Run: kira doc examples/doc_gen
+
+[package]
+name = "mathlib"
+
+[modules]
+collections = "collections.ki"
+math = "math.ki"

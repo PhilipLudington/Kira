@@ -94,6 +94,8 @@ pub fn generateMarkdown(allocator: Allocator, program: *const Program) ![]u8 {
     return renderModuleMarkdown(allocator, module_doc);
 }
 
+/// Collect documentation from a parsed program into a ModuleDoc.
+/// Caller owns the returned ModuleDoc and must call deinit.
 pub fn collectModuleDocs(allocator: Allocator, program: *const Program) !ModuleDoc {
     const module_path = try duplicateModulePath(allocator, program);
     errdefer allocator.free(module_path);
@@ -135,6 +137,8 @@ pub fn collectModuleDocs(allocator: Allocator, program: *const Program) !ModuleD
     };
 }
 
+/// Render a ModuleDoc as a Markdown page.
+/// Caller owns the returned slice.
 pub fn renderModuleMarkdown(allocator: Allocator, module_doc: ModuleDoc) ![]u8 {
     var output = std.ArrayListUnmanaged(u8){};
     errdefer output.deinit(allocator);
@@ -168,6 +172,8 @@ pub fn renderModuleMarkdown(allocator: Allocator, module_doc: ModuleDoc) ![]u8 {
     return output.toOwnedSlice(allocator);
 }
 
+/// Render a top-level index page linking to each module's page.
+/// Caller owns the returned slice.
 pub fn renderProjectIndexMarkdown(allocator: Allocator, project_docs: ProjectDocs) ![]u8 {
     var output = std.ArrayListUnmanaged(u8){};
     errdefer output.deinit(allocator);
@@ -196,6 +202,8 @@ pub fn renderProjectIndexMarkdown(allocator: Allocator, project_docs: ProjectDoc
     return output.toOwnedSlice(allocator);
 }
 
+/// Generate a JSON search index from project documentation.
+/// Caller owns the returned slice.
 pub fn generateSearchIndexJson(allocator: Allocator, project_docs: ProjectDocs) ![]u8 {
     var output = std.ArrayListUnmanaged(u8){};
     errdefer output.deinit(allocator);
@@ -236,6 +244,8 @@ pub fn generateSearchIndexJson(allocator: Allocator, project_docs: ProjectDocs) 
     return output.toOwnedSlice(allocator);
 }
 
+/// Convert a module path (e.g. "foo.bar") to a page filename (e.g. "foo_bar.md").
+/// Caller owns the returned slice.
 pub fn modulePageFileName(allocator: Allocator, module_path: []const u8) ![]u8 {
     var output = std.ArrayListUnmanaged(u8){};
     errdefer output.deinit(allocator);
@@ -312,6 +322,27 @@ fn collectSignatureAndKind(allocator: Allocator, decl: *const Declaration) !stru
                     for (sum_type.variants, 0..) |variant, i| {
                         if (i > 0) try appendSlice(allocator, &output, " ");
                         try appendFmt(allocator, &output, "| {s}", .{variant.name});
+                        if (variant.fields) |fields| {
+                            switch (fields) {
+                                .tuple_fields => |tfs| {
+                                    try appendSlice(allocator, &output, "(");
+                                    for (tfs, 0..) |tf, j| {
+                                        if (j > 0) try appendSlice(allocator, &output, ", ");
+                                        try appendTypeStr(allocator, &output, tf.*);
+                                    }
+                                    try appendSlice(allocator, &output, ")");
+                                },
+                                .record_fields => |rfs| {
+                                    try appendSlice(allocator, &output, " { ");
+                                    for (rfs, 0..) |rf, j| {
+                                        if (j > 0) try appendSlice(allocator, &output, ", ");
+                                        try appendFmt(allocator, &output, "{s}: ", .{rf.name});
+                                        try appendTypeStr(allocator, &output, rf.field_type.*);
+                                    }
+                                    try appendSlice(allocator, &output, " }");
+                                },
+                            }
+                        }
                     }
                 },
                 .product_type => |product_type| {
@@ -356,7 +387,7 @@ fn collectSignatureAndKind(allocator: Allocator, decl: *const Declaration) !stru
 }
 
 fn renderSymbolMarkdown(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), symbol: SymbolDoc) !void {
-    try appendFmt(allocator, output, "### {s}\n\n", .{symbol.name});
+    try appendFmt(allocator, output, "### `{s}`\n\n", .{symbol.name});
     try appendSlice(allocator, output, "```kira\n");
     try appendSlice(allocator, output, symbol.signature);
     try appendSlice(allocator, output, "\n```\n\n");
@@ -621,4 +652,134 @@ test "project docs index and search include public symbols" {
     try std.testing.expect(std.mem.indexOf(u8, index_md, "[`demo.core`](demo_core.md)") != null);
     try std.testing.expect(std.mem.indexOf(u8, search_json, "\"symbol_name\": \"compute\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, search_json, "privateHelper") == null);
+}
+
+test "modulePageFileName converts dots and slashes" {
+    const allocator = std.testing.allocator;
+
+    const case1 = try modulePageFileName(allocator, "foo.bar");
+    defer allocator.free(case1);
+    try std.testing.expectEqualStrings("foo_bar.md", case1);
+
+    const case2 = try modulePageFileName(allocator, "a/b\\c d");
+    defer allocator.free(case2);
+    try std.testing.expectEqualStrings("a_b_c_d.md", case2);
+
+    const case3 = try modulePageFileName(allocator, "simple");
+    defer allocator.free(case3);
+    try std.testing.expectEqualStrings("simple.md", case3);
+
+    const case4 = try modulePageFileName(allocator, "");
+    defer allocator.free(case4);
+    try std.testing.expectEqualStrings(".md", case4);
+}
+
+test "anchorForName handles special characters and empty input" {
+    const allocator = std.testing.allocator;
+
+    const case1 = try anchorForName(allocator, "hello_world");
+    defer allocator.free(case1);
+    try std.testing.expectEqualStrings("hello-world", case1);
+
+    const case2 = try anchorForName(allocator, "MyType");
+    defer allocator.free(case2);
+    try std.testing.expectEqualStrings("mytype", case2);
+
+    const case3 = try anchorForName(allocator, "foo bar");
+    defer allocator.free(case3);
+    try std.testing.expectEqualStrings("foo-bar", case3);
+
+    const case4 = try anchorForName(allocator, "");
+    defer allocator.free(case4);
+    try std.testing.expectEqualStrings("symbol", case4);
+
+    const case5 = try anchorForName(allocator, "!!!@@@");
+    defer allocator.free(case5);
+    try std.testing.expectEqualStrings("symbol", case5);
+}
+
+test "extractSummary returns first line" {
+    const allocator = std.testing.allocator;
+
+    const case1 = try extractSummary(allocator, "First line.\nSecond line.");
+    defer allocator.free(case1);
+    try std.testing.expectEqualStrings("First line.", case1);
+
+    const case2 = try extractSummary(allocator, "  Only line  ");
+    defer allocator.free(case2);
+    try std.testing.expectEqualStrings("Only line", case2);
+
+    const case3 = try extractSummary(allocator, "   \n   ");
+    defer allocator.free(case3);
+    try std.testing.expectEqualStrings("", case3);
+}
+
+test "sum type variant payloads rendered in signature" {
+    const allocator = std.testing.allocator;
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const tuple_type = try allocator.create(Type);
+    defer allocator.destroy(tuple_type);
+    tuple_type.* = .{
+        .kind = .{ .primitive = .f64 },
+        .span = span,
+    };
+
+    var tuple_fields = [_]*Type{tuple_type};
+    var variants = [_]Declaration.Variant{
+        .{ .name = "None", .fields = null, .span = span },
+        .{ .name = "Circle", .fields = .{ .tuple_fields = &tuple_fields }, .span = span },
+    };
+
+    const decls = try allocator.alloc(Declaration, 1);
+    defer allocator.free(decls);
+    decls[0] = Declaration.initWithDoc(.{
+        .type_decl = .{
+            .name = "Shape",
+            .generic_params = null,
+            .is_public = true,
+            .definition = .{
+                .sum_type = .{ .variants = &variants },
+            },
+        },
+    }, span, "A shape type.");
+
+    var program = Program{
+        .module_decl = null,
+        .imports = &.{},
+        .declarations = decls,
+        .module_doc = null,
+        .source_path = null,
+        .arena = null,
+    };
+
+    const md = try generateMarkdown(allocator, &program);
+    defer allocator.free(md);
+
+    // Variant with payload should include the type
+    try std.testing.expect(std.mem.indexOf(u8, md, "| Circle(f64)") != null);
+    // Variant without payload should be plain
+    try std.testing.expect(std.mem.indexOf(u8, md, "| None ") != null or std.mem.indexOf(u8, md, "| None|") != null);
+}
+
+test "renderModuleMarkdown includes source path" {
+    const allocator = std.testing.allocator;
+
+    const module_doc = ModuleDoc{
+        .module_path = try allocator.dupe(u8, "test.mod"),
+        .source_path = try allocator.dupe(u8, "src/test/mod.ki"),
+        .summary = null,
+        .docs = null,
+        .symbols = try allocator.alloc(SymbolDoc, 0),
+    };
+    var md = module_doc;
+    defer md.deinit(allocator);
+
+    const result = try renderModuleMarkdown(allocator, md);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "_Source: `src/test/mod.ki`_") != null);
 }

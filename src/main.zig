@@ -437,6 +437,8 @@ fn docProject(allocator: Allocator, path: []const u8, output_path: ?[]const u8) 
     const loaded = project_config.loadFromDirectory(allocator, path) catch false;
     if (!loaded or !project_config.isLoaded()) {
         stderr.writeAll("Error: could not find kira.toml for project docs\n") catch {};
+        stderr.writeAll("Usage: kira doc <file.ki>        Generate docs for one file\n") catch {};
+        stderr.writeAll("       kira doc <directory>      Generate project docs (requires kira.toml)\n") catch {};
         return error.FileNotFound;
     }
 
@@ -478,12 +480,12 @@ fn docProject(allocator: Allocator, path: []const u8, output_path: ?[]const u8) 
         const full_path = project_config.getFullModulePath(allocator, module_name) orelse continue;
         defer allocator.free(full_path);
 
-        const file = std.fs.cwd().openFile(full_path, .{}) catch {
+        const source = loadFileContent(allocator, stderr, full_path) orelse {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Warning: could not read module '{s}' at {s}, skipping\n", .{ module_name, full_path }) catch "Warning: could not read module file, skipping\n";
+            stderr.writeAll(msg) catch {};
             continue;
         };
-        file.close();
-
-        const source = loadFileContent(allocator, stderr, full_path) orelse return error.ReadError;
         defer allocator.free(source);
 
         var program = Kira.parse(allocator, source) catch {

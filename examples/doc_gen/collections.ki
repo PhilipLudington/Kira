@@ -1,0 +1,56 @@
+//! Generic-style collection utilities.
+//! Provides common list operations and a key-value pair type.
+
+module mathlib.collections
+
+/// A key-value pair for associative data.
+pub type Pair = {
+    key: string,
+    value: i64
+}
+
+/// An ordering result for comparisons.
+pub type Ordering = | Less | Equal | Greater
+
+/// Create a Pair from a key and value.
+pub fn make_pair(key: string, value: i64) -> Pair {
+    return Pair { key: key, value: value }
+}
+
+/// Return the length of a list.
+pub fn length(xs: [i64]) -> i64 {
+    let n: i64 = 0
+    for _ in xs {
+        n = n + 1
+    }
+    return n
+}
+
+/// Sum all elements in a list.
+pub fn sum(xs: [i64]) -> i64 {
+    let total: i64 = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+/// Return true if the list contains the given value.
+pub fn contains(xs: [i64], target: i64) -> bool {
+    for x in xs {
+        if x == target { return true }
+    }
+    return false
+}
+
+/// Compare two integers and return an Ordering.
+pub fn compare(a: i64, b: i64) -> Ordering {
+    if a < b { return Less }
+    if a > b { return Greater }
+    return Equal
+}
+
+// Private helper — excluded from generated docs.
+fn is_empty(xs: [i64]) -> bool {
+    return length(xs) == 0
+}

@@ -75,6 +75,12 @@ zig build run -- run examples/hello.ki
 | `modules_demo.ki` | Module imports and usage |
 | `geometry_combined.ki` | Combined geometry operations |
 
+### Documentation Generation
+
+| File | Description |
+|------|-------------|
+| `doc_gen/` | Multi-module project with doc comments for `kira doc` |
+
 ### Testing
 
 | File | Description |

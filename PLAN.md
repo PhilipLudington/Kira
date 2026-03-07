@@ -3,9 +3,10 @@
 ## Overview
 Productization and performance improvements for Kira. Closes the remaining roadmap gaps after Phase 4: searchable API docs, benchmark harness, test coverage reporting, and pure-function memoization. Scoped to this repository only.
 
-Current status: Phase 0 nearly complete — examples remaining.
+Current status: Phase 0 complete. Phase 1 next.
 
-## Phase 0: Searchable API Docs
+## Phase 0: Searchable API Docs ✅
+**Status:** Complete (2026-03-06)
 
 **Goal:** Extend `kira doc` to generate GitHub-friendly multi-module API docs with search.
 **Estimated Effort:** 3-5 days
@@ -26,7 +27,7 @@ Current status: Phase 0 nearly complete — examples remaining.
 - [x] Index public symbols by module path, name, kind, signature, and doc summary
 - [x] Filter out private declarations from generated output
 - [x] Add CLI help text and docs for new `kira doc` flags
-- [ ] Add examples under `examples/`
+- [x] Add examples under `examples/`
 
 ### Testing Strategy
 - Docs generation for a multi-module package produces correct output.
