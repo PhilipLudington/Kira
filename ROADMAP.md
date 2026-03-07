@@ -120,7 +120,7 @@
 - [x] Runtime system for ADTs and closures
 
 ### Optimization
-- [ ] Memoization of pure functions
+- [x] Memoization of pure functions
 - [x] Tail-call optimization
 - [x] Dead code elimination
 - [x] Closure capture optimization
@@ -138,12 +138,12 @@
 
 ### Documentation
 - [x] `kira doc` generation from doc comments (`///` and `//!`)
-- [ ] Searchable API reference output
+- [x] Searchable API reference output
 
 ### Testing Framework
 - [x] Property-based testing support (`prop_test` builtin)
-- [ ] Test coverage reporting
-- [ ] Benchmark harness
+- [x] Test coverage reporting
+- [x] Benchmark harness
 
 ### Interoperability
 - [x] Klar interop (C header and Klar extern block generation)
