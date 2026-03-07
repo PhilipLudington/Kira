@@ -108,17 +108,10 @@ pub fn main() !void {
             }
         },
         .doc => {
-            if (args.file_path) |path| {
-                docFile(allocator, path, args.output_path, use_color) catch |err| {
-                    reportError(err);
-                    std.process.exit(1);
-                };
-            } else {
-                const stderr = std.fs.File.stderr();
-                stderr.writeAll("Error: 'doc' command requires a file path\n") catch {};
-                stderr.writeAll("Usage: kira doc <file.ki> [--output <path>]\n") catch {};
+            docPath(allocator, args.file_path orelse ".", args.output_path) catch |err| {
+                reportError(err);
                 std.process.exit(1);
-            }
+            };
         },
         .init => {
             initProject(allocator, args.init_name) catch |err| {
@@ -308,7 +301,7 @@ fn printHelp() void {
         \\  check <file.ki>   Type-check a program without running
         \\  fmt <file.ki>     Format a Kira source file
         \\  test <file.ki>    Run tests in a file
-        \\  doc <file.ki>     Generate API documentation (Markdown)
+        \\  doc [path]        Generate API documentation for a file or project
         \\  init              Initialize a new Kira project
         \\  lsp               Start the LSP server
         \\  (no command)      Start the interactive REPL
@@ -319,7 +312,7 @@ fn printHelp() void {
         \\  --tokens          Show token stream (debug)
         \\  --ast             Show AST (debug)
         \\  --no-color        Disable colored output
-        \\  -o, --output      (build) Output file path
+        \\  -o, --output      (build/doc) Output file path or directory
         \\  --check           (fmt) Check formatting without modifying
         \\  -n, --name        (init) Project name (default: directory name)
         \\
@@ -337,6 +330,8 @@ fn printHelp() void {
         \\  kira check lib.ki     Type-check without running
         \\  kira fmt hello.ki     Format a source file
         \\  kira fmt --check .    Check formatting
+        \\  kira doc src/main.ki  Generate Markdown for one file
+        \\  kira doc .            Generate project docs from kira.toml
         \\  kira init             Initialize project in current directory
         \\  kira init --name app  Initialize with custom name
         \\  kira                  Start REPL
@@ -349,11 +344,49 @@ fn printVersion() void {
     stdout.writeAll("Kira Programming Language v" ++ version ++ "\n") catch {};
 }
 
+/// Generate documentation for a Kira source file or project.
+fn docPath(allocator: Allocator, path: []const u8, output_path: ?[]const u8) !void {
+    const path_kind = try classifyDocPath(path);
+
+    switch (path_kind) {
+        .source_file => try docFile(allocator, path, output_path),
+        .directory => try docProject(allocator, path, output_path),
+        .project_file => {
+            const root = std.fs.path.dirname(path) orelse ".";
+            try docProject(allocator, root, output_path);
+        },
+    }
+}
+
+const DocPathKind = enum {
+    source_file,
+    directory,
+    project_file,
+};
+
+fn classifyDocPath(path: []const u8) !DocPathKind {
+    if (std.mem.endsWith(u8, path, ".ki")) {
+        return .source_file;
+    }
+    if (std.mem.eql(u8, std.fs.path.basename(path), "kira.toml")) {
+        return .project_file;
+    }
+
+    if (std.fs.cwd().openDir(path, .{})) |opened_dir| {
+        var dir = opened_dir;
+        dir.close();
+        return .directory;
+    } else |_| {}
+
+    _ = std.fs.cwd().statFile(path) catch return error.FileNotFound;
+
+    return error.UnsupportedFileType;
+}
+
 /// Generate Markdown documentation for a Kira source file.
-fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool) !void {
+fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8) !void {
     const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
-    _ = use_color;
 
     // Read the file
     const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
@@ -392,6 +425,143 @@ fn docFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use
         // Write to stdout
         stdout.writeAll(markdown) catch {};
     }
+}
+
+fn docProject(allocator: Allocator, path: []const u8, output_path: ?[]const u8) !void {
+    const stdout = std.fs.File.stdout();
+    const stderr = std.fs.File.stderr();
+
+    var project_config = Kira.ProjectConfig.init();
+    defer project_config.deinit(allocator);
+
+    const loaded = project_config.loadFromDirectory(allocator, path) catch false;
+    if (!loaded or !project_config.isLoaded()) {
+        stderr.writeAll("Error: could not find kira.toml for project docs\n") catch {};
+        return error.FileNotFound;
+    }
+
+    const project_root = project_config.project_root orelse path;
+    const docs_output_dir = if (output_path) |out|
+        try allocator.dupe(u8, out)
+    else
+        try std.fs.path.join(allocator, &.{ project_root, "docs", "api" });
+    defer allocator.free(docs_output_dir);
+
+    makePathAny(docs_output_dir) catch {
+        stderr.writeAll("Error: could not create docs output directory\n") catch {};
+        return error.WriteError;
+    };
+
+    var modules = std.ArrayListUnmanaged(Kira.doc_gen.ModuleDoc){};
+    defer {
+        for (modules.items) |*module_doc| {
+            module_doc.deinit(allocator);
+        }
+        modules.deinit(allocator);
+    }
+
+    var module_names = std.ArrayListUnmanaged([]const u8){};
+    defer module_names.deinit(allocator);
+
+    var config_iter = project_config.modules.iterator();
+    while (config_iter.next()) |entry| {
+        try module_names.append(allocator, entry.key_ptr.*);
+    }
+
+    std.mem.sort([]const u8, module_names.items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
+
+    for (module_names.items) |module_name| {
+        const full_path = project_config.getFullModulePath(allocator, module_name) orelse continue;
+        defer allocator.free(full_path);
+
+        const file = std.fs.cwd().openFile(full_path, .{}) catch {
+            continue;
+        };
+        file.close();
+
+        const source = loadFileContent(allocator, stderr, full_path) orelse return error.ReadError;
+        defer allocator.free(source);
+
+        var program = Kira.parse(allocator, source) catch {
+            stderr.writeAll("Error: failed to parse project module while generating docs\n") catch {};
+            return error.ParseError;
+        };
+        defer program.deinit();
+
+        program.source_path = full_path;
+
+        var module_doc = Kira.doc_gen.collectModuleDocs(allocator, &program) catch {
+            stderr.writeAll("Error: failed to collect module documentation\n") catch {};
+            return error.DocGenError;
+        };
+        errdefer module_doc.deinit(allocator);
+
+        const markdown = Kira.doc_gen.renderModuleMarkdown(allocator, module_doc) catch {
+            stderr.writeAll("Error: failed to render module documentation\n") catch {};
+            return error.DocGenError;
+        };
+        defer allocator.free(markdown);
+
+        const page_name = try Kira.doc_gen.modulePageFileName(allocator, module_doc.module_path);
+        defer allocator.free(page_name);
+        const page_path = try std.fs.path.join(allocator, &.{ docs_output_dir, page_name });
+        defer allocator.free(page_path);
+
+        try writeFileContents(page_path, markdown);
+        try modules.append(allocator, module_doc);
+    }
+
+    var project_docs = Kira.doc_gen.ProjectDocs{
+        .package_name = if (project_config.package_name) |name| try allocator.dupe(u8, name) else null,
+        .modules = try modules.toOwnedSlice(allocator),
+    };
+    modules = .{};
+    defer project_docs.deinit(allocator);
+
+    const index_markdown = Kira.doc_gen.renderProjectIndexMarkdown(allocator, project_docs) catch {
+        stderr.writeAll("Error: failed to render project docs index\n") catch {};
+        return error.DocGenError;
+    };
+    defer allocator.free(index_markdown);
+
+    const search_json = Kira.doc_gen.generateSearchIndexJson(allocator, project_docs) catch {
+        stderr.writeAll("Error: failed to render project docs search index\n") catch {};
+        return error.DocGenError;
+    };
+    defer allocator.free(search_json);
+
+    const index_path = try std.fs.path.join(allocator, &.{ docs_output_dir, "index.md" });
+    defer allocator.free(index_path);
+    const search_index_path = try std.fs.path.join(allocator, &.{ docs_output_dir, "search-index.json" });
+    defer allocator.free(search_index_path);
+
+    try writeFileContents(index_path, index_markdown);
+    try writeFileContents(search_index_path, search_json);
+
+    var summary_buf: [512]u8 = undefined;
+    const summary = std.fmt.bufPrint(
+        &summary_buf,
+        "Project documentation written to {s} ({d} module pages)\n",
+        .{ docs_output_dir, project_docs.modules.len },
+    ) catch "Project documentation generated\n";
+    try stdout.writeAll(summary);
+}
+
+fn writeFileContents(path: []const u8, contents: []const u8) !void {
+    const file = if (std.fs.path.isAbsolute(path))
+        std.fs.createFileAbsolute(path, .{}) catch return error.WriteError
+    else
+        std.fs.cwd().createFile(path, .{}) catch return error.WriteError;
+    defer file.close();
+    file.writeAll(contents) catch return error.WriteError;
+}
+
+fn makePathAny(path: []const u8) !void {
+    try std.fs.cwd().makePath(path);
 }
 
 /// Initialize a new Kira project in the current directory.
