@@ -285,14 +285,20 @@ fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
                 try appendFmt(allocator, output, "extern struct kira_{s} {{\n", .{td.name});
                 try appendFmt(allocator, output, "    tag: kira_{s}_Tag\n", .{td.name});
 
-                // Emit data field typed as the largest variant payload struct.
-                // This ensures the Klar struct matches the C struct's ABI size.
-                // Access other variants via unsafe ptr_cast.
+                // Emit data field typed as the largest variant payload struct
+                // (by byte size, not field count). This ensures the Klar struct
+                // matches the C union's ABI size. Access other variants via
+                // unsafe ptr_cast.
                 var largest_variant: ?[]const u8 = null;
-                var largest_field_count: u32 = 0;
+                var largest_byte_size: u64 = 0;
                 for (st.variants) |v| {
-                    if (v.field_count > largest_field_count) {
-                        largest_field_count = v.field_count;
+                    if (v.field_count == 0) continue;
+                    var variant_size: u64 = 0;
+                    for (v.field_types) |ft| {
+                        variant_size += kiraTypeByteSize(ft.type_name);
+                    }
+                    if (variant_size > largest_byte_size) {
+                        largest_byte_size = variant_size;
                         largest_variant = v.name;
                     }
                 }
@@ -311,6 +317,18 @@ fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
             },
         }
     }
+}
+
+/// Return the estimated byte size of a Kira type for ABI layout purposes.
+/// Used to pick the largest variant in a sum type's union.
+fn kiraTypeByteSize(kira_type: []const u8) u64 {
+    if (std.mem.eql(u8, kira_type, "i8") or std.mem.eql(u8, kira_type, "u8") or std.mem.eql(u8, kira_type, "bool")) return 1;
+    if (std.mem.eql(u8, kira_type, "i16") or std.mem.eql(u8, kira_type, "u16")) return 2;
+    if (std.mem.eql(u8, kira_type, "i32") or std.mem.eql(u8, kira_type, "u32") or std.mem.eql(u8, kira_type, "f32") or std.mem.eql(u8, kira_type, "int") or std.mem.eql(u8, kira_type, "char")) return 4;
+    if (std.mem.eql(u8, kira_type, "i64") or std.mem.eql(u8, kira_type, "u64") or std.mem.eql(u8, kira_type, "f64") or std.mem.eql(u8, kira_type, "float") or std.mem.eql(u8, kira_type, "string")) return 8;
+    if (std.mem.eql(u8, kira_type, "i128") or std.mem.eql(u8, kira_type, "u128")) return 16;
+    if (std.mem.eql(u8, kira_type, "void")) return 0;
+    return 8; // Default for user-defined types (pointer-sized)
 }
 
 /// Check if a Kira type name is a floating-point type.
@@ -417,6 +435,8 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
 }
 
 /// Emit Klar convenience wrappers for functions that use string types.
+/// Skips generating a wrapper if the `{name}_str` name would collide with
+/// an existing function in the module.
 fn emitKlarStringWrappers(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), module: *const ir.Module) !void {
     var has_string_func = false;
     for (module.functions.items) |func| {
@@ -433,6 +453,19 @@ fn emitKlarStringWrappers(allocator: Allocator, output: *std.ArrayListUnmanaged(
             }
         }
         if (!uses_string) continue;
+
+        // Check for naming collision: skip if a function named "{name}_str" already exists
+        var wrapper_name_buf: [256]u8 = undefined;
+        const wrapper_name = std.fmt.bufPrint(&wrapper_name_buf, "{s}_str", .{name}) catch continue;
+        var has_collision = false;
+        for (module.functions.items) |other| {
+            const other_name = other.name orelse continue;
+            if (std.mem.eql(u8, other_name, wrapper_name)) {
+                has_collision = true;
+                break;
+            }
+        }
+        if (has_collision) continue;
 
         if (!has_string_func) {
             try appendSlice(allocator, output, "\n// String convenience wrappers\n");
@@ -1257,4 +1290,105 @@ test "generateLibraryWrappers skips main function" {
     // Should have kira_free but no main wrapper
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_free") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "int64_t main(") == null);
+}
+
+test "emitKlarStringWrappers skips collision with existing function" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn greet(name: string) -> string — would generate greet_str wrapper
+    var func1 = ir.Function.init(arena);
+    func1.name = "greet";
+    func1.return_type_name = "string";
+    const p1 = try arena.alloc(ir.Function.Param, 1);
+    p1[0] = .{ .name = "name", .value_ref = 0, .type_name = "string" };
+    func1.params = p1;
+    try module.functions.append(arena, func1);
+
+    // fn greet_str(x: i32) -> i32 — collides with the wrapper name
+    var func2 = ir.Function.init(arena);
+    func2.name = "greet_str";
+    func2.return_type_name = "i32";
+    const p2 = try arena.alloc(ir.Function.Param, 1);
+    p2[0] = .{ .name = "x", .value_ref = 0, .type_name = "i32" };
+    func2.params = p2;
+    try module.functions.append(arena, func2);
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    // Both functions should be in extern block
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn greet(name: CStr) -> CStr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn greet_str(x: i32) -> i32") != null);
+
+    // The string wrapper for greet should NOT be generated (collision)
+    // Count occurrences of "fn greet_str(" — should be exactly 1 (the extern decl only)
+    var count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, block, search_from, "fn greet_str(")) |pos| {
+        count += 1;
+        search_from = pos + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "emitKlarTypeDecls picks largest variant by byte size not field count" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type T = Big(f64, f64) | Many(i8, i8, i8)
+    // Big: 2 fields × 8 bytes = 16 bytes
+    // Many: 3 fields × 1 byte = 3 bytes
+    // Should pick Big (larger by bytes) not Many (more fields)
+    _ = try module.addTypeDecl(.{
+        .name = "T",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Big",
+                    .tag = 0,
+                    .field_count = 2,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                        .{ .name = "_1", .index = 1, .type_name = "f64" },
+                    },
+                },
+                .{
+                    .name = "Many",
+                    .tag = 1,
+                    .field_count = 3,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i8" },
+                        .{ .name = "_1", .index = 1, .type_name = "i8" },
+                        .{ .name = "_2", .index = 2, .type_name = "i8" },
+                    },
+                },
+            },
+        } },
+    });
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    // data field should use Big (16 bytes), not Many (3 bytes)
+    try std.testing.expect(std.mem.indexOf(u8, block, "data: kira_T_Big") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "data: kira_T_Many") == null);
+}
+
+test "kiraTypeByteSize returns correct sizes" {
+    try std.testing.expectEqual(@as(u64, 1), kiraTypeByteSize("i8"));
+    try std.testing.expectEqual(@as(u64, 1), kiraTypeByteSize("bool"));
+    try std.testing.expectEqual(@as(u64, 2), kiraTypeByteSize("i16"));
+    try std.testing.expectEqual(@as(u64, 4), kiraTypeByteSize("i32"));
+    try std.testing.expectEqual(@as(u64, 4), kiraTypeByteSize("f32"));
+    try std.testing.expectEqual(@as(u64, 8), kiraTypeByteSize("i64"));
+    try std.testing.expectEqual(@as(u64, 8), kiraTypeByteSize("f64"));
+    try std.testing.expectEqual(@as(u64, 8), kiraTypeByteSize("string"));
+    try std.testing.expectEqual(@as(u64, 16), kiraTypeByteSize("i128"));
+    try std.testing.expectEqual(@as(u64, 0), kiraTypeByteSize("void"));
+    try std.testing.expectEqual(@as(u64, 8), kiraTypeByteSize("SomeUserType"));
 }

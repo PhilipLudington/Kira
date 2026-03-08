@@ -1308,11 +1308,15 @@ fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const
     if (lib_mode) {
         const wrappers = Kira.interop.klar.generateLibraryWrappers(allocator, &ir_module) catch {
             stderr.writeAll("error: could not generate library wrappers\n") catch {};
+            // Delete partial .c file
+            std.fs.cwd().deleteFile(c_path) catch {};
             return error.CompileError;
         };
         defer allocator.free(wrappers);
         c_file.writeAll(wrappers) catch {
             stderr.writeAll("error: could not write library wrappers\n") catch {};
+            // Delete partial .c file
+            std.fs.cwd().deleteFile(c_path) catch {};
             return error.WriteError;
         };
     }
