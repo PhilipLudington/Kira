@@ -1037,13 +1037,14 @@ Kira modules can be compiled as libraries for consumption by other languages
 kira build --lib mylib.ki
 ```
 
-Produces three files:
+Produces four files:
 
 | File | Contents |
 |------|----------|
 | `mylib.c` | C source (all functions, no `main` wrapper) |
 | `mylib.h` | C header with `#include` guard and typed function declarations |
 | `mylib.kl` | Klar `extern` block ready to paste into a Klar project |
+| `mylib.json` | JSON type manifest for tooling and AI agents |
 
 All public, non-`main` functions are exported. Parameter and return types are
 mapped from Kira types to their C and Klar equivalents:
@@ -1066,6 +1067,17 @@ kira build --emit-header mylib.ki
 Runs parse, resolve, type-check, and IR lowering, then generates only the `.h`
 and `.kl` files — no C codegen. Useful for tooling and AI agents that only need
 the interface description.
+
+### `--manifest` Flag
+
+```bash
+kira build --manifest mylib.ki
+```
+
+Generates only the `.json` type manifest — no C codegen, no header, no Klar
+block. The manifest is a machine-readable JSON file describing all exported
+functions (names, parameter types, return types) and type declarations (sum
+types, product types, variants, fields). Useful for tooling and AI agents.
 
 ### Workflow: Calling Kira from Klar
 
@@ -1091,6 +1103,9 @@ cc -c mylib.c -o mylib.o
 
 4. In your Klar project, include the generated `mylib.kl` extern block and
    link against `mylib.o`.
+
+See also: [Klar Interop Guide](guide/klar-interop.md) for a detailed walkthrough
+including string ownership, ADT types, and the `[exports]` configuration.
 
 ---
 

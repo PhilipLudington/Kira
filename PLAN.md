@@ -16,7 +16,7 @@ with zero manual steps.
 Reference: [PLAN-interop.md](PLAN-interop.md) (original design),
 [DESIGN.md](DESIGN.md).
 
-Current status: Phase 3 complete.
+Current status: Phase 4 complete. All phases done.
 
 ---
 
@@ -138,7 +138,8 @@ header includes `kira_free`. Test wrapper function generation in Klar block.
 
 ---
 
-## Phase 4: Build System Integration
+## Phase 4: Build System Integration ✅
+**Status:** Complete (2026-03-07)
 
 **Goal:** A Kira dependency can be declared in `kira.toml` with an `[exports]`
 section and built automatically with machine-readable output.
@@ -152,11 +153,11 @@ section and built automatically with machine-readable output.
 - User guide: `docs/guide/klar-interop.md`
 
 ### Tasks
-- [ ] Define `[exports]` section in `kira.toml` — list of module names whose public functions are exported. Default: none (opt-in). Update `src/config/project.zig` to parse this section. Only listed modules appear in generated header/extern block.
-- [ ] Generate type manifest JSON alongside `--lib` build — machine-readable JSON with all exported functions, parameter types, return types, and ADT definitions. Write to `<name>.json` alongside other outputs.
-- [ ] Add `--manifest` flag to `kira build` — emits only the JSON manifest without compiling. Useful for tooling and AI agents that need the interface description.
-- [ ] Write `docs/guide/klar-interop.md` — step-by-step guide: create Kira library, build with `--lib`, add to Klar project, import and call. Include AI agent workflow.
-- [ ] End-to-end integration test — Kira library with arithmetic, string, and ADT-returning functions. Build with `--lib`, verify all output files, verify manifest JSON is valid and complete.
+- [x] Define `[exports]` section in `kira.toml` — list of module names whose public functions are exported. Default: none (opt-in). Update `src/config/project.zig` to parse this section. `parseArrayLine` generalizes array parsing for `modules = [...]` syntax. `ProjectConfig` gains `exports`, `getExports()`, and `isExported()`.
+- [x] Generate type manifest JSON alongside `--lib` build — `generateManifestJSON()` in `src/interop/klar.zig` emits machine-readable JSON with module name, all exported functions (names, parameter types, return types), and type declarations (sum types with variants/fields, product types with fields). Written to `<name>.json` alongside `.c`, `.h`, `.kl`.
+- [x] Add `--manifest` flag to `kira build` — emits only the JSON manifest without compiling. Runs parse/resolve/typecheck/lower, then generates `.json` only. Added `writeManifestFile()` helper in `main.zig`.
+- [x] Write `docs/guide/klar-interop.md` — step-by-step guide: create Kira library, build with `--lib`, compile to object file, import extern block in Klar, link. Covers string ownership, `--emit-header`/`--manifest` tooling flags, and `[exports]` config.
+- [x] End-to-end integration test — `buildFile --lib end-to-end with mixed types` test covers i32, f64, string, and bool functions. Verifies `.c`, `.h`, `.kl`, and `.json` outputs all have correct typed content.
 
 ### Testing Strategy
 Full workflow test: Kira module with mixed function types, build with `--lib`,

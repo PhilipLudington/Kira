@@ -477,6 +477,104 @@ fn emitKlarStringWrappers(allocator: Allocator, output: *std.ArrayListUnmanaged(
     }
 }
 
+/// Generate a JSON type manifest describing all exported functions and types.
+/// The manifest is machine-readable for tooling and AI agents.
+/// Caller owns the returned slice.
+pub fn generateManifestJSON(allocator: Allocator, module: *const ir.Module, module_name: []const u8) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    try appendSlice(allocator, &output, "{\n  \"module\": ");
+    try appendJsonStringQuoted(allocator, &output, module_name);
+    try appendSlice(allocator, &output, ",\n");
+
+    // Functions
+    try appendSlice(allocator, &output, "  \"functions\": [\n");
+    var func_count: usize = 0;
+    for (module.functions.items) |func| {
+        const name = func.name orelse continue;
+        if (std.mem.eql(u8, name, "main")) continue;
+
+        if (func_count > 0) try appendSlice(allocator, &output, ",\n");
+        try appendSlice(allocator, &output, "    {\n      \"name\": ");
+        try appendJsonStringQuoted(allocator, &output, name);
+        try appendSlice(allocator, &output, ",\n");
+
+        // Parameters
+        try appendSlice(allocator, &output, "      \"params\": [");
+        for (func.params, 0..) |param, i| {
+            if (i > 0) try appendSlice(allocator, &output, ", ");
+            try appendSlice(allocator, &output, "{\"name\": ");
+            try appendJsonStringQuoted(allocator, &output, param.name);
+            try appendSlice(allocator, &output, ", \"type\": ");
+            try appendJsonStringQuoted(allocator, &output, param.type_name);
+            try output.append(allocator, '}');
+        }
+        try appendSlice(allocator, &output, "],\n");
+
+        // Return type
+        try appendSlice(allocator, &output, "      \"return_type\": ");
+        try appendJsonStringQuoted(allocator, &output, func.return_type_name);
+        try appendSlice(allocator, &output, "\n    }");
+        func_count += 1;
+    }
+    try appendSlice(allocator, &output, "\n  ],\n");
+
+    // Types
+    try appendSlice(allocator, &output, "  \"types\": [\n");
+    for (module.type_decls.items, 0..) |td, ti| {
+        if (ti > 0) try appendSlice(allocator, &output, ",\n");
+        try appendSlice(allocator, &output, "    {\n      \"name\": ");
+        try appendJsonStringQuoted(allocator, &output, td.name);
+        try appendSlice(allocator, &output, ",\n");
+
+        switch (td.kind) {
+            .sum_type => |st| {
+                try appendSlice(allocator, &output, "      \"kind\": \"sum\",\n");
+                try appendSlice(allocator, &output, "      \"variants\": [\n");
+                for (st.variants, 0..) |v, vi| {
+                    if (vi > 0) try appendSlice(allocator, &output, ",\n");
+                    try appendSlice(allocator, &output, "        {\n          \"name\": ");
+                    try appendJsonStringQuoted(allocator, &output, v.name);
+                    try appendSlice(allocator, &output, ",\n");
+                    try appendFmt(allocator, &output, "          \"tag\": {d},\n", .{v.tag});
+                    try appendSlice(allocator, &output, "          \"fields\": [");
+                    for (v.field_types, 0..) |ft, fi| {
+                        if (fi > 0) try appendSlice(allocator, &output, ", ");
+                        try appendSlice(allocator, &output, "{\"name\": ");
+                        try appendJsonStringQuoted(allocator, &output, ft.name);
+                        try appendSlice(allocator, &output, ", \"type\": ");
+                        try appendJsonStringQuoted(allocator, &output, ft.type_name);
+                        try output.append(allocator, '}');
+                    }
+                    try appendSlice(allocator, &output, "]\n        }");
+                }
+                try appendSlice(allocator, &output, "\n      ]\n");
+            },
+            .product_type => |pt| {
+                try appendSlice(allocator, &output, "      \"kind\": \"product\",\n");
+                try appendSlice(allocator, &output, "      \"fields\": [");
+                for (pt.fields, 0..) |f, fi| {
+                    if (fi > 0) try appendSlice(allocator, &output, ", ");
+                    try appendSlice(allocator, &output, "{\"name\": ");
+                    try appendJsonStringQuoted(allocator, &output, f.name);
+                    try appendSlice(allocator, &output, ", \"type\": ");
+                    try appendJsonStringQuoted(allocator, &output, f.type_name);
+                    try output.append(allocator, '}');
+                }
+                try appendSlice(allocator, &output, "]\n");
+            },
+        }
+
+        try appendSlice(allocator, &output, "    }");
+    }
+    try appendSlice(allocator, &output, "\n  ]\n");
+
+    try appendSlice(allocator, &output, "}\n");
+
+    return output.toOwnedSlice(allocator);
+}
+
 fn appendSlice(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
     try output.appendSlice(allocator, s);
 }
@@ -485,6 +583,25 @@ fn appendFmt(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), comptime
     const formatted = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(formatted);
     try output.appendSlice(allocator, formatted);
+}
+
+/// Append a JSON-escaped string value (the content between quotes).
+/// Escapes `"` as `\"` and `\` as `\\`.
+fn appendJsonString(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try output.appendSlice(allocator, "\\\""),
+            '\\' => try output.appendSlice(allocator, "\\\\"),
+            else => try output.append(allocator, c),
+        }
+    }
+}
+
+/// Append `"<escaped_value>"` to the output (quotes included).
+fn appendJsonStringQuoted(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
+    try output.append(allocator, '"');
+    try appendJsonString(allocator, output, s);
+    try output.append(allocator, '"');
 }
 
 // --- Tests ---
@@ -1034,6 +1151,92 @@ test "generateKlarExternBlock with string wrappers" {
 
     // No wrapper for add (no string types)
     try std.testing.expect(std.mem.indexOf(u8, block, "fn add_str(") == null);
+}
+
+test "generateManifestJSON with functions and types" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn add(a: i32, b: i32) -> i32
+    var func = ir.Function.init(arena);
+    func.name = "add";
+    func.return_type_name = "i32";
+    const params = try arena.alloc(ir.Function.Param, 2);
+    params[0] = .{ .name = "a", .value_ref = 0, .type_name = "i32" };
+    params[1] = .{ .name = "b", .value_ref = 1, .type_name = "i32" };
+    func.params = params;
+    try module.functions.append(arena, func);
+
+    // fn greet(name: string) -> string
+    var func2 = ir.Function.init(arena);
+    func2.name = "greet";
+    func2.return_type_name = "string";
+    const p2 = try arena.alloc(ir.Function.Param, 1);
+    p2[0] = .{ .name = "name", .value_ref = 0, .type_name = "string" };
+    func2.params = p2;
+    try module.functions.append(arena, func2);
+
+    // type Shape = Circle(f64) | Point
+    const variants = try arena.alloc(ir.VariantDecl, 2);
+    const circle_fields = try arena.alloc(ir.FieldDecl, 1);
+    circle_fields[0] = .{ .name = "radius", .index = 0, .type_name = "f64" };
+    variants[0] = .{ .name = "Circle", .tag = 0, .field_count = 1, .field_types = circle_fields };
+    variants[1] = .{ .name = "Point", .tag = 1, .field_count = 0 };
+    try module.type_decls.append(arena, .{
+        .name = "Shape",
+        .kind = .{ .sum_type = .{ .variants = variants } },
+    });
+
+    const json = try generateManifestJSON(allocator, &module, "mylib");
+    defer allocator.free(json);
+
+    // Check module name
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"module\": \"mylib\"") != null);
+
+    // Check functions
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"return_type\": \"i32\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"greet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"return_type\": \"string\"") != null);
+
+    // Check types
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"Shape\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"kind\": \"sum\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"Circle\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"Point\"") != null);
+
+    // main should be excluded
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"main\"") == null);
+}
+
+test "generateManifestJSON escapes special characters" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // Function with a name that contains JSON-special characters
+    var func = ir.Function.init(arena);
+    func.name = "say\"hello";
+    func.return_type_name = "string";
+    const params = try arena.alloc(ir.Function.Param, 1);
+    params[0] = .{ .name = "x\\y", .value_ref = 0, .type_name = "i32" };
+    func.params = params;
+    try module.functions.append(arena, func);
+
+    const json = try generateManifestJSON(allocator, &module, "test\\mod");
+    defer allocator.free(json);
+
+    // Backslash in module name is escaped
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"test\\\\mod\"") != null);
+    // Quote in function name is escaped
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"say\\\"hello\"") != null);
+    // Backslash in param name is escaped
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"x\\\\y\"") != null);
 }
 
 test "generateLibraryWrappers skips main function" {
