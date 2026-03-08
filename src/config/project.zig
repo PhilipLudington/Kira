@@ -61,6 +61,8 @@ pub const ProjectConfig = struct {
     packages: std.StringHashMapUnmanaged(PackageConfig),
     /// Dependencies from [dependencies] section.
     dependencies: std.ArrayListUnmanaged(toml.Dependency),
+    /// Exported module names from [exports] section (opt-in; empty = no exports).
+    exports: std.ArrayListUnmanaged([]const u8),
 
     /// Create an empty configuration.
     pub fn init() ProjectConfig {
@@ -75,6 +77,7 @@ pub const ProjectConfig = struct {
             .loaded = false,
             .packages = .{},
             .dependencies = .{},
+            .exports = .{},
         };
     }
 
@@ -120,6 +123,11 @@ pub const ProjectConfig = struct {
             @constCast(dep).deinit(allocator);
         }
         self.dependencies.deinit(allocator);
+
+        for (self.exports.items) |name| {
+            allocator.free(name);
+        }
+        self.exports.deinit(allocator);
     }
 
     /// Search for and load kira.toml starting from `start_dir` and walking up.
@@ -219,6 +227,15 @@ pub const ProjectConfig = struct {
                 };
             }
             parse_result.dependencies.deinit(allocator);
+
+            // Transfer exports
+            for (parse_result.exports.items) |name| {
+                self.exports.append(allocator, name) catch {
+                    allocator.free(name);
+                    continue;
+                };
+            }
+            parse_result.exports.deinit(allocator);
 
             // Store project root
             self.project_root = try allocator.dupe(u8, current_dir);
@@ -348,6 +365,20 @@ pub const ProjectConfig = struct {
         return self.loaded;
     }
 
+    /// Return the list of exported module names (empty = no exports configured).
+    pub fn getExports(self: *const ProjectConfig) []const []const u8 {
+        return self.exports.items;
+    }
+
+    /// Check if a module name is in the exports list.
+    /// If no exports are configured, returns false (opt-in).
+    pub fn isExported(self: *const ProjectConfig, module_name: []const u8) bool {
+        for (self.exports.items) |name| {
+            if (std.mem.eql(u8, name, module_name)) return true;
+        }
+        return false;
+    }
+
     /// Validate the configuration for use as a publishable package.
     /// Requires name and version at minimum.
     pub fn validate(self: *const ProjectConfig) ValidationError!void {
@@ -449,6 +480,25 @@ test "isValidSemver" {
     try std.testing.expect(!ProjectConfig.isValidSemver("abc"));
     try std.testing.expect(!ProjectConfig.isValidSemver("1..0"));
     try std.testing.expect(!ProjectConfig.isValidSemver(".1.0"));
+}
+
+test "exports methods" {
+    const allocator = std.testing.allocator;
+    var config = ProjectConfig.init();
+    defer config.deinit(allocator);
+
+    // Initially no exports
+    try std.testing.expectEqual(@as(usize, 0), config.getExports().len);
+    try std.testing.expect(!config.isExported("math"));
+
+    // Add exports
+    try config.exports.append(allocator, try allocator.dupe(u8, "math"));
+    try config.exports.append(allocator, try allocator.dupe(u8, "utils"));
+
+    try std.testing.expectEqual(@as(usize, 2), config.getExports().len);
+    try std.testing.expect(config.isExported("math"));
+    try std.testing.expect(config.isExported("utils"));
+    try std.testing.expect(!config.isExported("other"));
 }
 
 test "getDependency" {

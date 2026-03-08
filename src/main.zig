@@ -41,6 +41,12 @@ const Args = struct {
     coverage: bool,
     /// Test: emit JSON coverage report
     coverage_json: bool,
+    /// Build: library mode (no main required, emit .h and .kl)
+    lib_mode: bool,
+    /// Build: emit header/extern block only (no codegen)
+    emit_header: bool,
+    /// Build: emit JSON type manifest only (no codegen)
+    emit_manifest: bool,
 };
 
 pub fn main() !void {
@@ -105,14 +111,14 @@ pub fn main() !void {
         },
         .build => {
             if (args.file_path) |path| {
-                buildFile(allocator, path, args.output_path, use_color) catch |err| {
+                buildFile(allocator, path, args.output_path, use_color, args.lib_mode, args.emit_header, args.emit_manifest) catch |err| {
                     reportError(err);
                     std.process.exit(1);
                 };
             } else {
                 const stderr = std.fs.File.stderr();
                 stderr.writeAll("Error: 'build' command requires a file path\n") catch {};
-                stderr.writeAll("Usage: kira build [--output <path>] <file.ki>\n") catch {};
+                stderr.writeAll("Usage: kira build [--lib] [--emit-header] [--manifest] [--output <path>] <file.ki>\n") catch {};
                 std.process.exit(1);
             }
         },
@@ -194,6 +200,9 @@ fn parseArgs() !Args {
         .bench_iterations = 0,
         .coverage = false,
         .coverage_json = false,
+        .lib_mode = false,
+        .emit_header = false,
+        .emit_manifest = false,
     };
 
     user_args_count = 0;
@@ -244,12 +253,18 @@ fn parseArgs() !Args {
             }
         } else if (std.mem.eql(u8, arg, "build")) {
             result.mode = .build;
-            // Look for --output flag and file path
+            // Look for --output, --lib, --emit-header flags and file path
             while (args_iter.next()) |build_arg| {
                 if (std.mem.eql(u8, build_arg, "--output") or std.mem.eql(u8, build_arg, "-o")) {
                     if (args_iter.next()) |out_path| {
                         result.output_path = out_path;
                     }
+                } else if (std.mem.eql(u8, build_arg, "--lib")) {
+                    result.lib_mode = true;
+                } else if (std.mem.eql(u8, build_arg, "--emit-header")) {
+                    result.emit_header = true;
+                } else if (std.mem.eql(u8, build_arg, "--manifest")) {
+                    result.emit_manifest = true;
                 } else if (!std.mem.startsWith(u8, build_arg, "-")) {
                     result.file_path = build_arg;
                     file_path_seen = true;
@@ -354,7 +369,7 @@ fn printHelp() void {
         \\
         \\Commands:
         \\  run <file.ki>     Run a Kira program
-        \\  build <file.ki>   Compile to C (use --output for custom path)
+        \\  build <file.ki>   Compile to C (--lib for library, --emit-header/--manifest)
         \\  check <file.ki>   Type-check a program without running
         \\  fmt <file.ki>     Format a Kira source file
         \\  test <file.ki>    Run tests in a file
@@ -371,6 +386,9 @@ fn printHelp() void {
         \\  --ast             Show AST (debug)
         \\  --no-color        Disable colored output
         \\  -o, --output      (build/doc) Output file path or directory
+        \\  --lib             (build) Library mode: emit .c, .h, and .kl
+        \\  --emit-header     (build) Emit .h and .kl only (no codegen)
+        \\  --manifest        (build) Emit JSON type manifest only (no codegen)
         \\  --check           (fmt) Check formatting without modifying
         \\  -n, --name        (init) Project name (default: directory name)
         \\  --coverage        (test) Show coverage report after tests
@@ -389,6 +407,7 @@ fn printHelp() void {
         \\Examples:
         \\  kira run hello.ki     Run a program
         \\  kira build hello.ki   Compile to hello.c
+        \\  kira build --lib m.ki Build library (m.c, m.h, m.kl, m.json)
         \\  kira check lib.ki     Type-check without running
         \\  kira fmt hello.ki     Format a source file
         \\  kira fmt --check .    Check formatting
@@ -1092,10 +1111,22 @@ fn checkFile(allocator: Allocator, path: []const u8, use_color: bool) !void {
     }
 }
 
-/// Build a Kira source file to a native executable via C codegen.
-fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool) !void {
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+/// Build a Kira source file to C (and optionally .h/.kl for library mode).
+fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool, lib_mode: bool, emit_header: bool, emit_manifest: bool) !void {
+    return buildFileWithIO(allocator, path, output_path, use_color, lib_mode, emit_header, emit_manifest, std.fs.File.stdout(), std.fs.File.stderr());
+}
+
+fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool, lib_mode: bool, emit_header: bool, emit_manifest: bool, stdout: std.fs.File, stderr: std.fs.File) !void {
+    // Warn about conflicting flags
+    if (emit_header and emit_manifest) {
+        stderr.writeAll("warning: --emit-header and --manifest are mutually exclusive; using --emit-header\n") catch {};
+    }
+    if (emit_header and lib_mode) {
+        stderr.writeAll("warning: --emit-header overrides --lib (no C codegen)\n") catch {};
+    }
+    if (emit_manifest and lib_mode) {
+        stderr.writeAll("warning: --manifest overrides --lib (no C codegen)\n") catch {};
+    }
 
     const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
     defer allocator.free(source);
@@ -1188,6 +1219,58 @@ fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, u
     };
     defer ir_module.deinit();
 
+    // Compute base path for output files (strip .ki extension).
+    // base_buf is shared across writeHeaderFile/writeKlarFile/writeManifestFile —
+    // each helper writes its path, consumes it within scope, then returns.
+    var base_buf: [512]u8 = undefined;
+    const base_path = if (std.mem.endsWith(u8, path, ".ki"))
+        path[0 .. path.len - 3]
+    else
+        path;
+
+    // Derive module name from base path (filename without directory)
+    const module_name = if (std.fs.path.basename(base_path).len > 0)
+        std.fs.path.basename(base_path)
+    else
+        "output";
+
+    // Check [exports] config: if exports are configured, only generate interop
+    // files for modules in the list. An empty exports list means no restriction.
+    const exports = project_config.getExports();
+    const exports_configured = exports.len > 0;
+    const module_exported = !exports_configured or project_config.isExported(module_name);
+
+    // --emit-header: generate .h and .kl only, skip codegen
+    if (emit_header) {
+        if (output_path != null) {
+            stderr.writeAll("warning: --output is ignored with --emit-header\n") catch {};
+        }
+        if (!module_exported) {
+            var buf2: [512]u8 = undefined;
+            const skip_msg = std.fmt.bufPrint(&buf2, "Skipped: module '{s}' not in [exports]\n", .{module_name}) catch "Skipped: module not in [exports]\n";
+            stdout.writeAll(skip_msg) catch {};
+            return;
+        }
+        try writeHeaderFile(allocator, stderr, stdout, &ir_module, module_name, base_path, &base_buf);
+        try writeKlarFile(allocator, stderr, stdout, &ir_module, base_path, &base_buf);
+        return;
+    }
+
+    // --manifest: generate .json type manifest only, skip codegen
+    if (emit_manifest) {
+        if (output_path != null) {
+            stderr.writeAll("warning: --output is ignored with --manifest\n") catch {};
+        }
+        if (!module_exported) {
+            var buf2: [512]u8 = undefined;
+            const skip_msg = std.fmt.bufPrint(&buf2, "Skipped: module '{s}' not in [exports]\n", .{module_name}) catch "Skipped: module not in [exports]\n";
+            stdout.writeAll(skip_msg) catch {};
+            return;
+        }
+        try writeManifestFile(allocator, stderr, stdout, &ir_module, module_name, base_path, &base_buf);
+        return;
+    }
+
     // Generate C code
     var codegen_gen = Kira.codegen.CCodeGen.init(allocator);
     defer codegen_gen.deinit();
@@ -1199,21 +1282,15 @@ fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, u
         return error.CompileError;
     };
 
-    // Determine output path
+    // Write C file
     const c_output = codegen_gen.getOutput();
 
-    // Write C file
     var c_path_buf: [512]u8 = undefined;
     const c_path = output_path orelse blk: {
-        // Default: replace .ki with .c
-        if (std.mem.endsWith(u8, path, ".ki")) {
-            const base = path[0 .. path.len - 3];
-            const c_name = std.fmt.bufPrint(&c_path_buf, "{s}.c", .{base}) catch {
-                break :blk "output.c";
-            };
-            break :blk c_name;
-        }
-        break :blk "output.c";
+        const c_name = std.fmt.bufPrint(&c_path_buf, "{s}.c", .{base_path}) catch {
+            break :blk "output.c";
+        };
+        break :blk c_name;
     };
 
     const c_file = std.fs.cwd().createFile(c_path, .{}) catch {
@@ -1227,9 +1304,133 @@ fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, u
         return error.WriteError;
     };
 
+    // In library mode, append typed C wrapper functions
+    // (only if module is in [exports] or no [exports] configured)
+    if (lib_mode and module_exported) {
+        const wrappers = Kira.interop.klar.generateLibraryWrappers(allocator, &ir_module) catch {
+            stderr.writeAll("error: could not generate library wrappers\n") catch {};
+            // Delete partial .c file
+            std.fs.cwd().deleteFile(c_path) catch {};
+            return error.CompileError;
+        };
+        defer allocator.free(wrappers);
+        c_file.writeAll(wrappers) catch {
+            stderr.writeAll("error: could not write library wrappers\n") catch {};
+            // Delete partial .c file
+            std.fs.cwd().deleteFile(c_path) catch {};
+            return error.WriteError;
+        };
+    }
+
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{c_path}) catch "Generated output\n";
     try stdout.writeAll(msg);
+
+    // In library mode, also generate .h, .kl, and .json files
+    // (only if module is in [exports] or no [exports] configured)
+    if (lib_mode and module_exported) {
+        try writeHeaderFile(allocator, stderr, stdout, &ir_module, module_name, base_path, &base_buf);
+        try writeKlarFile(allocator, stderr, stdout, &ir_module, base_path, &base_buf);
+        try writeManifestFile(allocator, stderr, stdout, &ir_module, module_name, base_path, &base_buf);
+    }
+}
+
+fn writeHeaderFile(
+    allocator: Allocator,
+    stderr: std.fs.File,
+    stdout: std.fs.File,
+    ir_module: *const Kira.ir.Module,
+    module_name: []const u8,
+    base_path: []const u8,
+    path_buf: *[512]u8,
+) !void {
+    const header = Kira.interop.klar.generateHeader(allocator, ir_module, module_name) catch {
+        stderr.writeAll("error: could not generate header\n") catch {};
+        return error.CompileError;
+    };
+    defer allocator.free(header);
+
+    const h_path = std.fmt.bufPrint(path_buf, "{s}.h", .{base_path}) catch "output.h";
+
+    const h_file = std.fs.cwd().createFile(h_path, .{}) catch {
+        stderr.writeAll("error: could not create header file\n") catch {};
+        return error.WriteError;
+    };
+    defer h_file.close();
+
+    h_file.writeAll(header) catch {
+        stderr.writeAll("error: could not write header file\n") catch {};
+        return error.WriteError;
+    };
+
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{h_path}) catch "Generated header\n";
+    stdout.writeAll(msg) catch {};
+}
+
+fn writeKlarFile(
+    allocator: Allocator,
+    stderr: std.fs.File,
+    stdout: std.fs.File,
+    ir_module: *const Kira.ir.Module,
+    base_path: []const u8,
+    path_buf: *[512]u8,
+) !void {
+    const klar_block = Kira.interop.klar.generateKlarExternBlock(allocator, ir_module) catch {
+        stderr.writeAll("error: could not generate Klar extern block\n") catch {};
+        return error.CompileError;
+    };
+    defer allocator.free(klar_block);
+
+    const kl_path = std.fmt.bufPrint(path_buf, "{s}.kl", .{base_path}) catch "output.kl";
+
+    const kl_file = std.fs.cwd().createFile(kl_path, .{}) catch {
+        stderr.writeAll("error: could not create Klar file\n") catch {};
+        return error.WriteError;
+    };
+    defer kl_file.close();
+
+    kl_file.writeAll(klar_block) catch {
+        stderr.writeAll("error: could not write Klar file\n") catch {};
+        return error.WriteError;
+    };
+
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{kl_path}) catch "Generated Klar extern block\n";
+    stdout.writeAll(msg) catch {};
+}
+
+fn writeManifestFile(
+    allocator: Allocator,
+    stderr: std.fs.File,
+    stdout: std.fs.File,
+    ir_module: *const Kira.ir.Module,
+    module_name: []const u8,
+    base_path: []const u8,
+    path_buf: *[512]u8,
+) !void {
+    const manifest = Kira.interop.klar.generateManifestJSON(allocator, ir_module, module_name) catch {
+        stderr.writeAll("error: could not generate manifest\n") catch {};
+        return error.CompileError;
+    };
+    defer allocator.free(manifest);
+
+    const json_path = std.fmt.bufPrint(path_buf, "{s}.json", .{base_path}) catch "output.json";
+
+    const json_file = std.fs.cwd().createFile(json_path, .{}) catch {
+        stderr.writeAll("error: could not create manifest file\n") catch {};
+        return error.WriteError;
+    };
+    defer json_file.close();
+
+    json_file.writeAll(manifest) catch {
+        stderr.writeAll("error: could not write manifest file\n") catch {};
+        return error.WriteError;
+    };
+
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{json_path}) catch "Generated manifest\n";
+    stdout.writeAll(msg) catch {};
 }
 
 /// Run tests in a Kira source file
@@ -2837,6 +3038,9 @@ test "parse args help" {
         .bench_iterations = 0,
         .coverage = false,
         .coverage_json = false,
+        .lib_mode = false,
+        .emit_header = false,
+        .emit_manifest = false,
     };
 }
 
@@ -2918,4 +3122,249 @@ test "runFile supports cross-file aliased imports end-to-end" {
     defer allocator.free(main_path);
 
     try runFile(allocator, main_path, true, &[_][]const u8{}, false);
+}
+
+test "buildFile --lib produces .c, .h, and .kl files" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "mylib.ki",
+        .data =
+        \\module mylib
+        \\
+        \\pub fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        ,
+    });
+
+    const lib_path = try tmp.dir.realpathAlloc(allocator, "mylib.ki");
+    defer allocator.free(lib_path);
+
+    // Use /dev/null for stdout to avoid interfering with zig build test's --listen=- protocol
+    const dev_null = try std.fs.cwd().openFile("/dev/null", .{ .mode = .write_only });
+    defer dev_null.close();
+    try buildFileWithIO(allocator, lib_path, null, false, true, false, false, dev_null, std.fs.File.stderr());
+
+    // Verify .c file exists
+    const c_file = try tmp.dir.openFile("mylib.c", .{});
+    c_file.close();
+
+    // Verify .h file exists and has correct content
+    const h_file = try tmp.dir.openFile("mylib.h", .{});
+    defer h_file.close();
+    const h_content = try h_file.readToEndAlloc(allocator, 8192);
+    defer allocator.free(h_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "#ifndef KIRA_MYLIB_H") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "int32_t add(int32_t a, int32_t b)") != null);
+
+    // Verify .kl file exists and has correct content
+    const kl_file = try tmp.dir.openFile("mylib.kl", .{});
+    defer kl_file.close();
+    const kl_content = try kl_file.readToEndAlloc(allocator, 8192);
+    defer allocator.free(kl_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "extern {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn add(a: i32, b: i32) -> i32") != null);
+
+    // Verify .json manifest exists and has correct content
+    const json_file = try tmp.dir.openFile("mylib.json", .{});
+    defer json_file.close();
+    const json_content = try json_file.readToEndAlloc(allocator, 8192);
+    defer allocator.free(json_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"module\": \"mylib\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"i32\"") != null);
+}
+
+test "buildFile --emit-header produces only .h and .kl (no .c)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "hdrlib.ki",
+        .data =
+        \\module hdrlib
+        \\
+        \\pub fn scale(x: f64) -> f64 {
+        \\    return x
+        \\}
+        ,
+    });
+
+    const lib_path = try tmp.dir.realpathAlloc(allocator, "hdrlib.ki");
+    defer allocator.free(lib_path);
+
+    // Use /dev/null for stdout to avoid interfering with zig build test's --listen=- protocol
+    const dev_null = try std.fs.cwd().openFile("/dev/null", .{ .mode = .write_only });
+    defer dev_null.close();
+    try buildFileWithIO(allocator, lib_path, null, false, false, true, false, dev_null, std.fs.File.stderr());
+
+    // .h should exist
+    const h_file = try tmp.dir.openFile("hdrlib.h", .{});
+    defer h_file.close();
+    const h_content = try h_file.readToEndAlloc(allocator, 8192);
+    defer allocator.free(h_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "double scale(double x)") != null);
+
+    // .kl should exist
+    const kl_file = try tmp.dir.openFile("hdrlib.kl", .{});
+    defer kl_file.close();
+    const kl_content = try kl_file.readToEndAlloc(allocator, 8192);
+    defer allocator.free(kl_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn scale(x: f64) -> f64") != null);
+
+    // .c should NOT exist (emit-header skips codegen)
+    const c_result = tmp.dir.openFile("hdrlib.c", .{});
+    if (c_result) |f| {
+        f.close();
+        return error.UnexpectedFile; // .c should not exist
+    } else |_| {
+        // Expected: file not found
+    }
+}
+
+test "buildFile --manifest produces only .json (no .c/.h/.kl)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "mlib.ki",
+        .data =
+        \\module mlib
+        \\
+        \\pub fn scale(x: f64) -> f64 {
+        \\    return x
+        \\}
+        \\
+        \\pub fn greet(name: string) -> string {
+        \\    return name
+        \\}
+        ,
+    });
+
+    const lib_path = try tmp.dir.realpathAlloc(allocator, "mlib.ki");
+    defer allocator.free(lib_path);
+
+    const dev_null = try std.fs.cwd().openFile("/dev/null", .{ .mode = .write_only });
+    defer dev_null.close();
+    try buildFileWithIO(allocator, lib_path, null, false, false, false, true, dev_null, std.fs.File.stderr());
+
+    // .json should exist and have correct content
+    const json_file = try tmp.dir.openFile("mlib.json", .{});
+    defer json_file.close();
+    const json_content = try json_file.readToEndAlloc(allocator, 8192);
+    defer allocator.free(json_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"module\": \"mlib\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"scale\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"f64\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"greet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"string\"") != null);
+
+    // .c, .h, .kl should NOT exist
+    if (tmp.dir.openFile("mlib.c", .{})) |f| {
+        f.close();
+        return error.UnexpectedFile;
+    } else |_| {}
+    if (tmp.dir.openFile("mlib.h", .{})) |f| {
+        f.close();
+        return error.UnexpectedFile;
+    } else |_| {}
+    if (tmp.dir.openFile("mlib.kl", .{})) |f| {
+        f.close();
+        return error.UnexpectedFile;
+    } else |_| {}
+}
+
+test "buildFile --lib end-to-end with mixed types" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "mixlib.ki",
+        .data =
+        \\module mixlib
+        \\
+        \\pub fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\
+        \\pub fn scale(x: f64) -> f64 {
+        \\    return x
+        \\}
+        \\
+        \\pub fn greet(name: string) -> string {
+        \\    return name
+        \\}
+        \\
+        \\pub fn check(flag: bool) -> bool {
+        \\    return flag
+        \\}
+        ,
+    });
+
+    const lib_path = try tmp.dir.realpathAlloc(allocator, "mixlib.ki");
+    defer allocator.free(lib_path);
+
+    const dev_null = try std.fs.cwd().openFile("/dev/null", .{ .mode = .write_only });
+    defer dev_null.close();
+    try buildFileWithIO(allocator, lib_path, null, false, true, false, false, dev_null, std.fs.File.stderr());
+
+    // Verify all four output files exist
+    const c_file = try tmp.dir.openFile("mixlib.c", .{});
+    c_file.close();
+
+    // .h: verify typed declarations
+    const h_file = try tmp.dir.openFile("mixlib.h", .{});
+    defer h_file.close();
+    const h_content = try h_file.readToEndAlloc(allocator, 16384);
+    defer allocator.free(h_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "int32_t add(int32_t a, int32_t b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "double scale(double x)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "const char* greet(const char* name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "bool check(bool flag)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h_content, "void kira_free(void* ptr)") != null);
+
+    // .kl: verify extern declarations and string wrappers
+    const kl_file = try tmp.dir.openFile("mixlib.kl", .{});
+    defer kl_file.close();
+    const kl_content = try kl_file.readToEndAlloc(allocator, 16384);
+    defer allocator.free(kl_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn add(a: i32, b: i32) -> i32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn scale(x: f64) -> f64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn greet(name: CStr) -> CStr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn check(flag: Bool) -> Bool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kl_content, "fn greet_str(") != null);
+
+    // .json: verify manifest completeness
+    const json_file = try tmp.dir.openFile("mixlib.json", .{});
+    defer json_file.close();
+    const json_content = try json_file.readToEndAlloc(allocator, 16384);
+    defer allocator.free(json_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"module\": \"mixlib\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"scale\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"greet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"name\": \"check\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"i32\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"f64\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"string\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_content, "\"return_type\": \"bool\"") != null);
 }

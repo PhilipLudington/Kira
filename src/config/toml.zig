@@ -88,6 +88,8 @@ pub const ParseResult = struct {
     modules: TomlTable,
     /// Dependencies from [dependencies] section.
     dependencies: std.ArrayListUnmanaged(Dependency),
+    /// Exported module names from [exports] section.
+    exports: std.ArrayListUnmanaged([]const u8),
 
     /// Free all allocated memory.
     pub fn deinit(self: *ParseResult, allocator: Allocator) void {
@@ -117,6 +119,10 @@ pub const ParseResult = struct {
             @constCast(dep).deinit(allocator);
         }
         self.dependencies.deinit(allocator);
+        for (self.exports.items) |name| {
+            allocator.free(name);
+        }
+        self.exports.deinit(allocator);
     }
 };
 
@@ -131,6 +137,7 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!ParseResult {
         .package_authors = .{},
         .modules = .{},
         .dependencies = .{},
+        .exports = .{},
     };
     errdefer result.deinit(allocator);
 
@@ -204,6 +211,11 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!ParseResult {
 
                     result.dependencies.append(allocator, dep) catch return error.OutOfMemory;
                 }
+            } else if (std.mem.eql(u8, section, "exports")) {
+                // Exports: modules = ["mod1", "mod2"] (array form)
+                if (parseArrayLine(trimmed, "modules")) |array_content| {
+                    try parseArrayValues(allocator, array_content, &result.exports);
+                }
             }
             // Ignore other sections
         }
@@ -254,9 +266,14 @@ fn parseVersionConstraint(allocator: Allocator, value: []const u8) ParseError!?V
 
 /// Check if a line is an authors = [...] declaration and return the array content.
 fn parseAuthorsLine(line: []const u8) ?[]const u8 {
+    return parseArrayLine(line, "authors");
+}
+
+/// Check if a line is a `key = [...]` declaration and return the array content.
+fn parseArrayLine(line: []const u8, expected_key: []const u8) ?[]const u8 {
     const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse return null;
     const key = std.mem.trim(u8, line[0..eq_pos], " \t");
-    if (!std.mem.eql(u8, key, "authors")) return null;
+    if (!std.mem.eql(u8, key, expected_key)) return null;
 
     const value_part = std.mem.trim(u8, line[eq_pos + 1 ..], " \t");
     if (value_part.len < 2 or value_part[0] != '[' or value_part[value_part.len - 1] != ']') return null;
@@ -285,7 +302,10 @@ fn parseArrayValues(allocator: Allocator, content: []const u8, list: *std.ArrayL
         const end_quote = std.mem.indexOfScalarPos(u8, rest, 1, '"') orelse return error.UnterminatedString;
         const value = rest[1..end_quote];
         const duped = allocator.dupe(u8, value) catch return error.OutOfMemory;
-        list.append(allocator, duped) catch return error.OutOfMemory;
+        list.append(allocator, duped) catch {
+            allocator.free(duped);
+            return error.OutOfMemory;
+        };
 
         rest = rest[end_quote + 1 ..];
         // Skip comma
@@ -600,6 +620,51 @@ test "ignore other sections" {
     try std.testing.expectEqual(@as(usize, 1), result.modules.count());
     try std.testing.expect(result.modules.get("ignored") == null);
     try std.testing.expectEqualStrings("path", result.modules.get("included").?);
+}
+
+test "parse exports section" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\[package]
+        \\name = "mylib"
+        \\version = "1.0.0"
+        \\
+        \\[exports]
+        \\modules = ["math", "utils"]
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.exports.items.len);
+    try std.testing.expectEqualStrings("math", result.exports.items[0]);
+    try std.testing.expectEqualStrings("utils", result.exports.items[1]);
+}
+
+test "parse empty exports" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\[exports]
+        \\modules = []
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.exports.items.len);
+}
+
+test "no exports section means empty list" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\[package]
+        \\name = "noexports"
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.exports.items.len);
 }
 
 test "invalid syntax errors" {

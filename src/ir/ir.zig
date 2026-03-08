@@ -136,11 +136,15 @@ pub const Function = struct {
     instructions: std.ArrayListUnmanaged(Instruction),
     /// Entry block (always 0 for well-formed functions).
     entry_block: BlockId,
+    /// Source-level return type name for interop (e.g. "i32", "f64", "void").
+    return_type_name: []const u8 = "i64",
 
     pub const Param = struct {
         name: []const u8,
         /// The ValueRef assigned to this parameter.
         value_ref: ValueRef,
+        /// Source-level type name for interop (e.g. "i32", "f64", "string").
+        type_name: []const u8 = "i64",
     };
 
     pub const Capture = struct {
@@ -719,6 +723,8 @@ pub const VariantDecl = struct {
     tag: u32,
     /// Number of payload fields (0 for unit variants like None).
     field_count: u32,
+    /// Payload field types (e.g. "f64", "i32", "MyType"). Length == field_count.
+    field_types: []const FieldDecl = &.{},
 };
 
 pub const ProductTypeDecl = struct {
@@ -728,6 +734,8 @@ pub const ProductTypeDecl = struct {
 pub const FieldDecl = struct {
     name: []const u8,
     index: u32,
+    /// Source-level type name for interop (e.g. "i32", "f64", "MyType").
+    type_name: []const u8 = "i64",
 };
 
 // ============================================================

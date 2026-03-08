@@ -150,10 +150,12 @@ pub const Lowerer = struct {
             params.append(alloc, .{
                 .name = param.name,
                 .value_ref = vref,
+                .type_name = astTypeToName(param.param_type),
             }) catch return LowerError.OutOfMemory;
             try self.defineVar(param.name, vref);
         }
         self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+        self.currentFunc().?.return_type_name = astTypeToName(fd.return_type);
 
         // Lower body statements
         try self.lowerStatements(body);
@@ -185,14 +187,34 @@ pub const Lowerer = struct {
             .sum_type => |st| blk: {
                 var variants = std.ArrayListUnmanaged(ir.VariantDecl){};
                 for (st.variants, 0..) |v, i| {
+                    var field_decls = std.ArrayListUnmanaged(ir.FieldDecl){};
                     const field_count: u32 = if (v.fields) |fields| switch (fields) {
-                        .tuple_fields => |tf| @intCast(tf.len),
-                        .record_fields => |rf| @intCast(rf.len),
+                        .tuple_fields => |tf| fc: {
+                            for (tf, 0..) |ft, fi| {
+                                field_decls.append(alloc, .{
+                                    .name = astTupleFieldName(alloc, fi) catch return LowerError.OutOfMemory,
+                                    .index = @intCast(fi),
+                                    .type_name = astTypeToName(ft),
+                                }) catch return LowerError.OutOfMemory;
+                            }
+                            break :fc @intCast(tf.len);
+                        },
+                        .record_fields => |rf| fc: {
+                            for (rf, 0..) |f, fi| {
+                                field_decls.append(alloc, .{
+                                    .name = f.name,
+                                    .index = @intCast(fi),
+                                    .type_name = astTypeToName(f.field_type),
+                                }) catch return LowerError.OutOfMemory;
+                            }
+                            break :fc @intCast(rf.len);
+                        },
                     } else 0;
                     variants.append(alloc, .{
                         .name = v.name,
                         .tag = @intCast(i),
                         .field_count = field_count,
+                        .field_types = field_decls.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
                     }) catch return LowerError.OutOfMemory;
                 }
                 break :blk .{ .sum_type = .{
@@ -205,6 +227,7 @@ pub const Lowerer = struct {
                     fields.append(alloc, .{
                         .name = f.name,
                         .index = @intCast(i),
+                        .type_name = astTypeToName(f.field_type),
                     }) catch return LowerError.OutOfMemory;
                 }
                 break :blk .{ .product_type = .{
@@ -920,10 +943,12 @@ pub const Lowerer = struct {
                 params.append(alloc, .{
                     .name = param.name,
                     .value_ref = vref,
+                    .type_name = astTypeToName(param.param_type),
                 }) catch return LowerError.OutOfMemory;
                 try self.defineVar(param.name, vref);
             }
             self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+            self.currentFunc().?.return_type_name = astTypeToName(cl.return_type);
 
             // Define captures in the closure's scope, propagating float status
             var captures = std.ArrayListUnmanaged(Function.Capture){};
@@ -1300,6 +1325,23 @@ pub const Lowerer = struct {
         };
     }
 
+    /// Map an AST type to its canonical name for interop.
+    fn astTypeToName(ast_type: *const Type) []const u8 {
+        return switch (ast_type.kind) {
+            .primitive => |p| p.toString(),
+            .named => |n| n.name,
+            .option_type => "option",
+            .result_type => "result",
+            .io_type => "io",
+            else => "i64",
+        };
+    }
+
+    /// Generate a positional field name like "_0", "_1", etc. for tuple-style variant fields.
+    fn astTupleFieldName(alloc: Allocator, index: usize) ![]const u8 {
+        return std.fmt.allocPrint(alloc, "_{d}", .{index});
+    }
+
     /// Register a ValueRef as float-typed (for params/captures with float types).
     fn markFloat(self: *Lowerer, ref: ValueRef) LowerError!void {
         self.float_refs.put(self.allocator, ref, {}) catch return LowerError.OutOfMemory;
@@ -1330,7 +1372,7 @@ pub const Lowerer = struct {
             }
         }
         if (match_count > 1) {
-            log.warn("ambiguous variant '{s}' matched in {d} types — using first match", .{ variant_name, match_count });
+            log.debug("ambiguous variant '{s}' matched in {d} types — using first match", .{ variant_name, match_count });
         }
         return first_match;
     }
