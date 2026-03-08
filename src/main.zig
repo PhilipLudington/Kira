@@ -1107,9 +1107,10 @@ fn checkFile(allocator: Allocator, path: []const u8, use_color: bool) !void {
 
 /// Build a Kira source file to C (and optionally .h/.kl for library mode).
 fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool, lib_mode: bool, emit_header: bool) !void {
-    const stdout = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr();
+    return buildFileWithIO(allocator, path, output_path, use_color, lib_mode, emit_header, std.fs.File.stdout(), std.fs.File.stderr());
+}
 
+fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const u8, use_color: bool, lib_mode: bool, emit_header: bool, stdout: std.fs.File, stderr: std.fs.File) !void {
     const source = loadFileContent(allocator, stderr, path) orelse return error.ReadError;
     defer allocator.free(source);
 
@@ -1256,6 +1257,19 @@ fn buildFile(allocator: Allocator, path: []const u8, output_path: ?[]const u8, u
         stderr.writeAll("error: could not write output file\n") catch {};
         return error.WriteError;
     };
+
+    // In library mode, append typed C wrapper functions
+    if (lib_mode) {
+        const wrappers = Kira.interop.klar.generateLibraryWrappers(allocator, &ir_module) catch {
+            stderr.writeAll("error: could not generate library wrappers\n") catch {};
+            return error.CompileError;
+        };
+        defer allocator.free(wrappers);
+        c_file.writeAll(wrappers) catch {
+            stderr.writeAll("error: could not write library wrappers\n") catch {};
+            return error.WriteError;
+        };
+    }
 
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "Generated: {s}\n", .{c_path}) catch "Generated output\n";
@@ -3043,7 +3057,10 @@ test "buildFile --lib produces .c, .h, and .kl files" {
     const lib_path = try tmp.dir.realpathAlloc(allocator, "mylib.ki");
     defer allocator.free(lib_path);
 
-    try buildFile(allocator, lib_path, null, false, true, false);
+    // Use /dev/null for stdout to avoid interfering with zig build test's --listen=- protocol
+    const dev_null = try std.fs.cwd().openFile("/dev/null", .{ .mode = .write_only });
+    defer dev_null.close();
+    try buildFileWithIO(allocator, lib_path, null, false, true, false, dev_null, std.fs.File.stderr());
 
     // Verify .c file exists
     const c_file = try tmp.dir.openFile("mylib.c", .{});
@@ -3088,7 +3105,10 @@ test "buildFile --emit-header produces only .h and .kl (no .c)" {
     const lib_path = try tmp.dir.realpathAlloc(allocator, "hdrlib.ki");
     defer allocator.free(lib_path);
 
-    try buildFile(allocator, lib_path, null, false, false, true);
+    // Use /dev/null for stdout to avoid interfering with zig build test's --listen=- protocol
+    const dev_null = try std.fs.cwd().openFile("/dev/null", .{ .mode = .write_only });
+    defer dev_null.close();
+    try buildFileWithIO(allocator, lib_path, null, false, false, true, dev_null, std.fs.File.stderr());
 
     // .h should exist
     const h_file = try tmp.dir.openFile("hdrlib.h", .{});

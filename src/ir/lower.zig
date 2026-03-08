@@ -1372,7 +1372,7 @@ pub const Lowerer = struct {
             }
         }
         if (match_count > 1) {
-            log.warn("ambiguous variant '{s}' matched in {d} types — using first match", .{ variant_name, match_count });
+            log.debug("ambiguous variant '{s}' matched in {d} types — using first match", .{ variant_name, match_count });
         }
         return first_match;
     }

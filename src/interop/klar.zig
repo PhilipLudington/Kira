@@ -141,6 +141,10 @@ pub fn generateHeader(allocator: Allocator, module: *const ir.Module, module_nam
         try appendSlice(allocator, &output, ");\n");
     }
 
+    // kira_free for library cleanup
+    try appendSlice(allocator, &output, "\n/* Memory management */\n");
+    try appendSlice(allocator, &output, "void kira_free(void* ptr);\n");
+
     try appendSlice(allocator, &output, "\n#ifdef __cplusplus\n}\n#endif\n\n");
     try appendFmt(allocator, &output, "#endif /* {s} */\n", .{guard});
 
@@ -174,7 +178,13 @@ pub fn generateKlarExternBlock(allocator: Allocator, module: *const ir.Module) !
         try appendFmt(allocator, &output, ") -> {s}\n", .{kiraToKlarType(func.return_type_name)});
     }
 
+    // kira_free declaration
+    try appendSlice(allocator, &output, "    fn kira_free(ptr: Ptr) -> Void\n");
+
     try appendSlice(allocator, &output, "}\n");
+
+    // String convenience wrappers
+    try emitKlarStringWrappers(allocator, &output, module);
 
     return output.toOwnedSlice(allocator);
 }
@@ -300,6 +310,170 @@ fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
                 try appendSlice(allocator, output, "}\n\n");
             },
         }
+    }
+}
+
+/// Check if a Kira type name is a floating-point type.
+fn isFloatType(type_name: []const u8) bool {
+    return std.mem.eql(u8, type_name, "f32") or
+        std.mem.eql(u8, type_name, "f64") or
+        std.mem.eql(u8, type_name, "float");
+}
+
+/// Check if a Kira type name is the string type.
+fn isStringType(type_name: []const u8) bool {
+    return std.mem.eql(u8, type_name, "string");
+}
+
+/// Generate C library wrapper functions that bridge between the typed C API
+/// and the internal kira_int representation. Also emits kira_free().
+/// Caller owns the returned slice.
+pub fn generateLibraryWrappers(allocator: Allocator, module: *const ir.Module) ![]u8 {
+    var output = std.ArrayListUnmanaged(u8){};
+    errdefer output.deinit(allocator);
+
+    try appendSlice(allocator, &output, "\n/* Library API wrappers */\n\n");
+    try appendSlice(allocator, &output, "void kira_free(void* ptr) { free(ptr); }\n\n");
+
+    for (module.functions.items) |func| {
+        const name = func.name orelse continue;
+        if (std.mem.eql(u8, name, "main")) continue;
+        try emitLibraryWrapper(allocator, &output, &func, module);
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+/// Emit a single C wrapper function for a library-exported Kira function.
+fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), func: *const ir.Function, module: *const ir.Module) !void {
+    const name = func.name orelse return;
+    const is_void_return = std.mem.eql(u8, func.return_type_name, "void");
+
+    // Return type
+    const ret_c = try kiraToCTypeAlloc(allocator, func.return_type_name, module);
+    defer if (ret_c.allocated) allocator.free(ret_c.c_type);
+
+    // Signature
+    try appendFmt(allocator, output, "{s} {s}(", .{ ret_c.c_type, name });
+    if (func.params.len == 0) {
+        try appendSlice(allocator, output, "void");
+    } else {
+        for (func.params, 0..) |param, i| {
+            if (i > 0) try appendSlice(allocator, output, ", ");
+            const param_c = try kiraToCTypeAlloc(allocator, param.type_name, module);
+            defer if (param_c.allocated) allocator.free(param_c.c_type);
+            try appendFmt(allocator, output, "{s} {s}", .{ param_c.c_type, param.name });
+        }
+    }
+    try appendSlice(allocator, output, ") {\n");
+
+    // Convert float params to kira_int temps (widen f32 to double first)
+    for (func.params, 0..) |param, i| {
+        if (isFloatType(param.type_name)) {
+            if (std.mem.eql(u8, param.type_name, "f32")) {
+                try appendFmt(allocator, output, "    double _d{d} = (double){s}; kira_int _a{d}; memcpy(&_a{d}, &_d{d}, sizeof(double));\n", .{ i, param.name, i, i, i });
+            } else {
+                try appendFmt(allocator, output, "    kira_int _a{d}; memcpy(&_a{d}, &{s}, sizeof(double));\n", .{ i, i, param.name });
+            }
+        }
+    }
+
+    // Call internal function
+    if (is_void_return) {
+        try appendFmt(allocator, output, "    kira_{s}(", .{name});
+    } else {
+        try appendFmt(allocator, output, "    kira_int _r = kira_{s}(", .{name});
+    }
+
+    // Arguments with type conversions
+    for (func.params, 0..) |param, i| {
+        if (i > 0) try appendSlice(allocator, output, ", ");
+        if (isFloatType(param.type_name)) {
+            try appendFmt(allocator, output, "_a{d}", .{i});
+        } else if (isStringType(param.type_name)) {
+            try appendFmt(allocator, output, "(kira_int)(intptr_t){s}", .{param.name});
+        } else {
+            try appendFmt(allocator, output, "(kira_int){s}", .{param.name});
+        }
+    }
+    try appendSlice(allocator, output, ");\n");
+
+    // Convert return value (for f32, memcpy to double then narrow)
+    if (!is_void_return) {
+        if (isFloatType(func.return_type_name)) {
+            if (std.mem.eql(u8, func.return_type_name, "f32")) {
+                try appendSlice(allocator, output, "    double _ret_d; memcpy(&_ret_d, &_r, sizeof(double));\n    return (float)_ret_d;\n");
+            } else {
+                try appendFmt(allocator, output, "    {s} _ret; memcpy(&_ret, &_r, sizeof(double));\n    return _ret;\n", .{ret_c.c_type});
+            }
+        } else if (isStringType(func.return_type_name)) {
+            try appendSlice(allocator, output, "    return (const char*)(intptr_t)_r;\n");
+        } else {
+            try appendFmt(allocator, output, "    return ({s})_r;\n", .{ret_c.c_type});
+        }
+    }
+
+    try appendSlice(allocator, output, "}\n\n");
+}
+
+/// Emit Klar convenience wrappers for functions that use string types.
+fn emitKlarStringWrappers(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), module: *const ir.Module) !void {
+    var has_string_func = false;
+    for (module.functions.items) |func| {
+        const name = func.name orelse continue;
+        if (std.mem.eql(u8, name, "main")) continue;
+
+        var uses_string = isStringType(func.return_type_name);
+        if (!uses_string) {
+            for (func.params) |param| {
+                if (isStringType(param.type_name)) {
+                    uses_string = true;
+                    break;
+                }
+            }
+        }
+        if (!uses_string) continue;
+
+        if (!has_string_func) {
+            try appendSlice(allocator, output, "\n// String convenience wrappers\n");
+            has_string_func = true;
+        }
+
+        // Emit wrapper: fn name_str(params with string types) -> return_type
+        try appendFmt(allocator, output, "fn {s}_str(", .{name});
+        for (func.params, 0..) |param, i| {
+            if (i > 0) try appendSlice(allocator, output, ", ");
+            if (isStringType(param.type_name)) {
+                try appendFmt(allocator, output, "{s}: string", .{param.name});
+            } else {
+                try appendFmt(allocator, output, "{s}: {s}", .{ param.name, kiraToKlarType(param.type_name) });
+            }
+        }
+        if (isStringType(func.return_type_name)) {
+            try appendSlice(allocator, output, ") -> string =\n");
+        } else {
+            try appendFmt(allocator, output, ") -> {s} =\n", .{kiraToKlarType(func.return_type_name)});
+        }
+
+        // Body: wrap call with string conversions
+        try appendSlice(allocator, output, "    ");
+        if (isStringType(func.return_type_name)) {
+            try appendSlice(allocator, output, "String.from_cstr(");
+        }
+        try appendFmt(allocator, output, "{s}(", .{name});
+        for (func.params, 0..) |param, i| {
+            if (i > 0) try appendSlice(allocator, output, ", ");
+            if (isStringType(param.type_name)) {
+                try appendFmt(allocator, output, "String.to_cstr({s})", .{param.name});
+            } else {
+                try appendFmt(allocator, output, "{s}", .{param.name});
+            }
+        }
+        try appendSlice(allocator, output, ")");
+        if (isStringType(func.return_type_name)) {
+            try appendSlice(allocator, output, ")");
+        }
+        try appendSlice(allocator, output, "\n\n");
     }
 }
 
@@ -725,4 +899,159 @@ test "generateHeader sum type with unit-only variants (simple enum)" {
     try std.testing.expect(std.mem.indexOf(u8, header, "kira_Color_Tag tag;") != null);
     try std.testing.expect(std.mem.indexOf(u8, header, "union") == null);
     try std.testing.expect(std.mem.indexOf(u8, header, "} kira_Color;") != null);
+}
+
+test "generateHeader includes kira_free declaration" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const header = try generateHeader(allocator, &module, "mylib");
+    defer allocator.free(header);
+
+    try std.testing.expect(std.mem.indexOf(u8, header, "void kira_free(void* ptr);") != null);
+}
+
+test "generateKlarExternBlock includes kira_free" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn kira_free(ptr: Ptr) -> Void") != null);
+}
+
+test "generateLibraryWrappers with mixed types" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn add(a: i32, b: i32) -> i32
+    var func1 = ir.Function.init(arena);
+    func1.name = "add";
+    func1.return_type_name = "i32";
+    const p1 = try arena.alloc(ir.Function.Param, 2);
+    p1[0] = .{ .name = "a", .value_ref = 0, .type_name = "i32" };
+    p1[1] = .{ .name = "b", .value_ref = 1, .type_name = "i32" };
+    func1.params = p1;
+    try module.functions.append(arena, func1);
+
+    // fn scale(x: f64) -> f64
+    var func2 = ir.Function.init(arena);
+    func2.name = "scale";
+    func2.return_type_name = "f64";
+    const p2 = try arena.alloc(ir.Function.Param, 1);
+    p2[0] = .{ .name = "x", .value_ref = 0, .type_name = "f64" };
+    func2.params = p2;
+    try module.functions.append(arena, func2);
+
+    // fn greet(name: string) -> string
+    var func3 = ir.Function.init(arena);
+    func3.name = "greet";
+    func3.return_type_name = "string";
+    const p3 = try arena.alloc(ir.Function.Param, 1);
+    p3[0] = .{ .name = "name", .value_ref = 0, .type_name = "string" };
+    func3.params = p3;
+    try module.functions.append(arena, func3);
+
+    // fn reset() -> void
+    var func4 = ir.Function.init(arena);
+    func4.name = "reset";
+    func4.return_type_name = "void";
+    func4.params = &.{};
+    try module.functions.append(arena, func4);
+
+    const wrappers = try generateLibraryWrappers(allocator, &module);
+    defer allocator.free(wrappers);
+
+    // kira_free
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "void kira_free(void* ptr) { free(ptr); }") != null);
+
+    // Integer wrapper: simple cast
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "int32_t add(int32_t a, int32_t b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_add((kira_int)a, (kira_int)b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "return (int32_t)_r;") != null);
+
+    // Float wrapper: memcpy conversion
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "double scale(double x)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "memcpy(&_a0, &x, sizeof(double))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_scale(_a0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "memcpy(&_ret, &_r, sizeof(double))") != null);
+
+    // String wrapper: intptr_t cast
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "const char* greet(const char* name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "(kira_int)(intptr_t)name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "return (const char*)(intptr_t)_r;") != null);
+
+    // Void wrapper: no return
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "void reset(void)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_reset()") != null);
+}
+
+test "generateKlarExternBlock with string wrappers" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn greet(name: string) -> string
+    var func1 = ir.Function.init(arena);
+    func1.name = "greet";
+    func1.return_type_name = "string";
+    const p1 = try arena.alloc(ir.Function.Param, 1);
+    p1[0] = .{ .name = "name", .value_ref = 0, .type_name = "string" };
+    func1.params = p1;
+    try module.functions.append(arena, func1);
+
+    // fn add(a: i32, b: i32) -> i32 (no string, no wrapper)
+    var func2 = ir.Function.init(arena);
+    func2.name = "add";
+    func2.return_type_name = "i32";
+    const p2 = try arena.alloc(ir.Function.Param, 2);
+    p2[0] = .{ .name = "a", .value_ref = 0, .type_name = "i32" };
+    p2[1] = .{ .name = "b", .value_ref = 1, .type_name = "i32" };
+    func2.params = p2;
+    try module.functions.append(arena, func2);
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    // Extern declarations
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn greet(name: CStr) -> CStr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn add(a: i32, b: i32) -> i32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn kira_free(ptr: Ptr) -> Void") != null);
+
+    // String wrapper generated for greet
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn greet_str(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "name: string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "String.from_cstr(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "String.to_cstr(name)") != null);
+
+    // No wrapper for add (no string types)
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn add_str(") == null);
+}
+
+test "generateLibraryWrappers skips main function" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    var func = ir.Function.init(arena);
+    func.name = "main";
+    func.params = &.{};
+    try module.functions.append(arena, func);
+
+    const wrappers = try generateLibraryWrappers(allocator, &module);
+    defer allocator.free(wrappers);
+
+    // Should have kira_free but no main wrapper
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_free") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "int64_t main(") == null);
 }

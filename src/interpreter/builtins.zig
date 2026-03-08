@@ -612,7 +612,8 @@ fn builtinPropTest(ctx: BuiltinContext, args: []const Value) InterpreterError!Va
 
         shrinkInputs(ctx, func, &shrunk);
 
-        // Report the minimal failing case
+        // Report the minimal failing case (std.debug.print uses stderr,
+        // which is safe during zig build test — only stdout interferes with --listen=-)
         std.debug.print("Property failed after {d} tests.\n", .{i + 1});
         std.debug.print("Failing inputs: ", .{});
         for (shrunk, 0..) |v, j| {
