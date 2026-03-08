@@ -356,6 +356,7 @@ pub fn generateLibraryWrappers(allocator: Allocator, module: *const ir.Module) !
     for (module.functions.items) |func| {
         const name = func.name orelse continue;
         if (std.mem.eql(u8, name, "main")) continue;
+        if (std.mem.startsWith(u8, name, "kira_")) continue; // reserved prefix
         try emitLibraryWrapper(allocator, &output, &func, module);
     }
 
@@ -619,12 +620,20 @@ fn appendFmt(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), comptime
 }
 
 /// Append a JSON-escaped string value (the content between quotes).
-/// Escapes `"` as `\"` and `\` as `\\`.
+/// Escapes per RFC 8259 §7: quotes, backslashes, and control characters.
 fn appendJsonString(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
     for (s) |c| {
         switch (c) {
             '"' => try output.appendSlice(allocator, "\\\""),
             '\\' => try output.appendSlice(allocator, "\\\\"),
+            '\n' => try output.appendSlice(allocator, "\\n"),
+            '\r' => try output.appendSlice(allocator, "\\r"),
+            '\t' => try output.appendSlice(allocator, "\\t"),
+            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
+                var buf: [6]u8 = undefined;
+                const hex = std.fmt.bufPrint(&buf, "\\u{X:0>4}", .{c}) catch unreachable;
+                try output.appendSlice(allocator, hex);
+            },
             else => try output.append(allocator, c),
         }
     }
@@ -1391,4 +1400,68 @@ test "kiraTypeByteSize returns correct sizes" {
     try std.testing.expectEqual(@as(u64, 16), kiraTypeByteSize("i128"));
     try std.testing.expectEqual(@as(u64, 0), kiraTypeByteSize("void"));
     try std.testing.expectEqual(@as(u64, 8), kiraTypeByteSize("SomeUserType"));
+}
+
+test "appendJsonString escapes control characters per RFC 8259" {
+    const allocator = std.testing.allocator;
+    var output = std.ArrayListUnmanaged(u8){};
+    defer output.deinit(allocator);
+
+    try appendJsonString(allocator, &output, "line1\nline2\ttab\r\x00end");
+    const result = output.items;
+
+    // \n, \t, \r should use short escapes
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\t") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\r") != null);
+    // \x00 should use \u0000 escape
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\u0000") != null);
+    // Normal text preserved
+    try std.testing.expect(std.mem.indexOf(u8, result, "line1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "end") != null);
+}
+
+test "generateLibraryWrappers skips kira_ prefixed functions" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // fn kira_free(x: i32) -> i32 — user-defined, collides with built-in kira_free
+    var func1 = ir.Function.init(arena);
+    func1.name = "kira_free";
+    func1.return_type_name = "i32";
+    const p1 = try arena.alloc(ir.Function.Param, 1);
+    p1[0] = .{ .name = "x", .value_ref = 0, .type_name = "i32" };
+    func1.params = p1;
+    try module.functions.append(arena, func1);
+
+    // fn kira_internal() -> void — another kira_ prefixed function
+    var func2 = ir.Function.init(arena);
+    func2.name = "kira_internal";
+    func2.return_type_name = "void";
+    func2.params = &.{};
+    try module.functions.append(arena, func2);
+
+    // fn add(a: i32, b: i32) -> i32 — normal function, should get a wrapper
+    var func3 = ir.Function.init(arena);
+    func3.name = "add";
+    func3.return_type_name = "i32";
+    const p3 = try arena.alloc(ir.Function.Param, 2);
+    p3[0] = .{ .name = "a", .value_ref = 0, .type_name = "i32" };
+    p3[1] = .{ .name = "b", .value_ref = 1, .type_name = "i32" };
+    func3.params = p3;
+    try module.functions.append(arena, func3);
+
+    const wrappers = try generateLibraryWrappers(allocator, &module);
+    defer allocator.free(wrappers);
+
+    // Built-in kira_free is emitted once
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "void kira_free(void* ptr)") != null);
+    // No wrapper for user's kira_free or kira_internal
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "int32_t kira_free(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "void kira_internal(") == null);
+    // Normal function gets a wrapper
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "int32_t add(") != null);
 }

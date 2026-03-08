@@ -1305,7 +1305,8 @@ fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const
     };
 
     // In library mode, append typed C wrapper functions
-    if (lib_mode) {
+    // (only if module is in [exports] or no [exports] configured)
+    if (lib_mode and module_exported) {
         const wrappers = Kira.interop.klar.generateLibraryWrappers(allocator, &ir_module) catch {
             stderr.writeAll("error: could not generate library wrappers\n") catch {};
             // Delete partial .c file
