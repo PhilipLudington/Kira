@@ -986,7 +986,7 @@ test "interpreter: basic string interpolation" {
     const source =
         \\fn main() -> string {
         \\    let name: string = "world"
-        \\    return "hello {name}"
+        \\    return "hello ${name}"
         \\}
     ;
 
@@ -1003,7 +1003,7 @@ test "interpreter: interpolation with multiple expressions" {
         \\fn main() -> string {
         \\    let a: string = "foo"
         \\    let b: string = "bar"
-        \\    return "{a} and {b}"
+        \\    return "${a} and ${b}"
         \\}
     ;
 
@@ -1020,7 +1020,7 @@ test "interpreter: interpolation with arithmetic expression" {
         \\fn main() -> string {
         \\    let x: i32 = 6
         \\    let y: i32 = 7
-        \\    return "result is {x * y}"
+        \\    return "result is ${x * y}"
         \\}
     ;
 
@@ -1038,7 +1038,7 @@ test "interpreter: interpolation equivalent to string concatenation" {
     const source =
         \\fn main() -> string {
         \\    let greeting: string = "hello"
-        \\    return "{greeting}"
+        \\    return "${greeting}"
         \\}
     ;
 
@@ -1054,7 +1054,7 @@ test "interpreter: interpolation with integer value" {
     const source =
         \\fn main() -> string {
         \\    let n: i32 = 42
-        \\    return "the answer is {n}"
+        \\    return "the answer is ${n}"
         \\}
     ;
 
@@ -1070,7 +1070,7 @@ test "interpreter: interpolation with boolean value" {
     const source =
         \\fn main() -> string {
         \\    let flag: bool = true
-        \\    return "value is {flag}"
+        \\    return "value is ${flag}"
         \\}
     ;
 
@@ -1230,12 +1230,12 @@ test "interpreter: Ord.lt on strings" {
     try testing.expectEqual(true, result.?.boolean);
 }
 
-test "interpreter: escaped brace in string is literal" {
+test "interpreter: bare braces in string are literal" {
     const allocator = testing.allocator;
 
     const source =
         \\fn main() -> string {
-        \\    return "hello \{world}"
+        \\    return "hello {world}"
         \\}
     ;
 
@@ -1243,6 +1243,36 @@ test "interpreter: escaped brace in string is literal" {
     defer r.deinit();
     try testing.expect(r.value != null);
     try testing.expectEqualStrings("hello {world}", r.value.?.string);
+}
+
+test "interpreter: escaped dollar in string is literal" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    return "price is \${amount}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("price is ${amount}", r.value.?.string);
+}
+
+test "interpreter: braces without dollar are literal" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> string {
+        \\    return "{|}"
+        \\}
+    ;
+
+    var r = try evalSourceFull(allocator, source);
+    defer r.deinit();
+    try testing.expect(r.value != null);
+    try testing.expectEqualStrings("{|}", r.value.?.string);
 }
 
 test "interpreter: mutable field assignment on record" {

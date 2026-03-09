@@ -2583,22 +2583,23 @@ pub const Parser = struct {
         return ParsedFloat{ .value = value, .suffix = suffix };
     }
 
-    /// Check if string content contains unescaped interpolation braces.
-    /// `\{` is treated as an escaped literal brace, not interpolation.
+    /// Check if string content contains unescaped interpolation sequences.
+    /// Interpolation uses `${expr}` syntax. `\$` escapes the dollar sign.
     fn containsInterpolation(content: []const u8) bool {
         var i: usize = 0;
         while (i < content.len) {
             if (content[i] == '\\') {
-                i += 2; // skip escaped char (including \{)
+                i += 2; // skip escaped char (including \$ and \{)
                 continue;
             }
-            if (content[i] == '{') return true;
+            if (content[i] == '$' and i + 1 < content.len and content[i + 1] == '{') return true;
             i += 1;
         }
         return false;
     }
 
-    /// Parse an interpolated string into literal fragments and expression parts
+    /// Parse an interpolated string into literal fragments and expression parts.
+    /// Interpolation uses `${expr}` syntax.
     fn parseInterpolatedString(self: *Parser, content: []const u8, span: Span) ParseError!Expression {
         var parts = std.ArrayListUnmanaged(Expression.InterpolatedPart){};
 
@@ -2610,15 +2611,15 @@ pub const Parser = struct {
                 i += 2; // skip escaped char
                 continue;
             }
-            if (content[i] == '{') {
-                // Emit any literal text before this interpolation
+            if (content[i] == '$' and i + 1 < content.len and content[i + 1] == '{') {
+                // Emit any literal text before this interpolation (excluding the $)
                 if (i > literal_start) {
                     const lit = self.processStringEscapes(content[literal_start..i]) catch return error.OutOfMemory;
                     parts.append(self.allocator, .{ .literal = lit }) catch return error.OutOfMemory;
                 }
 
                 // Find matching closing brace (handling nested braces)
-                const expr_start = i + 1;
+                const expr_start = i + 2; // skip past ${
                 var depth: usize = 1;
                 var j = expr_start;
                 while (j < content.len and depth > 0) {
@@ -2636,7 +2637,7 @@ pub const Parser = struct {
 
                 const expr_text = content[expr_start..j];
 
-                // Empty interpolation (e.g. "{}") — treat as literal braces
+                // Empty interpolation (e.g. "${}") — treat as literal
                 if (std.mem.trim(u8, expr_text, " \t\n\r").len == 0) {
                     const lit_brace = self.processStringEscapes(content[i .. j + 1]) catch return error.OutOfMemory;
                     parts.append(self.allocator, .{ .literal = lit_brace }) catch return error.OutOfMemory;
@@ -2667,7 +2668,7 @@ pub const Parser = struct {
         } }, span);
     }
 
-    /// Parse an embedded expression from interpolation (e.g., the `x + 1` in `"{x + 1}"`)
+    /// Parse an embedded expression from interpolation (e.g., the `x + 1` in `"${x + 1}"`)
     fn parseEmbeddedExpression(self: *Parser, expr_text: []const u8) ParseError!*Expression {
         // Lex the expression text
         var lex = lexer.Lexer.init(expr_text);
@@ -2713,6 +2714,7 @@ pub const Parser = struct {
                     '"' => '"',
                     '\'' => '\'',
                     '{' => '{',
+                    '$' => '$',
                     '0' => 0,
                     'x' => blk: {
                         // Hex escape: \xNN

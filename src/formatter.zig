@@ -987,7 +987,7 @@ pub const Formatter = struct {
                     switch (part) {
                         .literal => |lit| try self.writeEscapedString(lit),
                         .expression => |e| {
-                            try self.writeByte('{');
+                            try self.write("${");
                             try self.formatExpression(e.*);
                             try self.writeByte('}');
                         },
