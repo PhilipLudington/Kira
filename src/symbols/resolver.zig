@@ -56,6 +56,46 @@ const builtin_span = Span{
     .end = .{ .line = 0, .column = 0, .offset = 0 },
 };
 
+/// Runtime builtin function names that are injected by the interpreter.
+/// Neither the resolver nor the type checker should report these as
+/// undefined identifiers. Uppercase names (Some, None, Ok, Err, Nil, Cons)
+/// are omitted because the parser routes them to .variant_constructor nodes.
+pub const runtime_builtins = std.StaticStringMap(void).initComptime(.{
+    // Print functions
+    .{ "print", {} },
+    .{ "println", {} },
+    // Type checking
+    .{ "type_of", {} },
+    // Conversion functions
+    .{ "to_string", {} },
+    .{ "to_int", {} },
+    .{ "to_float", {} },
+    // Math functions
+    .{ "abs", {} },
+    .{ "min", {} },
+    .{ "max", {} },
+    // Collection functions
+    .{ "len", {} },
+    .{ "push", {} },
+    .{ "pop", {} },
+    .{ "head", {} },
+    .{ "tail", {} },
+    .{ "empty", {} },
+    .{ "reverse", {} },
+    // String functions
+    .{ "split", {} },
+    .{ "join", {} },
+    .{ "trim", {} },
+    .{ "contains", {} },
+    .{ "starts_with", {} },
+    .{ "ends_with", {} },
+    // Assertions
+    .{ "assert", {} },
+    .{ "assert_eq", {} },
+    // Property-based testing
+    .{ "prop_test", {} },
+});
+
 // Stable placeholder used for inferred pattern bindings.
 // This avoids storing pointers to stack-allocated Type values.
 var inferred_binding_type = Type{
@@ -972,8 +1012,11 @@ pub const Resolver = struct {
     fn resolveExpression(self: *Resolver, expr: *const Expression) ResolveError!void {
         switch (expr.kind) {
             .identifier => |ident| {
-                // Skip error for 'std' - it's a built-in namespace injected at runtime
-                if (self.table.lookup(ident.name) == null and !std.mem.eql(u8, ident.name, "std")) {
+                // Skip error for 'std' (runtime namespace) and runtime builtins
+                if (self.table.lookup(ident.name) == null and
+                    !std.mem.eql(u8, ident.name, "std") and
+                    !runtime_builtins.has(ident.name))
+                {
                     try self.addUndefinedError(ident.name, "identifier", expr.span);
                 }
             },

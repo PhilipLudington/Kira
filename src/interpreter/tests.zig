@@ -1623,6 +1623,52 @@ test "typechecker: memo generic function rejected" {
     try testing.expect(!ok);
 }
 
+test "typechecker: bare assert resolves without error" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> void {
+        \\    assert(1 + 1 == 2)
+        \\    assert(true, "should be true")
+        \\    assert_eq(4, 2 + 2)
+        \\    return
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(ok);
+}
+
+test "typechecker: bare builtins resolve without error" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> void {
+        \\    let x: i64 = len("hello")
+        \\    let y: string = to_string(x)
+        \\    let z: bool = empty("")
+        \\    return
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(ok);
+}
+
+test "typechecker: unknown identifier still rejected" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn main() -> void {
+        \\    unknown_fn(42)
+        \\    return
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
 test "parser: memo effect fn rejected" {
     const source =
         \\memo effect fn greet() -> void {

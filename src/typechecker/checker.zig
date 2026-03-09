@@ -414,8 +414,10 @@ pub const TypeChecker = struct {
             .identifier => |ident| {
                 if (self.symbol_table.lookup(ident.name)) |sym| {
                     return try self.getSymbolType(sym, expr.span);
-                } else if (std.mem.eql(u8, ident.name, "std")) {
-                    // Skip error for 'std' - it's a built-in namespace injected at runtime
+                } else if (std.mem.eql(u8, ident.name, "std") or
+                    symbols.resolver.runtime_builtins.has(ident.name))
+                {
+                    // Skip error for 'std' and runtime builtins injected by the interpreter
                     return ResolvedType.errorType(expr.span);
                 } else {
                     try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, ident.name, expr.span));
@@ -1221,6 +1223,19 @@ pub const TypeChecker = struct {
             }
             _ = try self.checkExpression(args[0]);
             _ = try self.checkExpression(args[1]);
+            return ResolvedType.voidType(span);
+        }
+
+        // prop_test(property_fn) or prop_test(property_fn, iterations) -> void
+        if (std.mem.eql(u8, name, "prop_test")) {
+            if (args.len < 1 or args.len > 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            if (args.len == 2) {
+                _ = try self.checkExpression(args[1]);
+            }
             return ResolvedType.voidType(span);
         }
 
