@@ -891,6 +891,10 @@ pub const TypeChecker = struct {
             return std_type;
         }
 
+        if (try self.checkBuiltinCall(fc, span)) |builtin_type| {
+            return builtin_type;
+        }
+
         // If generic args are present, try to resolve the callee symbol for
         // trait bounds checking and type variable instantiation.
         if (fc.generic_args) |generic_args| {
@@ -961,6 +965,266 @@ pub const TypeChecker = struct {
                 return ResolvedType.errorType(span);
             },
         };
+    }
+
+    /// Check if a function call is to a known built-in function (e.g. to_int, len, print).
+    /// Returns the result type if it's a built-in, null otherwise.
+    fn checkBuiltinCall(self: *TypeChecker, fc: Expression.FunctionCall, span: Span) TypeCheckError!?ResolvedType {
+        // Only match bare identifier calls like `to_int(x)`, not `obj.method(x)`
+        if (fc.callee.kind != .identifier) return null;
+        const name = fc.callee.kind.identifier.name;
+
+        // Already in symbol table — let normal resolution handle it
+        if (self.symbol_table.lookup(name) != null) return null;
+
+        const args = fc.arguments;
+
+        // print(...), println(...) -> void (effect, variadic: 1+ args)
+        if (std.mem.eql(u8, name, "print") or std.mem.eql(u8, name, "println")) {
+            if (args.len < 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            for (args) |arg| {
+                _ = try self.checkExpression(arg);
+            }
+            try self.addEffectViolationIfNeeded(span);
+            return ResolvedType.voidType(span);
+        }
+
+        // type_of(x) -> string
+        if (std.mem.eql(u8, name, "type_of")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.string, span);
+        }
+
+        // to_string(x) -> string
+        if (std.mem.eql(u8, name, "to_string")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.string, span);
+        }
+
+        // to_int(x) -> i64
+        if (std.mem.eql(u8, name, "to_int")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.i64, span);
+        }
+
+        // to_float(x) -> f64
+        if (std.mem.eql(u8, name, "to_float")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.f64, span);
+        }
+
+        // abs(x) -> i64
+        if (std.mem.eql(u8, name, "abs")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const arg_t = try self.checkExpression(args[0]);
+            // Preserve numeric type if possible
+            return switch (arg_t.kind) {
+                .primitive => |p| switch (p) {
+                    .f64 => ResolvedType.primitive(.f64, span),
+                    .f32 => ResolvedType.primitive(.f32, span),
+                    else => ResolvedType.primitive(.i64, span),
+                },
+                else => ResolvedType.primitive(.i64, span),
+            };
+        }
+
+        // min(a, b) -> numeric, max(a, b) -> numeric
+        if (std.mem.eql(u8, name, "min") or std.mem.eql(u8, name, "max")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const arg_t = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return switch (arg_t.kind) {
+                .primitive => |p| switch (p) {
+                    .f64 => ResolvedType.primitive(.f64, span),
+                    .f32 => ResolvedType.primitive(.f32, span),
+                    else => ResolvedType.primitive(.i64, span),
+                },
+                else => ResolvedType.primitive(.i64, span),
+            };
+        }
+
+        // len(x) -> i64
+        if (std.mem.eql(u8, name, "len")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.i64, span);
+        }
+
+        // push(list, item) -> list type
+        if (std.mem.eql(u8, name, "push")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const list_t = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return list_t;
+        }
+
+        // pop(list) -> list type (returns truncated array, or .none for empty)
+        if (std.mem.eql(u8, name, "pop")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const list_t = try self.checkExpression(args[0]);
+            return list_t;
+        }
+
+        // head(list) -> Option[T]
+        if (std.mem.eql(u8, name, "head")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const list_t = try self.checkExpression(args[0]);
+            const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
+            return try self.makeOptionType(elem_t, span);
+        }
+
+        // tail(list) -> List[T]
+        if (std.mem.eql(u8, name, "tail")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const list_t = try self.checkExpression(args[0]);
+            const elem_t = self.extractListElementType(list_t) orelse ResolvedType.errorType(span);
+            return try self.makeListType(elem_t, span);
+        }
+
+        // empty(x) -> bool
+        if (std.mem.eql(u8, name, "empty")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.bool, span);
+        }
+
+        // reverse(list or string) -> same type
+        if (std.mem.eql(u8, name, "reverse")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            const arg_t = try self.checkExpression(args[0]);
+            // reverse works on strings too, returning a string
+            if (arg_t.kind == .primitive and arg_t.kind.primitive == .string) {
+                return ResolvedType.primitive(.string, span);
+            }
+            const elem_t = self.extractListElementType(arg_t) orelse ResolvedType.errorType(span);
+            return try self.makeListType(elem_t, span);
+        }
+
+        // split(s, delim) -> List[string]
+        if (std.mem.eql(u8, name, "split")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return try self.makeListType(ResolvedType.primitive(.string, span), span);
+        }
+
+        // join(list, sep) -> string
+        if (std.mem.eql(u8, name, "join")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return ResolvedType.primitive(.string, span);
+        }
+
+        // trim(s) -> string
+        if (std.mem.eql(u8, name, "trim")) {
+            if (args.len != 1) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            return ResolvedType.primitive(.string, span);
+        }
+
+        // contains(s, substr) -> bool
+        if (std.mem.eql(u8, name, "contains")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return ResolvedType.primitive(.bool, span);
+        }
+
+        // starts_with(s, prefix) -> bool, ends_with(s, suffix) -> bool
+        if (std.mem.eql(u8, name, "starts_with") or std.mem.eql(u8, name, "ends_with")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return ResolvedType.primitive(.bool, span);
+        }
+
+        // assert(condition) or assert(condition, message) -> void
+        if (std.mem.eql(u8, name, "assert")) {
+            if (args.len < 1 or args.len > 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            if (args.len == 2) {
+                _ = try self.checkExpression(args[1]);
+            }
+            return ResolvedType.voidType(span);
+        }
+
+        // assert_eq(a, b) -> void
+        if (std.mem.eql(u8, name, "assert_eq")) {
+            if (args.len != 2) {
+                try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, args.len, span));
+                return ResolvedType.errorType(span);
+            }
+            _ = try self.checkExpression(args[0]);
+            _ = try self.checkExpression(args[1]);
+            return ResolvedType.voidType(span);
+        }
+
+        return null;
     }
 
     fn appendExpressionPath(
@@ -1256,6 +1520,82 @@ pub const TypeChecker = struct {
                 }
                 _ = try self.checkExpression(arguments[0]);
                 return try self.makeOptionType(ResolvedType.primitive(.f64, span), span);
+            }
+            // equals(a, b) -> bool
+            if (std.mem.eql(u8, path[2], "equals")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return ResolvedType.primitive(.bool, span);
+            }
+            // byte_length(s) -> i64
+            if (std.mem.eql(u8, path[2], "byte_length")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return ResolvedType.primitive(.i64, span);
+            }
+            // concat(a, b) -> string
+            if (std.mem.eql(u8, path[2], "concat")) {
+                if (arguments.len != 2) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 2, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                return ResolvedType.primitive(.string, span);
+            }
+            // replace(s, old, new) -> string
+            if (std.mem.eql(u8, path[2], "replace")) {
+                if (arguments.len != 3) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 3, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                _ = try self.checkExpression(arguments[1]);
+                _ = try self.checkExpression(arguments[2]);
+                return ResolvedType.primitive(.string, span);
+            }
+            // to_upper(s) -> string, to_lower(s) -> string
+            if (std.mem.eql(u8, path[2], "to_upper") or std.mem.eql(u8, path[2], "to_lower")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return ResolvedType.primitive(.string, span);
+            }
+            // from_i32(n), from_i64(n), from_int(n), from_f32(n), from_f64(n),
+            // from_float(n), from_bool(b), to_string(v) -> string
+            if (std.mem.eql(u8, path[2], "from_i32") or
+                std.mem.eql(u8, path[2], "from_i64") or
+                std.mem.eql(u8, path[2], "from_int") or
+                std.mem.eql(u8, path[2], "from_f32") or
+                std.mem.eql(u8, path[2], "from_f64") or
+                std.mem.eql(u8, path[2], "from_float") or
+                std.mem.eql(u8, path[2], "from_bool") or
+                std.mem.eql(u8, path[2], "to_string"))
+            {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return ResolvedType.primitive(.string, span);
+            }
+            // is_valid_utf8(s) -> bool
+            if (std.mem.eql(u8, path[2], "is_valid_utf8")) {
+                if (arguments.len != 1) {
+                    try self.addDiagnostic(try errors_mod.wrongArgumentCount(self.allocator, 1, arguments.len, span));
+                    return ResolvedType.errorType(span);
+                }
+                _ = try self.checkExpression(arguments[0]);
+                return ResolvedType.primitive(.bool, span);
             }
             return null;
         }

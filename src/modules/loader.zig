@@ -750,7 +750,29 @@ pub const ModuleLoader = struct {
         var sym = symbol_mod.Symbol.typeDef(0, type_decl.name, type_def_symbol, type_decl.is_public, span);
         sym.doc_comment = doc_comment;
 
-        _ = self.table.define(sym) catch {};
+        const defined_id = self.table.define(sym) catch return;
+
+        // Register sum type variant names in the current scope so they can
+        // be used as constructors from importing modules.
+        switch (def_kind) {
+            .sum_type => |st| {
+                for (st.variants) |v| {
+                    const variant_alias = symbol_mod.Symbol{
+                        .id = 0,
+                        .name = v.name,
+                        .kind = .{ .import_alias = .{
+                            .source_path = &.{},
+                            .resolved_id = defined_id,
+                        } },
+                        .span = v.span,
+                        .is_public = type_decl.is_public,
+                        .doc_comment = null,
+                    };
+                    _ = self.table.define(variant_alias) catch {};
+                }
+            },
+            else => {},
+        }
     }
 
     /// Add a constant symbol to the current scope
