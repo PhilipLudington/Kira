@@ -493,7 +493,7 @@ pub const TypeChecker = struct {
                 const first_type = try self.checkExpression(al.elements[0]);
                 for (al.elements[1..]) |elem| {
                     const elem_type = try self.checkExpression(elem);
-                    if (!unify.typesEqual(first_type, elem_type)) {
+                    if (!self.typesMatch(first_type, elem_type)) {
                         try self.addDiagnostic(try errors_mod.typeMismatch(
                             self.allocator,
                             first_type,
@@ -576,7 +576,7 @@ pub const TypeChecker = struct {
                     return ResolvedType.primitive(.string, span);
                 }
                 if (left_type.isNumeric() and right_type.isNumeric()) {
-                    if (unify.typesEqual(left_type, right_type)) {
+                    if (self.typesMatch(left_type, right_type)) {
                         return left_type;
                     }
                     if (left_type.kind == .primitive and right_type.kind == .primitive and
@@ -599,7 +599,7 @@ pub const TypeChecker = struct {
             // Comparison operators
             .less_than, .greater_than, .less_equal, .greater_equal => {
                 if (unify.isComparable(left_type) and
-                    (unify.typesEqual(left_type, right_type) or
+                    (self.typesMatch(left_type, right_type) or
                         (left_type.kind == .primitive and right_type.kind == .primitive and
                             left_type.kind.primitive.isInteger() and right_type.kind.primitive.isInteger())))
                 {
@@ -618,7 +618,7 @@ pub const TypeChecker = struct {
             // Equality operators
             .equal, .not_equal => {
                 if (unify.isEquatable(left_type) and
-                    (unify.typesEqual(left_type, right_type) or
+                    (self.typesMatch(left_type, right_type) or
                         (left_type.kind == .primitive and right_type.kind == .primitive and
                             left_type.kind.primitive.isInteger() and right_type.kind.primitive.isInteger())))
                 {
@@ -725,11 +725,14 @@ pub const TypeChecker = struct {
 
     /// Check field access
     fn checkFieldAccess(self: *TypeChecker, fa: Expression.FieldAccess, span: Span) TypeCheckError!ResolvedType {
-        const object_type = try self.checkExpression(fa.object);
+        const object_type_raw = try self.checkExpression(fa.object);
 
-        if (object_type.isError()) {
+        if (object_type_raw.isError()) {
             return ResolvedType.errorType(span);
         }
+
+        // Expand type aliases so field access works on alias types
+        const object_type = self.expandAliasType(object_type_raw) catch object_type_raw;
 
         // Get the type definition to look up the field
         return switch (object_type.kind) {
@@ -926,7 +929,7 @@ pub const TypeChecker = struct {
                 // Check argument types
                 for (fc.arguments, f.parameter_types) |arg, param| {
                     const arg_type = try self.checkExpression(arg);
-                    if (!unify.isAssignable(param, arg_type)) {
+                    if (!self.typeIsAssignable(param, arg_type)) {
                         try self.addDiagnostic(try errors_mod.typeMismatch(
                             self.allocator,
                             param,
@@ -1049,8 +1052,9 @@ pub const TypeChecker = struct {
         };
     }
 
-    fn getListElementType(self: *TypeChecker, resolved_type: ResolvedType) ?ResolvedType {
-        _ = self;
+    fn getListElementType(self: *TypeChecker, resolved_type_raw: ResolvedType) ?ResolvedType {
+        // Expand type aliases (e.g., Substitution -> List[Binding])
+        const resolved_type = self.expandAliasType(resolved_type_raw) catch resolved_type_raw;
         return switch (resolved_type.kind) {
             .instantiated => |inst| {
                 if (std.mem.eql(u8, inst.base_name, "List") and inst.type_arguments.len == 1) {
@@ -1107,7 +1111,7 @@ pub const TypeChecker = struct {
                 }
                 const arg_t = try self.checkExpression(arguments[0]);
                 const expected = ResolvedType.primitive(.string, arguments[0].span);
-                if (!unify.isAssignable(expected, arg_t)) {
+                if (!self.typeIsAssignable(expected, arg_t)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         expected,
@@ -1721,7 +1725,7 @@ pub const TypeChecker = struct {
             };
 
             if (result_type) |rt| {
-                if (!unify.typesEqual(rt, arm_type)) {
+                if (!self.typesMatch(rt, arm_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         rt,
@@ -1778,7 +1782,7 @@ pub const TypeChecker = struct {
         };
 
         // Both branches must have the same type
-        if (!unify.typesEqual(then_type, else_type)) {
+        if (!self.typesMatch(then_type, else_type)) {
             try self.addDiagnostic(try errors_mod.typeMismatch(
                 self.allocator,
                 then_type,
@@ -1941,7 +1945,7 @@ pub const TypeChecker = struct {
                 if (head_type.isError() and !tail_elem_type.isError()) {
                     return try self.makeListType(tail_elem_type, span);
                 }
-                if (!head_type.isError() and !tail_elem_type.isError() and !unify.typesEqual(head_type, tail_elem_type)) {
+                if (!head_type.isError() and !tail_elem_type.isError() and !self.typesMatch(head_type, tail_elem_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         tail_elem_type,
@@ -2022,7 +2026,7 @@ pub const TypeChecker = struct {
                         for (args, tuple_fields) |arg, field_type| {
                             const arg_type = try self.checkExpression(arg);
                             const expected = try self.resolveAstType(field_type);
-                            if (!arg_type.isError() and !expected.isError() and !unify.typesEqual(arg_type, expected)) {
+                            if (!arg_type.isError() and !expected.isError() and !self.typesMatch(arg_type, expected)) {
                                 try self.addDiagnostic(try errors_mod.typeMismatch(
                                     self.allocator,
                                     expected,
@@ -2045,7 +2049,7 @@ pub const TypeChecker = struct {
                         for (args, record_fields) |arg, field_info| {
                             const arg_type = try self.checkExpression(arg);
                             const expected = try self.resolveAstType(field_info.field_type);
-                            if (!arg_type.isError() and !expected.isError() and !unify.typesEqual(arg_type, expected)) {
+                            if (!arg_type.isError() and !expected.isError() and !self.typesMatch(arg_type, expected)) {
                                 try self.addDiagnostic(try errors_mod.typeMismatch(
                                     self.allocator,
                                     expected,
@@ -2115,7 +2119,7 @@ pub const TypeChecker = struct {
                 ));
             }
             if (elem_type) |et| {
-                if (!unify.typesEqual(et, end_type)) {
+                if (!self.typesMatch(et, end_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         et,
@@ -2190,7 +2194,7 @@ pub const TypeChecker = struct {
         // Left must be Option
         return switch (left_type.kind) {
             .option => |inner| {
-                if (!unify.typesEqual(inner.*, default_type)) {
+                if (!self.typesMatch(inner.*, default_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         inner.*,
@@ -2227,7 +2231,7 @@ pub const TypeChecker = struct {
                 const declared_type = try self.resolveAstType(lb.explicit_type);
                 const normalized_declared = try self.expandAliasType(declared_type);
                 const normalized_init = try self.expandAliasType(init_type);
-                if (!unify.isAssignable(normalized_declared, normalized_init)) {
+                if (!self.typeIsAssignable(normalized_declared, normalized_init)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         normalized_declared,
@@ -2251,7 +2255,7 @@ pub const TypeChecker = struct {
 
                 if (vb.initializer) |initializer| {
                     const init_type = try self.checkExpression(initializer);
-                    if (!unify.isAssignable(declared_type, init_type)) {
+                    if (!self.typeIsAssignable(declared_type, init_type)) {
                         try self.addDiagnostic(try errors_mod.typeMismatch(
                             self.allocator,
                             declared_type,
@@ -2334,7 +2338,7 @@ pub const TypeChecker = struct {
                     },
                 };
 
-                if (!unify.typesEqual(target_type, value_type)) {
+                if (!self.typesMatch(target_type, value_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         target_type,
@@ -2480,7 +2484,7 @@ pub const TypeChecker = struct {
                 if (ret.value) |value| {
                     const value_type = try self.checkExpression(value);
                     if (self.current_return_type) |expected| {
-                        if (!unify.typesEqual(expected, value_type)) {
+                        if (!self.typesMatch(expected, value_type)) {
                             try self.addDiagnostic(try errors_mod.typeMismatch(
                                 self.allocator,
                                 expected,
@@ -2526,7 +2530,10 @@ pub const TypeChecker = struct {
     // ========== Pattern Type Checking ==========
 
     /// Check a pattern against an expected type
-    fn checkPattern(self: *TypeChecker, pattern: *const Pattern, expected_type: ResolvedType) TypeCheckError!void {
+    fn checkPattern(self: *TypeChecker, pattern: *const Pattern, expected_type_raw: ResolvedType) TypeCheckError!void {
+        // Expand type aliases so downstream code sees the underlying type
+        // (e.g., Substitution -> List[Binding] so Nil/Cons patterns work)
+        const expected_type = self.expandAliasType(expected_type_raw) catch expected_type_raw;
         switch (pattern.kind) {
             .identifier => {
                 // Binding always succeeds - type comes from expected
@@ -2838,7 +2845,7 @@ pub const TypeChecker = struct {
 
             .typed => |t| {
                 const annotated_type = try self.resolveAstType(t.expected_type);
-                if (!unify.typesEqual(expected_type, annotated_type)) {
+                if (!self.typesMatch(expected_type, annotated_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         expected_type,
@@ -2959,7 +2966,9 @@ pub const TypeChecker = struct {
 
     /// Helper: resolve variant tuple field types as ResolvedType slice.
     /// Returns null if the variant is not found or has no tuple fields.
-    fn lookupVariantFieldTypes(self: *TypeChecker, resolved_type: ResolvedType, variant_name: []const u8) ?[]const ResolvedType {
+    fn lookupVariantFieldTypes(self: *TypeChecker, resolved_type_raw: ResolvedType, variant_name: []const u8) ?[]const ResolvedType {
+        // Expand type aliases so we see through e.g. Substitution -> List[Binding]
+        const resolved_type = self.expandAliasType(resolved_type_raw) catch resolved_type_raw;
         // Built-in: Option[T] — Some(T) has 1 field, None has 0
         if (self.getOptionInnerType(resolved_type)) |inner_type| {
             if (std.mem.eql(u8, variant_name, "Some")) {
@@ -3032,7 +3041,7 @@ pub const TypeChecker = struct {
                 const value_type = try self.checkExpression(c.value);
                 // const_type is required in Kira
                 const declared_type = try self.resolveAstType(c.const_type);
-                if (!unify.typesEqual(declared_type, value_type)) {
+                if (!self.typesMatch(declared_type, value_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         declared_type,
@@ -3042,10 +3051,28 @@ pub const TypeChecker = struct {
                 }
             },
             .let_decl => |l| {
+                // Set up generic type variables if present
+                if (l.generic_params) |params| {
+                    for (params) |p| {
+                        try self.type_var_substitutions.put(
+                            self.allocator,
+                            p.name,
+                            ResolvedType.typeVar(p.name, p.constraints orelse null, p.span),
+                        );
+                    }
+                }
+                defer {
+                    if (l.generic_params) |params| {
+                        for (params) |p| {
+                            _ = self.type_var_substitutions.remove(p.name);
+                        }
+                    }
+                }
+
                 const value_type = try self.checkExpression(l.value);
                 // binding_type is required in Kira
                 const declared_type = try self.resolveAstType(l.binding_type);
-                if (!unify.typesEqual(declared_type, value_type)) {
+                if (!self.typesMatch(declared_type, value_type)) {
                     try self.addDiagnostic(try errors_mod.typeMismatch(
                         self.allocator,
                         declared_type,
@@ -3339,9 +3366,11 @@ pub const TypeChecker = struct {
     fn checkMatchExhaustiveness(
         self: *TypeChecker,
         patterns: []const *const Pattern,
-        subject_type: ResolvedType,
+        subject_type_raw: ResolvedType,
         span: Span,
     ) TypeCheckError!void {
+        // Expand type aliases so the pattern compiler sees the underlying type
+        const subject_type = self.expandAliasType(subject_type_raw) catch subject_type_raw;
         var compiler = pattern_compiler_mod.PatternCompiler.init(
             self.allocator,
             self.symbol_table,
@@ -3411,6 +3440,21 @@ pub const TypeChecker = struct {
             },
             else => resolved_type,
         };
+    }
+
+    /// Compare types for equality, expanding type aliases first.
+    /// Use this instead of unify.typesEqual when alias transparency is needed.
+    fn typesMatch(self: *TypeChecker, a: ResolvedType, b: ResolvedType) bool {
+        const expanded_a = self.expandAliasType(a) catch a;
+        const expanded_b = self.expandAliasType(b) catch b;
+        return unify.typesEqual(expanded_a, expanded_b);
+    }
+
+    /// Check assignability, expanding type aliases first.
+    fn typeIsAssignable(self: *TypeChecker, target: ResolvedType, source: ResolvedType) bool {
+        const expanded_target = self.expandAliasType(target) catch target;
+        const expanded_source = self.expandAliasType(source) catch source;
+        return unify.isAssignable(expanded_target, expanded_source);
     }
 
     fn resolveAstTypeInSymbolScope(
@@ -3545,8 +3589,8 @@ pub const TypeChecker = struct {
     /// Returns the VariantInfo if the type is a sum type containing that variant, null otherwise.
     /// Extract the inner type from an Option type.
     /// Handles both ResolvedType.option and instantiated "Option" representations.
-    fn getOptionInnerType(self: *TypeChecker, resolved_type: ResolvedType) ?ResolvedType {
-        _ = self;
+    fn getOptionInnerType(self: *TypeChecker, resolved_type_raw: ResolvedType) ?ResolvedType {
+        const resolved_type = self.expandAliasType(resolved_type_raw) catch resolved_type_raw;
         return switch (resolved_type.kind) {
             .option => |inner| inner.*,
             .instantiated => |inst| {
@@ -3562,8 +3606,8 @@ pub const TypeChecker = struct {
     /// Extract ok and err types from a Result type.
     /// Handles both ResolvedType.result and instantiated "Result" representations.
     /// Returns [2]ResolvedType: [0] = ok_type, [1] = err_type.
-    fn getResultTypes(self: *TypeChecker, resolved_type: ResolvedType) ?[2]ResolvedType {
-        _ = self;
+    fn getResultTypes(self: *TypeChecker, resolved_type_raw: ResolvedType) ?[2]ResolvedType {
+        const resolved_type = self.expandAliasType(resolved_type_raw) catch resolved_type_raw;
         return switch (resolved_type.kind) {
             .result => |r| .{ r.ok_type.*, r.err_type.* },
             .instantiated => |inst| {
@@ -3576,7 +3620,9 @@ pub const TypeChecker = struct {
         };
     }
 
-    fn lookupVariantInType(self: *TypeChecker, resolved_type: ResolvedType, variant_name: []const u8) ?Symbol.VariantInfo {
+    fn lookupVariantInType(self: *TypeChecker, resolved_type_raw: ResolvedType, variant_name: []const u8) ?Symbol.VariantInfo {
+        // Expand type aliases (e.g., Substitution -> List[Binding])
+        const resolved_type = self.expandAliasType(resolved_type_raw) catch resolved_type_raw;
         // Built-in: Option[T] — variants Some(T) and None
         if (self.getOptionInnerType(resolved_type) != null) {
             if (std.mem.eql(u8, variant_name, "Some")) {
@@ -3756,7 +3802,7 @@ pub const TypeChecker = struct {
         // Check argument types against instantiated parameter types
         for (arguments, inst_params.items) |arg, param| {
             const arg_type = try self.checkExpression(arg);
-            if (!unify.isAssignable(param, arg_type)) {
+            if (!self.typeIsAssignable(param, arg_type)) {
                 try self.addDiagnostic(try errors_mod.typeMismatch(
                     self.allocator,
                     param,
@@ -4613,7 +4659,7 @@ test "constructors: Cons(head, Nil) preserves head element type" {
         .span = span,
     };
     const expected_list = try checker.resolveAstType(&expected_list_ast);
-    try std.testing.expect(!unify.isAssignable(expected_list, inferred));
+    try std.testing.expect(!checker.typeIsAssignable(expected_list, inferred));
 }
 
 test "match expression block arm uses tail expression type" {

@@ -2636,6 +2636,15 @@ pub const Parser = struct {
 
                 const expr_text = content[expr_start..j];
 
+                // Empty interpolation (e.g. "{}") — treat as literal braces
+                if (std.mem.trim(u8, expr_text, " \t\n\r").len == 0) {
+                    const lit_brace = self.processStringEscapes(content[i .. j + 1]) catch return error.OutOfMemory;
+                    parts.append(self.allocator, .{ .literal = lit_brace }) catch return error.OutOfMemory;
+                    i = j + 1;
+                    literal_start = i;
+                    continue;
+                }
+
                 // Lex and parse the expression
                 const expr = try self.parseEmbeddedExpression(expr_text);
 

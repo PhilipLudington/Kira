@@ -178,6 +178,24 @@ fn reportError(err: anyerror) void {
     stderr.writeAll(msg) catch {};
 }
 
+/// Load project configuration for a source file, with CWD fallback.
+///
+/// First tries to load kira.toml from the file's directory. If the loaded
+/// config is a subpackage (no version field), reinitializes from CWD to find
+/// the root project config. This ensures modules are resolved correctly when
+/// checking files inside subdirectories of a project.
+fn loadProjectConfig(allocator: Allocator, project_config: *Kira.ProjectConfig, path: []const u8) void {
+    if (std.fs.path.dirname(path)) |dir| {
+        _ = project_config.loadFromDirectory(allocator, dir) catch {};
+    }
+    // If file's directory config is a subpackage (no version), restart from CWD
+    if (!project_config.isLoaded() or project_config.package_version == null) {
+        project_config.deinit(allocator);
+        project_config.* = Kira.ProjectConfig.init();
+        _ = project_config.loadFromDirectory(allocator, ".") catch {};
+    }
+}
+
 /// Buffer for storing user arguments (static to preserve lifetime)
 var user_args_buffer: [256][]const u8 = undefined;
 var user_args_count: usize = 0;
@@ -818,36 +836,29 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
-    // Load project configuration (kira.toml)
+    // Load project configuration (kira.toml) with CWD fallback for subpackages
     var project_config = Kira.ProjectConfig.init();
     defer project_config.deinit(allocator);
-
-    if (std.fs.path.dirname(path)) |dir| {
-        _ = project_config.loadFromDirectory(allocator, dir) catch {};
-    }
+    loadProjectConfig(allocator, &project_config, path);
 
     // Create module loader for cross-file imports with config
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
 
     // Add search paths: current directory, parent directory, and directory containing the main file
-    // Always add current directory for relative module paths
     loader.addSearchPath(".") catch {};
 
     if (std.fs.path.dirname(path)) |dir| {
-        // Add parent directory as the package root (for nested module paths)
         if (std.fs.path.dirname(dir)) |parent| {
             if (parent.len > 0 and !std.mem.eql(u8, parent, ".")) {
                 loader.addSearchPath(parent) catch {};
             }
         }
-        // Also add the directory containing the file as a fallback
         if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
             loader.addSearchPath(dir) catch {};
         }
     }
 
-    // If we have a project config, also add project root as a search path
     if (project_config.project_root) |root| {
         loader.addSearchPath(root) catch {};
     }
@@ -1032,29 +1043,24 @@ fn checkFile(allocator: Allocator, path: []const u8, use_color: bool) !void {
     defer table.deinit();
 
     // Load project configuration (kira.toml)
+    // Load project configuration (kira.toml) with CWD fallback for subpackages
     var project_config = Kira.ProjectConfig.init();
     defer project_config.deinit(allocator);
-
-    if (std.fs.path.dirname(path)) |dir| {
-        _ = project_config.loadFromDirectory(allocator, dir) catch {};
-    }
+    loadProjectConfig(allocator, &project_config, path);
 
     // Create module loader for cross-file imports with config
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
 
     // Add search paths: current directory, parent directory, and directory containing the main file
-    // Always add current directory for relative module paths
     loader.addSearchPath(".") catch {};
 
     if (std.fs.path.dirname(path)) |dir| {
-        // Add parent directory as the package root (for nested module paths)
         if (std.fs.path.dirname(dir)) |parent| {
             if (parent.len > 0 and !std.mem.eql(u8, parent, ".")) {
                 loader.addSearchPath(parent) catch {};
             }
         }
-        // Also add the directory containing the file as a fallback
         if (dir.len > 0 and !std.mem.eql(u8, dir, ".")) {
             loader.addSearchPath(dir) catch {};
         }
@@ -1158,12 +1164,10 @@ fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
+    // Load project configuration (kira.toml) with CWD fallback for subpackages
     var project_config = Kira.ProjectConfig.init();
     defer project_config.deinit(allocator);
-
-    if (std.fs.path.dirname(path)) |dir| {
-        _ = project_config.loadFromDirectory(allocator, dir) catch {};
-    }
+    loadProjectConfig(allocator, &project_config, path);
 
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
@@ -1466,11 +1470,10 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
+    // Load project configuration (kira.toml) with CWD fallback for subpackages
     var project_config = Kira.ProjectConfig.init();
     defer project_config.deinit(allocator);
-    if (std.fs.path.dirname(path)) |dir| {
-        _ = project_config.loadFromDirectory(allocator, dir) catch {};
-    }
+    loadProjectConfig(allocator, &project_config, path);
 
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();
@@ -1733,11 +1736,10 @@ fn benchFile(allocator: Allocator, path: []const u8, json_output: bool, requeste
     var table = Kira.SymbolTable.init(allocator);
     defer table.deinit();
 
+    // Load project configuration (kira.toml) with CWD fallback for subpackages
     var project_config = Kira.ProjectConfig.init();
     defer project_config.deinit(allocator);
-    if (std.fs.path.dirname(path)) |dir| {
-        _ = project_config.loadFromDirectory(allocator, dir) catch {};
-    }
+    loadProjectConfig(allocator, &project_config, path);
 
     var loader = Kira.ModuleLoader.initWithConfig(allocator, &table, if (project_config.isLoaded()) &project_config else null);
     defer loader.deinit();

@@ -347,13 +347,53 @@ pub const Resolver = struct {
         var sym = Symbol.typeDef(0, type_decl.name, type_def_symbol, type_decl.is_public, span);
         sym.doc_comment = doc_comment;
 
-        _ = self.table.define(sym) catch |err| {
+        const defined_id = self.table.define(sym) catch |err| {
             if (err == error.DuplicateDefinition) {
                 try self.addError("Duplicate definition of type '{s}'", .{type_decl.name}, span);
                 return error.DuplicateDefinition;
             }
             return err;
         };
+
+        // Register sum type variant names in the current scope so they can
+        // be used as constructors (e.g., ArithmeticError { kind: k }).
+        // source_path is empty (&.{}) to indicate same-module (no module prefix).
+        switch (def_kind) {
+            .sum_type => |st| {
+                for (st.variants) |v| {
+                    const variant_alias = Symbol{
+                        .id = 0,
+                        .name = v.name,
+                        .kind = .{ .import_alias = .{
+                            .source_path = &.{},
+                            .resolved_id = defined_id,
+                        } },
+                        .span = v.span,
+                        .is_public = type_decl.is_public,
+                        .doc_comment = null,
+                    };
+                    _ = self.table.define(variant_alias) catch |err| {
+                        if (err == error.DuplicateDefinition) {
+                            // Variant name conflicts with an existing symbol in scope.
+                            // This can happen legitimately when re-resolving or when
+                            // an imported module re-exports the same type. Only warn
+                            // if the existing symbol is NOT an import_alias pointing
+                            // to the same type.
+                            if (self.table.lookup(v.name)) |existing| {
+                                const is_same = switch (existing.kind) {
+                                    .import_alias => |ia| ia.resolved_id == defined_id,
+                                    else => false,
+                                };
+                                if (!is_same) {
+                                    self.addWarning("variant name '{s}' conflicts with existing definition", .{v.name}, v.span) catch {};
+                                }
+                            }
+                        }
+                    };
+                }
+            },
+            else => {},
+        }
     }
 
     /// Resolve trait declaration
@@ -686,6 +726,32 @@ pub const Resolver = struct {
                     try self.addError("Import '{s}' conflicts with existing definition", .{module_name}, span);
                 }
             };
+
+            // Also import all public symbols from the module scope so they
+            // can be used with unqualified access (e.g. term_to_string(...))
+            if (self.table.getScope(module_scope_id.?)) |mod_scope| {
+                var it = mod_scope.symbols.iterator();
+                while (it.next()) |entry| {
+                    const sym_id = entry.value_ptr.*;
+                    if (self.table.getSymbol(sym_id)) |sym| {
+                        if (!sym.is_public) continue;
+
+                        const alias_sym = Symbol{
+                            .id = 0,
+                            .name = entry.key_ptr.*,
+                            .kind = .{ .import_alias = .{
+                                .source_path = import_decl.path,
+                                .resolved_id = sym.id,
+                            } },
+                            .span = span,
+                            .is_public = false,
+                            .doc_comment = null,
+                        };
+
+                        _ = self.table.defineInScope(scope_id, alias_sym) catch {};
+                    }
+                }
+            }
         }
     }
 

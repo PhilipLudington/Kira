@@ -196,10 +196,15 @@ pub const ModuleLoader = struct {
             return loaded.scope_id;
         }
 
-        // Check if we're already loading this module (cycle detection)
+        // Circular import handling: when module A imports B and B imports A,
+        // return A's partially-populated scope instead of erroring. The scope
+        // was registered via registerModule and populated with A's own declarations
+        // (functions, types, constants, let bindings) before A's imports were
+        // processed. However, symbols that A obtains via its own imports from
+        // third-party modules will NOT yet be visible — only A's own declarations
+        // are available at this point.
         if (self.loading_modules.contains(module_path)) {
-            try self.addLoadError(module_path, "Circular dependency detected", null, null, null);
-            return error.CircularDependency;
+            return self.table.getModuleScope(module_path);
         }
 
         // Increment depth for this load operation

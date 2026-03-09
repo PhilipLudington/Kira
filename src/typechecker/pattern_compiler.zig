@@ -262,6 +262,28 @@ pub const PatternCompiler = struct {
             },
 
             .record => |rec| blk: {
+                // Record variant patterns (e.g., IoError { path: p, message: m })
+                // have a type_name and should be treated as constructor patterns
+                // for exhaustiveness checking
+                if (rec.type_name) |type_name| {
+                    var args = std.ArrayListUnmanaged(PatternSpace){};
+                    for (rec.fields) |field| {
+                        const field_space = if (field.pattern) |p|
+                            try self.patternToSpace(p)
+                        else
+                            PatternSpace.any;
+                        try args.append(self.allocator, field_space);
+                    }
+                    break :blk .{
+                        .constructor = .{
+                            .variant_name = type_name,
+                            .type_symbol_id = null,
+                            .arguments = try args.toOwnedSlice(self.allocator),
+                        },
+                    };
+                }
+
+                // Regular record pattern (no type name)
                 var fields = std.ArrayListUnmanaged(PatternSpace.FieldSpace){};
                 for (rec.fields) |field| {
                     const field_space = if (field.pattern) |p|
