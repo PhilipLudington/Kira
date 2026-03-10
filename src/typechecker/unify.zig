@@ -93,31 +93,12 @@ pub fn typesEqual(a: ResolvedType, b: ResolvedType) bool {
 }
 
 /// Check if source type is assignable to target type.
-/// Allows coercions that are safe: fixed-size arrays [T; N] → dynamic [T].
+/// No implicit coercions: integer widths must match exactly, and
+/// fixed-size arrays [T; N] do not implicitly coerce to dynamic [T].
+/// Use `.as[T]` for explicit cross-width integer conversion.
 pub fn isAssignable(target: ResolvedType, source: ResolvedType) bool {
     // Error types are assignable to anything (for error recovery)
     if (target.isError() or source.isError()) return true;
-
-    // Array coercion: [T; N] is assignable to [T]
-    if (target.kind == .array and source.kind == .array) {
-        const ta = target.kind.array;
-        const sa = source.kind.array;
-        if (ta.size == null and sa.size != null) {
-            // Fixed-size → dynamic: allowed if element types match
-            return typesEqual(ta.element_type.*, sa.element_type.*);
-        }
-    }
-
-    // Integer compatibility: allow assignment between integer widths/signedness.
-    // Kira runtime integers are represented uniformly; checker width differences
-    // should not block common assignments in user code.
-    if (target.kind == .primitive and source.kind == .primitive) {
-        const tp = target.kind.primitive;
-        const sp = source.kind.primitive;
-        if (tp.isInteger() and sp.isInteger()) {
-            return true;
-        }
-    }
 
     return typesEqual(target, source);
 }
@@ -207,6 +188,15 @@ pub fn isValidCast(source: ResolvedType, target: ResolvedType) bool {
     if (source.isChar() and target.isInteger()) return true;
     if (source.isInteger() and target.isChar()) return true;
 
+    // Array cast: [T; N].as[[T]] (fixed-size to dynamic, element types must match)
+    if (source.kind == .array and target.kind == .array) {
+        const sa = source.kind.array;
+        const ta = target.kind.array;
+        if (sa.size != null and ta.size == null) {
+            return typesEqual(sa.element_type.*, ta.element_type.*);
+        }
+    }
+
     // No other casts allowed in Kira
     return false;
 }
@@ -283,7 +273,7 @@ test "is valid cast" {
     try std.testing.expect(!isValidCast(bool_type, i32_type));
 }
 
-test "integer assignability ignores width differences" {
+test "integer assignability rejects width differences" {
     const span = @import("../ast/root.zig").Span{
         .start = .{ .line = 1, .column = 1, .offset = 0 },
         .end = .{ .line = 1, .column = 1, .offset = 0 },
@@ -291,7 +281,46 @@ test "integer assignability ignores width differences" {
 
     const i32_type = ResolvedType.primitive(.i32, span);
     const i64_type = ResolvedType.primitive(.i64, span);
+    const u32_type = ResolvedType.primitive(.u32, span);
 
-    try std.testing.expect(isAssignable(i32_type, i64_type));
-    try std.testing.expect(isAssignable(i64_type, i32_type));
+    // Same type is assignable
+    try std.testing.expect(isAssignable(i32_type, i32_type));
+
+    // Different widths require .as[T]
+    try std.testing.expect(!isAssignable(i32_type, i64_type));
+    try std.testing.expect(!isAssignable(i64_type, i32_type));
+
+    // Different signedness requires .as[T]
+    try std.testing.expect(!isAssignable(i32_type, u32_type));
+    try std.testing.expect(!isAssignable(u32_type, i32_type));
+}
+
+test "array assignability rejects fixed-to-dynamic coercion" {
+    const span = @import("../ast/root.zig").Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 1, .offset = 0 },
+    };
+
+    const type_alloc = std.testing.allocator;
+
+    // Create element types
+    const elem_a = try type_alloc.create(ResolvedType);
+    defer type_alloc.destroy(elem_a);
+    elem_a.* = ResolvedType.primitive(.i32, span);
+
+    const elem_b = try type_alloc.create(ResolvedType);
+    defer type_alloc.destroy(elem_b);
+    elem_b.* = ResolvedType.primitive(.i32, span);
+
+    const fixed_array = ResolvedType{ .kind = .{ .array = .{ .element_type = elem_a, .size = 3 } }, .span = span };
+    const dynamic_array = ResolvedType{ .kind = .{ .array = .{ .element_type = elem_b, .size = null } }, .span = span };
+
+    // Fixed-size [i32; 3] is NOT assignable to dynamic [i32]
+    try std.testing.expect(!isAssignable(dynamic_array, fixed_array));
+
+    // Same-size arrays are assignable
+    try std.testing.expect(isAssignable(fixed_array, fixed_array));
+
+    // But explicit cast [i32; 3].as[[i32]] is valid
+    try std.testing.expect(isValidCast(fixed_array, dynamic_array));
 }

@@ -1669,6 +1669,62 @@ test "typechecker: unknown identifier still rejected" {
     try testing.expect(!ok);
 }
 
+test "typechecker: cross-width integer assignment rejected" {
+    const allocator = testing.allocator;
+
+    // i32 value assigned to i64 binding must fail without .as[i64]
+    const source =
+        \\fn get_count() -> i32 {
+        \\    return 42
+        \\}
+        \\
+        \\fn main() -> void {
+        \\    let x: i64 = get_count()
+        \\    return
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
+test "typechecker: cross-signedness integer assignment rejected" {
+    const allocator = testing.allocator;
+
+    // u32 value assigned to i32 binding must fail without .as[i32]
+    const source =
+        \\fn get_val() -> u32 {
+        \\    return 10
+        \\}
+        \\
+        \\fn main() -> void {
+        \\    let x: i32 = get_val()
+        \\    return
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(!ok);
+}
+
+test "typechecker: same-width integer assignment accepted" {
+    const allocator = testing.allocator;
+
+    const source =
+        \\fn get_val() -> i32 {
+        \\    return 42
+        \\}
+        \\
+        \\fn main() -> void {
+        \\    let x: i32 = get_val()
+        \\    return
+        \\}
+    ;
+
+    const ok = try typecheckSource(allocator, source);
+    try testing.expect(ok);
+}
+
 test "parser: memo effect fn rejected" {
     const source =
         \\memo effect fn greet() -> void {

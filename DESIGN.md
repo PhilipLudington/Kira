@@ -362,7 +362,7 @@ effect fn read_file(path: string) -> IO[Result[string, IoError]] {
 
 // Combining effects
 effect fn fetch_user(id: i64) -> IO[Result[User, ApiError]] {
-    let response: Result[Response, HttpError] = http.get("/users/{id}").await
+    let response: Result[Response, HttpError] = http.get("/users/${id}").await
     match response {
         Ok(r) => {
             let user: Result[User, JsonError] = r.json[User]()
@@ -389,7 +389,7 @@ let bad: fn(i32) -> i32 = fn(x: i32) -> i32 {
 // Effectful code can call both pure and effectful code
 effect fn process(x: i32) -> IO[i32] {
     let doubled: i32 = x * 2        // OK: calling pure computation
-    print_line("processing {x}")     // OK: IO in IO context
+    print_line("processing ${x}")     // OK: IO in IO context
     return doubled
 }
 
@@ -408,7 +408,7 @@ The main function is always an effect function.
 ```kira
 effect fn main() -> IO[void] {
     let result: i32 = factorial(5)      // OK: calling pure from effect
-    print_line("Result: {result}")       // OK: IO in IO context
+    print_line("Result: ${result}")       // OK: IO in IO context
     return
 }
 
@@ -432,7 +432,7 @@ Match is a statement that assigns to a variable. All cases must be handled.
 let describe_option: fn(Option[i32]) -> string = fn(opt: Option[i32]) -> string {
     var result: string
     match opt {
-        Some(n) => { result = "has value: {n}" }
+        Some(n) => { result = "has value: ${n}" }
         None => { result = "empty" }
     }
     return result
@@ -442,8 +442,8 @@ let describe_result: fn(Result[i32, string]) -> string =
     fn(res: Result[i32, string]) -> string {
         var result: string
         match res {
-            Ok(n) => { result = "success: {n}" }
-            Err(e) => { result = "error: {e}" }
+            Ok(n) => { result = "success: ${n}" }
+            Err(e) => { result = "error: ${e}" }
         }
         return result
     }
@@ -468,17 +468,17 @@ match option {
 // Record patterns
 match point {
     Point { x: 0, y: 0 } => { result = "origin" }
-    Point { x: 0, y: y } => { result = "on y-axis at {y}" }
-    Point { x: x, y: 0 } => { result = "on x-axis at {x}" }
-    Point { x: x, y: y } => { result = "at ({x}, {y})" }
+    Point { x: 0, y: y } => { result = "on y-axis at ${y}" }
+    Point { x: x, y: 0 } => { result = "on x-axis at ${x}" }
+    Point { x: x, y: y } => { result = "at (${x}, ${y})" }
 }
 
 // Tuple patterns
 match pair {
     (0, 0) => { result = "origin" }
-    (x, 0) => { result = "x = {x}" }
-    (0, y) => { result = "y = {y}" }
-    (x, y) => { result = "({x}, {y})" }
+    (x, 0) => { result = "x = ${x}" }
+    (0, y) => { result = "y = ${y}" }
+    (x, y) => { result = "(${x}, ${y})" }
 }
 
 // Or patterns
@@ -491,7 +491,7 @@ match value {
 match value {
     n if n < 0 => { result = "negative" }
     n if n > 100 => { result = "large" }
-    n => { result = "normal: {n}" }
+    n => { result = "normal: ${n}" }
 }
 ```
 
