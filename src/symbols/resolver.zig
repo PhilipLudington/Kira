@@ -485,7 +485,7 @@ pub const Resolver = struct {
                 .parameter_names = try param_names.toOwnedSlice(self.allocator),
                 .return_type = m.return_type,
                 .is_effect = m.is_effect,
-                .has_default = m.default_body != null,
+                .default_body = m.default_body,
                 .span = m.span,
             });
         }

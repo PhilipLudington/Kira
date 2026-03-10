@@ -9,6 +9,7 @@ const ast = @import("../ast/root.zig");
 
 pub const Type = ast.Type;
 pub const Span = ast.Span;
+pub const Statement = ast.Statement;
 pub const Declaration = ast.Declaration;
 
 /// Unique identifier for a symbol
@@ -131,8 +132,15 @@ pub const Symbol = struct {
         parameter_names: [][]const u8,
         return_type: *Type,
         is_effect: bool,
-        has_default: bool,
+        /// AST statements for the default method body. Points into the AST arena
+        /// (Program.arena) — NOT owned here, do not free in deinit.
+        /// When non-null, impl blocks may omit this method and inherit the default.
+        default_body: ?[]Statement,
         span: Span,
+
+        pub fn hasDefault(self: TraitMethodInfo) bool {
+            return self.default_body != null;
+        }
     };
 
     /// Module symbol

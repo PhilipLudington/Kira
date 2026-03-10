@@ -83,6 +83,8 @@ pub const TypeChecker = struct {
     in_effect_function: bool,
     /// Arena for temporary type allocations during type checking
     type_arena: std.heap.ArenaAllocator,
+    /// Current trait being checked (for resolving method calls on Self in default bodies)
+    current_trait: ?*const Declaration.TraitDecl,
 
     /// Create a new type checker
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) TypeChecker {
@@ -99,6 +101,7 @@ pub const TypeChecker = struct {
             .cross_module_error_span = null,
             .in_effect_function = false,
             .type_arena = std.heap.ArenaAllocator.init(allocator),
+            .current_trait = null,
         };
     }
 
@@ -1915,6 +1918,38 @@ pub const TypeChecker = struct {
             try arg_types.append(type_alloc, try self.checkExpression(arg));
         }
 
+        // When inside a trait default body, resolve method calls on Self against the trait's own methods
+        if (object_type.kind == .type_var) {
+            if (std.mem.eql(u8, object_type.kind.type_var.name, "Self")) {
+                if (self.current_trait) |trait_decl| {
+                    for (trait_decl.methods) |trait_method| {
+                        if (std.mem.eql(u8, trait_method.name, mc.method)) {
+                            // Count self parameter offset
+                            var self_offset: usize = 0;
+                            if (trait_method.parameters.len > 0) {
+                                if (trait_method.parameters[0].param_type.kind == .self_type or
+                                    (trait_method.parameters[0].param_type.kind == .named and
+                                    std.mem.eql(u8, trait_method.parameters[0].param_type.kind.named.name, "Self")))
+                                {
+                                    self_offset = 1;
+                                }
+                            }
+                            const expected_args = trait_method.parameters.len - self_offset;
+                            if (mc.arguments.len != expected_args) {
+                                try self.addDiagnostic(try errors_mod.simpleError(
+                                    self.allocator,
+                                    "wrong number of arguments in method call",
+                                    span,
+                                ));
+                                return ResolvedType.errorType(span);
+                            }
+                            return try self.resolveAstType(trait_method.return_type);
+                        }
+                    }
+                }
+            }
+        }
+
         // Extract the type name for impl lookup
         const type_name: ?[]const u8 = switch (object_type.kind) {
             .primitive => |p| p.toString(),
@@ -1986,6 +2021,41 @@ pub const TypeChecker = struct {
 
                     return return_type;
                 }
+            }
+
+            // Check trait default methods: if the type implements a trait,
+            // default methods from that trait are also available
+            var found_default_method: ?*const Type = null;
+            var default_method_count: usize = 0;
+            for (impls) |impl_info| {
+                if (impl_info.trait_name) |trait_name| {
+                    if (self.symbol_table.lookup(trait_name)) |trait_sym| {
+                        if (trait_sym.kind == .trait_def) {
+                            for (trait_sym.kind.trait_def.methods) |trait_method| {
+                                if (trait_method.hasDefault() and std.mem.eql(u8, trait_method.name, mc.method)) {
+                                    found_default_method = trait_method.return_type;
+                                    default_method_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (default_method_count > 1) {
+                try self.addDiagnostic(try errors_mod.simpleError(
+                    self.allocator,
+                    "ambiguous method call: multiple trait defaults provide this method",
+                    span,
+                ));
+                return ResolvedType.errorType(span);
+            }
+
+            if (found_default_method) |return_type_ast| {
+                const saved_self_type = self.self_type;
+                self.self_type = object_type;
+                defer self.self_type = saved_self_type;
+                return try self.resolveAstType(return_type_ast);
             }
         }
 
@@ -3649,7 +3719,10 @@ pub const TypeChecker = struct {
         }
     }
 
-    /// Check trait declaration
+    /// Check trait declaration: validates method signatures, resolves Self type references,
+    /// and type-checks default method bodies in an isolated function scope.
+    /// Sets `current_trait` context so method calls on Self in default bodies can resolve
+    /// against the trait's own methods.
     fn checkTraitDecl(self: *TypeChecker, trait_decl: *const Declaration.TraitDecl) TypeCheckError!void {
         // Set up generic type variables if present
         if (trait_decl.generic_params) |params| {
@@ -3668,6 +3741,18 @@ pub const TypeChecker = struct {
                 }
             }
         }
+
+        // Set Self type to a type variable so trait methods can reference Self
+        const saved_self_type = self.self_type;
+        const zero_loc = ast.Location{ .line = 0, .column = 0, .offset = 0 };
+        const trait_span = if (trait_decl.methods.len > 0) trait_decl.methods[0].span else Span{ .start = zero_loc, .end = zero_loc };
+        self.self_type = ResolvedType.typeVar("Self", null, trait_span);
+        defer self.self_type = saved_self_type;
+
+        // Set current trait context so default body method calls on Self can resolve
+        const saved_trait = self.current_trait;
+        self.current_trait = trait_decl;
+        defer self.current_trait = saved_trait;
 
         // Check method signatures
         for (trait_decl.methods) |method| {
@@ -3688,9 +3773,15 @@ pub const TypeChecker = struct {
                 self.current_return_type = try self.resolveAstType(method.return_type);
                 self.in_effect_function = method.is_effect;
 
+                // Enter a function scope so local bindings don't leak
+                _ = try self.symbol_table.enterScope(.function);
+                errdefer self.scopeCleanup();
+
                 for (body) |*stmt| {
                     try self.checkStatement(stmt);
                 }
+
+                try self.scopeLeave();
             }
         }
     }
@@ -3734,7 +3825,7 @@ pub const TypeChecker = struct {
 
                     // Check each required method
                     for (trait_def.methods) |req_method| {
-                        if (!req_method.has_default) {
+                        if (!req_method.hasDefault()) {
                             var found = false;
                             for (impl_block.methods) |impl_method| {
                                 if (std.mem.eql(u8, impl_method.name, req_method.name)) {
@@ -5934,4 +6025,391 @@ test "method resolution: inherent method (impl without trait)" {
     try std.testing.expect(!found_method_error);
     try std.testing.expect(result.kind == .primitive);
     try std.testing.expectEqual(@as(Type.PrimitiveType, .f64), result.kind.primitive);
+}
+
+test "trait default method resolves on concrete type" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register type Point
+    var point_type_ast = Type.named("Point", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Point", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Register trait Describable with:
+    //   fn describe(self: Self) -> string  (required)
+    //   fn short_describe(self: Self) -> string { ... }  (default)
+    var self_type_desc = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type_desc = Type.primitive(.string, span);
+
+    const desc_param_types = try allocator.alloc(*Type, 1);
+    desc_param_types[0] = &self_type_desc;
+    const desc_param_names = try allocator.alloc([]const u8, 1);
+    desc_param_names[0] = "self";
+
+    var self_type_short = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type_short = Type.primitive(.string, span);
+
+    const short_param_types = try allocator.alloc(*Type, 1);
+    short_param_types[0] = &self_type_short;
+    const short_param_names = try allocator.alloc([]const u8, 1);
+    short_param_names[0] = "self";
+
+    // Empty default body (just needs to be non-null to mark as default)
+    var empty_stmts = [_]Statement{};
+
+    const trait_methods = try allocator.alloc(Symbol.TraitMethodInfo, 2);
+    trait_methods[0] = .{
+        .name = "describe",
+        .generic_params = null,
+        .parameter_types = desc_param_types,
+        .parameter_names = desc_param_names,
+        .return_type = &string_type_desc,
+        .is_effect = false,
+        .default_body = null, // required method
+        .span = span,
+    };
+    trait_methods[1] = .{
+        .name = "short_describe",
+        .generic_params = null,
+        .parameter_types = short_param_types,
+        .parameter_names = short_param_names,
+        .return_type = &string_type_short,
+        .is_effect = false,
+        .default_body = &empty_stmts, // default method
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Describable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = trait_methods,
+    }, true, span));
+
+    // Register describe method symbol (the one explicitly implemented)
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type_impl = Type.primitive(.string, span);
+    const impl_param_types = try allocator.alloc(*Type, 1);
+    impl_param_types[0] = &self_type_impl;
+    const impl_param_names = try allocator.alloc([]const u8, 1);
+    impl_param_names[0] = "self";
+
+    const describe_sym = try table.define(Symbol.function(unassigned_symbol_id, "describe", .{
+        .generic_params = null,
+        .parameter_types = impl_param_types,
+        .parameter_names = impl_param_names,
+        .return_type = &string_type_impl,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+    }, true, span));
+
+    // Register impl Describable for Point with only describe (not short_describe)
+    const method_ids = try allocator.alloc(symbols.SymbolId, 1);
+    method_ids[0] = describe_sym;
+    try table.registerImpl(.{
+        .trait_name = "Describable",
+        .target_type = &point_type_ast,
+        .methods = method_ids,
+        .scope_id = 0,
+        .span = span,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Register variable p: Point
+    var point_type_ast2 = Type.named("Point", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "p", &point_type_ast2, false, false, span));
+
+    // Call p.short_describe() — should resolve via trait default
+    var p_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "p", .generic_args = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &p_ident,
+            .method = "short_describe",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+
+    // Should resolve to string type without errors
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .string), result.kind.primitive);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait default method ambiguity produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register type Widget
+    var widget_type_ast = Type.named("Widget", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Widget", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Register trait A with default method "info"
+    var self_type_a = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type_a = Type.primitive(.string, span);
+    const a_param_types = try allocator.alloc(*Type, 1);
+    a_param_types[0] = &self_type_a;
+    const a_param_names = try allocator.alloc([]const u8, 1);
+    a_param_names[0] = "self";
+    var empty_stmts_a = [_]Statement{};
+
+    const a_methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    a_methods[0] = .{
+        .name = "info",
+        .generic_params = null,
+        .parameter_types = a_param_types,
+        .parameter_names = a_param_names,
+        .return_type = &string_type_a,
+        .is_effect = false,
+        .default_body = &empty_stmts_a,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "TraitA", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = a_methods,
+    }, true, span));
+
+    // Register trait B with default method "info" (same name)
+    var self_type_b = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type_b = Type.primitive(.string, span);
+    const b_param_types = try allocator.alloc(*Type, 1);
+    b_param_types[0] = &self_type_b;
+    const b_param_names = try allocator.alloc([]const u8, 1);
+    b_param_names[0] = "self";
+    var empty_stmts_b = [_]Statement{};
+
+    const b_methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    b_methods[0] = .{
+        .name = "info",
+        .generic_params = null,
+        .parameter_types = b_param_types,
+        .parameter_names = b_param_names,
+        .return_type = &string_type_b,
+        .is_effect = false,
+        .default_body = &empty_stmts_b,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "TraitB", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = b_methods,
+    }, true, span));
+
+    // Register impl TraitA for Widget (no explicit methods — both are defaults)
+    const empty_method_ids_a = try allocator.alloc(symbols.SymbolId, 0);
+    try table.registerImpl(.{
+        .trait_name = "TraitA",
+        .target_type = &widget_type_ast,
+        .methods = empty_method_ids_a,
+        .scope_id = 0,
+        .span = span,
+    });
+
+    // Register impl TraitB for Widget
+    var widget_type_ast2 = Type.named("Widget", span);
+    const empty_method_ids_b = try allocator.alloc(symbols.SymbolId, 0);
+    try table.registerImpl(.{
+        .trait_name = "TraitB",
+        .target_type = &widget_type_ast2,
+        .methods = empty_method_ids_b,
+        .scope_id = 0,
+        .span = span,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Register variable w: Widget
+    var widget_type_ast3 = Type.named("Widget", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "w", &widget_type_ast3, false, false, span));
+
+    // Call w.info() — should produce ambiguity error
+    var w_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "w", .generic_args = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &w_ident,
+            .method = "info",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    _ = try checker.checkExpression(&mc);
+
+    // Should have an ambiguity error
+    try std.testing.expect(checker.hasErrors());
+    var found_ambiguity = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "ambiguous") != null) {
+            found_ambiguity = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_ambiguity);
+}
+
+test "trait Self method resolution in default body context" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Simulate trait context: Self type + current_trait
+    checker.self_type = ResolvedType.typeVar("Self", null, span);
+
+    // Build a minimal TraitDecl with one method: fn describe(self: Self) -> string
+    var self_param_type = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_return_type = Type.primitive(.string, span);
+    var params = [_]Declaration.Parameter{.{
+        .name = "self",
+        .param_type = &self_param_type,
+        .span = span,
+    }};
+    var methods = [_]Declaration.TraitMethod{.{
+        .name = "describe",
+        .generic_params = null,
+        .parameters = &params,
+        .return_type = &string_return_type,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    }};
+    var trait_decl = Declaration.TraitDecl{
+        .name = "Describable",
+        .generic_params = null,
+        .super_traits = null,
+        .methods = &methods,
+        .is_public = true,
+    };
+    checker.current_trait = &trait_decl;
+
+    // Create expression: self.describe() where self is of type Self (type_var)
+    var self_expr = Expression{
+        .kind = .{ .self_expr = {} },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &self_expr,
+            .method = "describe",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+
+    // Should resolve to string without errors
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .string), result.kind.primitive);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait required method missing from impl produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Register trait with one required method
+    var self_type_req = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_type_req = Type.primitive(.string, span);
+    const req_param_types = try allocator.alloc(*Type, 1);
+    req_param_types[0] = &self_type_req;
+    const req_param_names = try allocator.alloc([]const u8, 1);
+    req_param_names[0] = "self";
+
+    const req_methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    req_methods[0] = .{
+        .name = "required_method",
+        .generic_params = null,
+        .parameter_types = req_param_types,
+        .parameter_names = req_param_names,
+        .return_type = &string_type_req,
+        .is_effect = false,
+        .default_body = null, // required — no default
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "MyTrait", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = req_methods,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Create impl block with no methods
+    var target_type = Type.named("Foo", span);
+    var empty_methods = [_]Declaration.FunctionDecl{};
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "MyTrait",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &empty_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+
+    // Should report missing implementation error
+    try std.testing.expect(checker.hasErrors());
+    var found_missing = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "missing implementation") != null) {
+            found_missing = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_missing);
 }

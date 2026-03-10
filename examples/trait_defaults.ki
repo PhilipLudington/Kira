@@ -1,0 +1,59 @@
+// Trait default method bodies
+// Tests that impl blocks inherit default methods from traits,
+// and that explicit methods override defaults.
+
+type Point = {
+    x: i32,
+    y: i32
+}
+
+type Circle = {
+    radius: i32
+}
+
+// Trait with a required method and two default methods
+trait Describable {
+    fn describe(self: Self) -> string
+
+    fn short_describe(self: Self) -> string {
+        return self.describe()
+    }
+
+    fn loud_describe(self: Self) -> string {
+        return "LOUD: " + self.describe()
+    }
+}
+
+// Point: only provides the required method; inherits both defaults
+impl Describable for Point {
+    fn describe(self: Self) -> string {
+        return "a point"
+    }
+}
+
+// Circle: provides the required method AND overrides one default
+impl Describable for Circle {
+    fn describe(self: Self) -> string {
+        return "a circle"
+    }
+
+    fn short_describe(self: Self) -> string {
+        return "circle!"
+    }
+}
+
+let p: Point = Point { x: 1, y: 2 }
+let c: Circle = Circle { radius: 5 }
+
+effect fn main() -> i32 {
+    // Point inherits both defaults
+    std.io.println(p.describe())
+    std.io.println(p.short_describe())
+    std.io.println(p.loud_describe())
+
+    // Circle overrides short_describe but inherits loud_describe
+    std.io.println(c.describe())
+    std.io.println(c.short_describe())
+    std.io.println(c.loud_describe())
+    return 0
+}

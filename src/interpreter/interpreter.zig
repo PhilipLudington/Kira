@@ -754,6 +754,38 @@ pub const Interpreter = struct {
                             self.method_table.put(self.arenaAlloc(), key, func_value) catch unreachable;
                         }
                     }
+
+                    // Register default trait methods not overridden by the impl block
+                    if (impl.trait_name) |trait_name| {
+                        if (self.symbol_table.lookup(trait_name)) |trait_sym| {
+                            if (trait_sym.kind == .trait_def) {
+                                for (trait_sym.kind.trait_def.methods) |trait_method| {
+                                    if (trait_method.default_body) |default_body| {
+                                        // Check if the impl block already provides this method
+                                        var overridden = false;
+                                        for (impl.methods) |impl_method| {
+                                            if (std.mem.eql(u8, impl_method.name, trait_method.name)) {
+                                                overridden = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!overridden) {
+                                            const func_value = Value.FunctionValue{
+                                                .name = trait_method.name,
+                                                .parameters = trait_method.parameter_names,
+                                                .body = .{ .ast_body = default_body },
+                                                .captured_env = env,
+                                                .is_effect = trait_method.is_effect,
+                                                .is_memoized = false,
+                                            };
+                                            const key = std.fmt.allocPrint(self.arenaAlloc(), "{s}.{s}", .{ tn, trait_method.name }) catch unreachable;
+                                            self.method_table.put(self.arenaAlloc(), key, func_value) catch unreachable;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             },
             .test_decl => {
@@ -788,7 +820,7 @@ pub const Interpreter = struct {
 
             // Identifiers
             .identifier => |id| self.evalIdentifier(id.name, env),
-            .self_expr => error.InvalidOperation, // Should be resolved during type checking
+            .self_expr => self.evalIdentifier("self", env),
             .self_type_expr => error.InvalidOperation,
 
             // Operators
@@ -1486,8 +1518,7 @@ pub const Interpreter = struct {
                     return self.callFunction(field_value.function, args, env);
                 }
             }
-            self.setErrorContext("method '{s}' not found in '{s}'", .{ call.method, obj.record.type_name orelse "<anonymous>" });
-            return error.FieldNotFound;
+            // Fall through to method_table lookup for impl/trait methods on records
         }
 
         // Look up method through impl blocks via the method table
@@ -1509,7 +1540,11 @@ pub const Interpreter = struct {
             }
         }
 
-        self.setErrorContext("method '{s}' not found on value", .{call.method});
+        if (obj == .record) {
+            self.setErrorContext("method '{s}' not found in '{s}'", .{ call.method, obj.record.type_name orelse "<anonymous>" });
+        } else {
+            self.setErrorContext("method '{s}' not found on value", .{call.method});
+        }
         return error.FieldNotFound;
     }
 

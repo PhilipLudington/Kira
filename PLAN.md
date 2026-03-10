@@ -83,7 +83,7 @@ Before Phase 2, these must be true:
 - `Eq`, `Ord`, `Show` traits from the spec standard library are usable
 
 ### Tasks
-- [ ] Implement default method bodies in traits: when a trait declares a method with a body, impl blocks can omit it and inherit the default.
+- [x] Implement default method bodies in traits: when a trait declares a method with a body, impl blocks can omit it and inherit the default. (completed 2026-03-10)
 - [ ] Validate where clause constraints: type checker must resolve and enforce `where T: Eq, U: Show` constraints on generic functions and impl blocks.
 - [ ] Check method signature compatibility in impl blocks: verify that each method in an `impl Trait for Type` block matches the trait's declared signature (parameter types, return type, effect annotation).
 - [ ] Implement trait method dispatch: when calling a method on a generic `T: Eq`, resolve to the concrete impl's method.
