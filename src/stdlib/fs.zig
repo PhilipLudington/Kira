@@ -173,7 +173,7 @@ fn fsAppendFile(ctx: BuiltinContext, args: []const Value) InterpreterError!Value
     return Value{ .ok = result };
 }
 
-/// Read directory entries: read_dir(path) -> Result[array of string, string]
+/// Read directory entries: read_dir(path) -> Result[List[string], string]
 fn fsReadDir(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
@@ -188,7 +188,7 @@ fn fsReadDir(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     defer dir.close();
 
     var entries = std.ArrayListUnmanaged(Value){};
-    errdefer entries.deinit(ctx.allocator);
+    defer entries.deinit(ctx.allocator);
 
     var iter = dir.iterate();
     while (iter.next() catch |err| {
@@ -198,9 +198,30 @@ fn fsReadDir(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
         entries.append(ctx.allocator, Value{ .string = name }) catch return error.OutOfMemory;
     }
 
+    // Build a proper Cons/Nil list so pattern matching works
+    const list = try buildList(ctx.allocator, entries.items);
+
     const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
-    result.* = Value{ .array = entries.toOwnedSlice(ctx.allocator) catch return error.OutOfMemory };
+    result.* = list;
     return Value{ .ok = result };
+}
+
+/// Build a proper linked list (Cons/Nil) from an array of values.
+fn buildList(allocator: Allocator, items: []const Value) InterpreterError!Value {
+    var result: Value = Value{ .nil = {} };
+
+    // Build in reverse to get correct order
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        const head = allocator.create(Value) catch return error.OutOfMemory;
+        const tail = allocator.create(Value) catch return error.OutOfMemory;
+        head.* = items[i];
+        tail.* = result;
+        result = Value{ .cons = .{ .head = head, .tail = tail } };
+    }
+
+    return result;
 }
 
 /// Check if path is a file: is_file(path) -> bool

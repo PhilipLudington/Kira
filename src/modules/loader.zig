@@ -819,13 +819,18 @@ pub const ModuleLoader = struct {
                 const source_sym = self.table.lookupInScope(source_scope_id, item.name) orelse continue;
                 if (!source_sym.is_public) continue;
 
+                // Copy fields before define() — appending to the symbols array
+                // may reallocate, invalidating the source_sym pointer.
+                const source_sym_id = source_sym.id;
+                const source_sym_kind = source_sym.kind;
+
                 const alias_name = item.alias orelse item.name;
                 const alias_sym = symbol_mod.Symbol{
                     .id = 0,
                     .name = alias_name,
                     .kind = .{ .import_alias = .{
                         .source_path = import_decl.path,
-                        .resolved_id = source_sym.id,
+                        .resolved_id = source_sym_id,
                     } },
                     .span = item.span,
                     .is_public = false,
@@ -833,24 +838,26 @@ pub const ModuleLoader = struct {
                 };
                 _ = self.table.define(alias_sym) catch {};
 
-                // Also import sum type variant constructors
-                const sym_id = source_sym.id;
-                const resolved = if (source_sym.kind == .import_alias)
-                    (if (source_sym.kind.import_alias.resolved_id) |rid| self.table.getSymbol(rid) else null)
+                // Also import sum type variant constructors (use copied fields)
+                const resolved = if (source_sym_kind == .import_alias)
+                    (if (source_sym_kind.import_alias.resolved_id) |rid| self.table.getSymbol(rid) else null)
                 else
-                    self.table.getSymbol(sym_id);
+                    self.table.getSymbol(source_sym_id);
                 const resolved_sym = resolved orelse continue;
 
                 if (resolved_sym.kind == .type_def) {
                     switch (resolved_sym.kind.type_def.definition) {
                         .sum_type => |st| {
+                            // Copy resolved_sym.id before the loop — each
+                            // define() call may reallocate and invalidate it.
+                            const resolved_id = resolved_sym.id;
                             for (st.variants) |v| {
                                 const variant_alias = symbol_mod.Symbol{
                                     .id = 0,
                                     .name = v.name,
                                     .kind = .{ .import_alias = .{
                                         .source_path = import_decl.path,
-                                        .resolved_id = resolved_sym.id,
+                                        .resolved_id = resolved_id,
                                     } },
                                     .span = item.span,
                                     .is_public = false,
