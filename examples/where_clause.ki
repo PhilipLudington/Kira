@@ -1,0 +1,17 @@
+// Where clause constraint validation
+// Tests that where clause syntax is parsed and validated
+
+// Function with where clause — constraints on T
+fn identity[T](x: T) -> T where T: Eq {
+    return x
+}
+
+// Function with multiple type params in where clause
+fn pick_first[T, U](a: T, b: U) -> T where T: Eq, U: Show {
+    return a
+}
+
+effect fn main() -> i32 {
+    std.io.println("where clause parsed and validated!")
+    return 0
+}

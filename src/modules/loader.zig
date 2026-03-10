@@ -663,6 +663,19 @@ pub const ModuleLoader = struct {
             try param_names.append(self.allocator, p.name);
         }
 
+        // Convert where clause constraints
+        var where_clause: ?[]symbol_mod.Symbol.WhereConstraintInfo = null;
+        if (func.where_clause) |wc| {
+            var constraints = std.ArrayListUnmanaged(symbol_mod.Symbol.WhereConstraintInfo){};
+            for (wc) |constraint| {
+                try constraints.append(self.allocator, .{
+                    .type_param = constraint.type_param,
+                    .bounds = constraint.bounds,
+                });
+            }
+            where_clause = try constraints.toOwnedSlice(self.allocator);
+        }
+
         const func_symbol = symbol_mod.Symbol.FunctionSymbol{
             .generic_params = generic_params,
             .parameter_types = try param_types.toOwnedSlice(self.allocator),
@@ -671,6 +684,7 @@ pub const ModuleLoader = struct {
             .is_effect = func.is_effect,
             .is_memoized = func.is_memoized,
             .has_body = func.body != null,
+            .where_clause = where_clause,
         };
 
         var sym = symbol_mod.Symbol.function(0, func.name, func_symbol, func.is_public, span);

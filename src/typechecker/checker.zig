@@ -3636,6 +3636,47 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Validate where clause: each type_param must be a declared generic param
+        if (func.where_clause) |where_constraints| {
+            for (where_constraints) |constraint| {
+                var found = false;
+                if (func.generic_params) |params| {
+                    for (params) |p| {
+                        if (std.mem.eql(u8, p.name, constraint.type_param)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    var builder = errors_mod.DiagnosticBuilder.init(self.allocator, constraint.span, .err);
+                    try builder.write("where clause references unknown type parameter '");
+                    try builder.write(constraint.type_param);
+                    try builder.write("'");
+                    try self.addDiagnostic(try builder.build());
+                }
+
+                // Validate that each trait bound exists
+                for (constraint.bounds) |trait_name| {
+                    if (self.symbol_table.lookup(trait_name)) |sym| {
+                        if (sym.kind != .trait_def) {
+                            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, constraint.span, .err);
+                            try builder.write("'");
+                            try builder.write(trait_name);
+                            try builder.write("' is not a trait");
+                            try self.addDiagnostic(try builder.build());
+                        }
+                    } else {
+                        var builder = errors_mod.DiagnosticBuilder.init(self.allocator, constraint.span, .err);
+                        try builder.write("unknown trait '");
+                        try builder.write(trait_name);
+                        try builder.write("'");
+                        try self.addDiagnostic(try builder.build());
+                    }
+                }
+            }
+        }
+
         // Resolve return type
         const return_type = try self.resolveAstType(func.return_type);
         self.current_return_type = return_type;
@@ -3808,6 +3849,47 @@ pub const TypeChecker = struct {
             if (impl_block.generic_params) |params| {
                 for (params) |p| {
                     _ = self.type_var_substitutions.remove(p.name);
+                }
+            }
+        }
+
+        // Validate where clause: each type_param must be a declared generic param
+        if (impl_block.where_clause) |where_constraints| {
+            for (where_constraints) |constraint| {
+                var found = false;
+                if (impl_block.generic_params) |params| {
+                    for (params) |p| {
+                        if (std.mem.eql(u8, p.name, constraint.type_param)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    var builder = errors_mod.DiagnosticBuilder.init(self.allocator, constraint.span, .err);
+                    try builder.write("where clause references unknown type parameter '");
+                    try builder.write(constraint.type_param);
+                    try builder.write("'");
+                    try self.addDiagnostic(try builder.build());
+                }
+
+                // Validate that each trait bound exists
+                for (constraint.bounds) |trait_name| {
+                    if (self.symbol_table.lookup(trait_name)) |sym| {
+                        if (sym.kind != .trait_def) {
+                            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, constraint.span, .err);
+                            try builder.write("'");
+                            try builder.write(trait_name);
+                            try builder.write("' is not a trait");
+                            try self.addDiagnostic(try builder.build());
+                        }
+                    } else {
+                        var builder = errors_mod.DiagnosticBuilder.init(self.allocator, constraint.span, .err);
+                        try builder.write("unknown trait '");
+                        try builder.write(trait_name);
+                        try builder.write("'");
+                        try self.addDiagnostic(try builder.build());
+                    }
                 }
             }
         }
@@ -4253,15 +4335,22 @@ pub const TypeChecker = struct {
             }
         }
 
-        // TODO: Also check where clause constraints.
-        // The where clause is stored in the AST, not the symbol.
-        // For now, constraints from generic_params are the primary path.
-
         // Build substitution and instantiate function type
         var subst = instantiate_mod.TypeSubstitution{};
         defer subst.deinit(type_alloc);
         for (generic_params, resolved_args.items) |param, resolved_arg| {
             try subst.put(type_alloc, param.name, resolved_arg);
+        }
+
+        // Check where clause constraints (after subst is built)
+        if (func.where_clause) |where_constraints| {
+            for (where_constraints) |constraint| {
+                if (subst.get(constraint.type_param)) |resolved_type| {
+                    for (constraint.bounds) |trait_name| {
+                        try self.checkTraitBound(resolved_type, trait_name, span);
+                    }
+                }
+            }
         }
 
         // Get the uninstantiated function type
@@ -5383,6 +5472,7 @@ test "trait bounds: checkTraitBound passes when impl exists" {
         .methods = &[_]symbols.SymbolId{},
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     var checker = TypeChecker.init(allocator, &table);
@@ -5572,6 +5662,7 @@ test "trait bounds: generic function call with satisfied bound" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     }, true, span);
 
     _ = try table.define(func_sym);
@@ -5657,6 +5748,7 @@ test "trait bounds: generic function call with unsatisfied bound" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     }, true, span);
 
     _ = try table.define(func_sym);
@@ -5743,6 +5835,7 @@ test "method resolution: trait method on concrete type resolves return type" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     }, true, span));
 
     // Register impl Show for Point with the show method
@@ -5754,6 +5847,7 @@ test "method resolution: trait method on concrete type resolves return type" {
         .methods = method_ids,
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     var checker = TypeChecker.init(allocator, &table);
@@ -5886,6 +5980,7 @@ test "method resolution: wrong argument count produces error" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     }, true, span));
 
     const method_ids = try allocator.alloc(symbols.SymbolId, 1);
@@ -5896,6 +5991,7 @@ test "method resolution: wrong argument count produces error" {
         .methods = method_ids,
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     var checker = TypeChecker.init(allocator, &table);
@@ -5975,6 +6071,7 @@ test "method resolution: inherent method (impl without trait)" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     }, true, span));
 
     // Register inherent impl (trait_name = null)
@@ -5986,6 +6083,7 @@ test "method resolution: inherent method (impl without trait)" {
         .methods = method_ids,
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     var checker = TypeChecker.init(allocator, &table);
@@ -6112,6 +6210,7 @@ test "trait default method resolves on concrete type" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     }, true, span));
 
     // Register impl Describable for Point with only describe (not short_describe)
@@ -6123,6 +6222,7 @@ test "trait default method resolves on concrete type" {
         .methods = method_ids,
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     var checker = TypeChecker.init(allocator, &table);
@@ -6236,6 +6336,7 @@ test "trait default method ambiguity produces error" {
         .methods = empty_method_ids_a,
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     // Register impl TraitB for Widget
@@ -6247,6 +6348,7 @@ test "trait default method ambiguity produces error" {
         .methods = empty_method_ids_b,
         .scope_id = 0,
         .span = span,
+        .where_clause = null,
     });
 
     var checker = TypeChecker.init(allocator, &table);
@@ -6412,4 +6514,153 @@ test "trait required method missing from impl produces error" {
         }
     }
     try std.testing.expect(found_missing);
+}
+
+test "where clause: generic function call with satisfied where constraint" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Define function: fn compare[T](a: T, b: T) -> bool where T: Eq
+    var bool_type = Type.primitive(.bool, span);
+    var t_type = Type.named("T", span);
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    generic_params[0] = .{ .name = "T", .constraints = null }; // No inline constraints
+
+    const param_types = try allocator.alloc(*Type, 2);
+    param_types[0] = &t_type;
+    param_types[1] = &t_type;
+    const param_names = try allocator.alloc([]const u8, 2);
+    param_names[0] = "a";
+    param_names[1] = "b";
+
+    // Where clause: T: Eq (use stack arrays like existing trait bound tests)
+    var where_bounds = [_][]const u8{"Eq"};
+    const where_clause = try allocator.alloc(Symbol.WhereConstraintInfo, 1);
+    where_clause[0] = .{ .type_param = "T", .bounds = &where_bounds };
+
+    _ = try table.define(Symbol.function(0, "compare", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &bool_type,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = where_clause,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Call compare[i32](1, 2) — i32 implements Eq (builtin), should pass
+    const i32_type = ResolvedType.primitive(.i32, span);
+    try checker.checkTraitBound(i32_type, "Eq", span);
+
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "where clause: generic function call with unsatisfied where constraint" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Define a type "Blob" with no trait impls
+    var i32_alias_type = Type.primitive(.i32, span);
+    _ = try table.define(Symbol.typeDef(0, "Blob", .{
+        .generic_params = null,
+        .definition = .{ .alias = &i32_alias_type },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Check Blob: Eq — should fail since no impl is registered
+    const blob_type = ResolvedType.named(0, "Blob", span);
+    try checker.checkTraitBound(blob_type, "Eq", span);
+
+    try std.testing.expect(checker.hasErrors());
+    var found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "does not implement trait 'Eq'") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "where clause: multiple bounds in where clause" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // i32 implements both Eq and Ord (builtins)
+    const i32_type = ResolvedType.primitive(.i32, span);
+    try checker.checkTraitBound(i32_type, "Eq", span);
+    try checker.checkTraitBound(i32_type, "Ord", span);
+    try checker.checkTraitBound(i32_type, "Show", span);
+
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "where clause: where constraint stored in function symbol" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Define function with where clause
+    var bool_type = Type.primitive(.bool, span);
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    generic_params[0] = .{ .name = "T", .constraints = null };
+
+    var where_bounds = [_][]const u8{ "Eq", "Show" };
+    const where_clause = try allocator.alloc(Symbol.WhereConstraintInfo, 1);
+    where_clause[0] = .{ .type_param = "T", .bounds = &where_bounds };
+
+    _ = try table.define(Symbol.function(0, "display_equal", .{
+        .generic_params = generic_params,
+        .parameter_types = &[_]*Type{},
+        .parameter_names = &[_][]const u8{},
+        .return_type = &bool_type,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = where_clause,
+    }, true, span));
+
+    // Retrieve the symbol and verify where clause is stored
+    const sym = table.lookup("display_equal").?;
+    const func = sym.kind.function;
+    try std.testing.expect(func.where_clause != null);
+    try std.testing.expectEqual(@as(usize, 1), func.where_clause.?.len);
+    try std.testing.expectEqualStrings("T", func.where_clause.?[0].type_param);
+    try std.testing.expectEqual(@as(usize, 2), func.where_clause.?[0].bounds.len);
+    try std.testing.expectEqualStrings("Eq", func.where_clause.?[0].bounds[0]);
+    try std.testing.expectEqualStrings("Show", func.where_clause.?[0].bounds[1]);
 }

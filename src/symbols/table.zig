@@ -50,6 +50,7 @@ pub const SymbolTable = struct {
         methods: []SymbolId,
         scope_id: ScopeId,
         span: Span,
+        where_clause: ?[]Symbol.WhereConstraintInfo,
     };
 
     /// Create a new symbol table
@@ -178,6 +179,7 @@ pub const SymbolTable = struct {
                     .methods = &[_]SymbolId{},
                     .scope_id = 0,
                     .span = builtin_span,
+                    .where_clause = null,
                 }) catch unreachable;
             }
         }

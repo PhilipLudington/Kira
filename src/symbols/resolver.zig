@@ -295,6 +295,19 @@ pub const Resolver = struct {
             try param_names.append(self.allocator, p.name);
         }
 
+        // Convert where clause constraints
+        var where_clause: ?[]Symbol.WhereConstraintInfo = null;
+        if (func.where_clause) |wc| {
+            var constraints = std.ArrayListUnmanaged(Symbol.WhereConstraintInfo){};
+            for (wc) |constraint| {
+                try constraints.append(self.allocator, .{
+                    .type_param = constraint.type_param,
+                    .bounds = constraint.bounds,
+                });
+            }
+            where_clause = try constraints.toOwnedSlice(self.allocator);
+        }
+
         const func_symbol = Symbol.FunctionSymbol{
             .generic_params = generic_params,
             .parameter_types = try param_types.toOwnedSlice(self.allocator),
@@ -303,6 +316,7 @@ pub const Resolver = struct {
             .is_effect = func.is_effect,
             .is_memoized = func.is_memoized,
             .has_body = func.body != null,
+            .where_clause = where_clause,
         };
 
         var sym = Symbol.function(0, func.name, func_symbol, func.is_public, span);
@@ -554,6 +568,19 @@ pub const Resolver = struct {
         // Leave impl scope
         try self.table.leaveScope();
 
+        // Convert where clause constraints for impl
+        var impl_where_clause: ?[]Symbol.WhereConstraintInfo = null;
+        if (impl_block.where_clause) |wc| {
+            var wc_list = std.ArrayListUnmanaged(Symbol.WhereConstraintInfo){};
+            for (wc) |constraint| {
+                try wc_list.append(self.allocator, .{
+                    .type_param = constraint.type_param,
+                    .bounds = constraint.bounds,
+                });
+            }
+            impl_where_clause = try wc_list.toOwnedSlice(self.allocator);
+        }
+
         // Register the implementation
         try self.table.registerImpl(.{
             .trait_name = impl_block.trait_name,
@@ -561,6 +588,7 @@ pub const Resolver = struct {
             .methods = try method_ids.toOwnedSlice(self.allocator),
             .scope_id = impl_scope_id,
             .span = span,
+            .where_clause = impl_where_clause,
         });
     }
 
@@ -1657,6 +1685,7 @@ test "resolver import binds pub symbols into importing scope" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     };
     _ = try table.define(Symbol.function(0, "mk", fn_symbol, true, span));
     _ = try table.define(Symbol.typeDef(0, "Thing", .{
@@ -1765,6 +1794,7 @@ test "resolver import supports alias bindings" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     };
     _ = try table.define(Symbol.function(0, "mk", fn_symbol, true, span));
     _ = try table.define(Symbol.typeDef(0, "Thing", .{
@@ -1822,6 +1852,7 @@ test "resolver resolve() handles imported aliases in type and value positions" {
         .is_effect = false,
         .is_memoized = false,
         .has_body = true,
+        .where_clause = null,
     };
     _ = try table.define(Symbol.function(0, "mk", mk_symbol, true, span));
     _ = try table.define(Symbol.typeDef(0, "Thing", .{

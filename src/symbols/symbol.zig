@@ -63,6 +63,13 @@ pub const Symbol = struct {
         is_effect: bool,
         is_memoized: bool,
         has_body: bool, // false for trait method signatures
+        where_clause: ?[]WhereConstraintInfo,
+    };
+
+    /// Where clause constraint info (mirrors AST WhereConstraint)
+    pub const WhereConstraintInfo = struct {
+        type_param: []const u8,
+        bounds: [][]const u8,
     };
 
     /// Generic parameter info for functions and types
@@ -274,6 +281,9 @@ pub const Symbol = struct {
                 }
                 if (func.parameter_names.len > 0) {
                     allocator.free(func.parameter_names);
+                }
+                if (func.where_clause) |wc| {
+                    allocator.free(wc);
                 }
             },
             .type_def => |td| {
