@@ -234,23 +234,18 @@ pub const ModuleLoader = struct {
         if (self.config) |cfg| {
             // Try to load the root module as a package first (check for nested kira.toml)
             if (cfg.getFullModulePath(self.allocator, root_module_name)) |root_path| {
+                defer self.allocator.free(root_path);
+
                 // Check if it's a directory with its own kira.toml (a package)
                 const is_package = blk: {
-                    var dir = std.fs.cwd().openDir(root_path, .{}) catch {
-                        self.allocator.free(root_path);
-                        break :blk false;
-                    };
+                    var dir = std.fs.cwd().openDir(root_path, .{}) catch break :blk false;
                     defer dir.close();
                     // Try to load package config
-                    const pkg_name = @constCast(cfg).loadPackage(self.allocator, root_path) catch {
-                        self.allocator.free(root_path);
-                        break :blk false;
-                    };
+                    const pkg_name = @constCast(cfg).loadPackage(self.allocator, root_path) catch break :blk false;
                     break :blk pkg_name != null;
                 };
 
                 if (is_package) {
-                    self.allocator.free(root_path);
                     // Now use getFullModulePath again - it will use the loaded package config
                     if (cfg.getFullModulePath(self.allocator, module_path)) |pkg_module_path| {
                         const pkg_searched_copy = self.allocator.dupe(u8, pkg_module_path) catch null;
@@ -266,7 +261,6 @@ pub const ModuleLoader = struct {
                         }
                     }
                 }
-                // If not a package, root_path was already freed in the blk
             }
 
             // If not found via package, try direct module mapping

@@ -192,7 +192,10 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!ParseResult {
                     const key = allocator.dupe(u8, pair.key) catch return error.OutOfMemory;
                     errdefer allocator.free(key);
                     const value = allocator.dupe(u8, pair.value) catch return error.OutOfMemory;
-                    result.modules.put(allocator, key, value) catch return error.OutOfMemory;
+                    result.modules.put(allocator, key, value) catch {
+                        allocator.free(value);
+                        return error.OutOfMemory;
+                    };
                 }
             } else if (std.mem.eql(u8, section, "dependencies")) {
                 // Dependencies: name = "^1.0.0" or name = { version = "^1.0.0", git = "..." }

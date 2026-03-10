@@ -260,10 +260,14 @@ pub const ProjectConfig = struct {
         defer allocator.free(source);
 
         var parse_result = toml.parse(allocator, source) catch return null;
+        // Track whether parse_result still needs cleanup (for try-failure paths)
+        var pr_alive = true;
+        errdefer if (pr_alive) parse_result.deinit(allocator);
 
         // Package must have a name
         const pkg_name = parse_result.package_name orelse {
             parse_result.deinit(allocator);
+            pr_alive = false;
             return null;
         };
 
@@ -271,6 +275,7 @@ pub const ProjectConfig = struct {
         if (self.packages.getPtr(pkg_name)) |existing_pkg| {
             const existing_name = existing_pkg.name;
             parse_result.deinit(allocator);
+            pr_alive = false;
             return existing_name;
         }
 
@@ -299,9 +304,11 @@ pub const ProjectConfig = struct {
         parse_result.package_name = null;
         parse_result.modules = .{};
         parse_result.deinit(allocator);
+        pr_alive = false;
 
         // Store in packages map
         const key = try allocator.dupe(u8, pkg_name);
+        errdefer allocator.free(key);
         try self.packages.put(allocator, key, pkg_config);
 
         return pkg_name;
