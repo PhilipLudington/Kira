@@ -2,7 +2,7 @@ const std = @import("std");
 const Kira = @import("Kira");
 const Allocator = std.mem.Allocator;
 
-const version = "0.11.1";
+const version = "0.12.0";
 
 /// Command-line interface modes
 const Mode = enum {
