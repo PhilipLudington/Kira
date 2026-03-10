@@ -6856,7 +6856,7 @@ test "trait impl: wrong parameter count produces error" {
         .span = span,
     };
 
-    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Eq", .{
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Comparable", .{
         .generic_params = null,
         .super_traits = null,
         .methods = methods,
@@ -6891,7 +6891,7 @@ test "trait impl: wrong parameter count produces error" {
         },
     };
     var impl_block = Declaration.ImplBlock{
-        .trait_name = "Eq",
+        .trait_name = "Comparable",
         .generic_params = null,
         .target_type = &target_type,
         .methods = &impl_methods,
