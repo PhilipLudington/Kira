@@ -33,10 +33,12 @@ See [IDEA.md](IDEA.md) for the concept and motivation behind Kira, and [PHILOSOP
 ```
 // Declarations
 fn       let      type     module   import   pub
-effect   trait    impl     const
+effect   trait    impl     const    shadow
+test     bench    memo     var
 
 // Control flow
 if       else     match    for      return   break
+while    loop
 
 // Expressions
 true     false    self     Self
@@ -63,6 +65,7 @@ and  or  not
 // Special
 ?       ??      ..      ..=
 ->      =>      :       ::
+|
 ```
 
 ### Literals
@@ -124,6 +127,107 @@ let name: string = "Alice"
 let items: List[i32] = List.empty()
 ```
 
+### Mutable Bindings (`var`)
+
+Use `var` for local mutable bindings within function bodies. `var` cannot appear at
+the module level — top-level bindings are always immutable (`let` or `const`).
+
+```kira
+var count: i32 = 0          // initialized
+var result: string          // uninitialized (must assign before use)
+count = count + 1           // reassignment
+```
+
+`var` takes a simple identifier (no destructuring patterns, unlike `let`). Local
+rebinding with `var` is allowed in both pure and effect functions — only field/index
+mutation and I/O require `effect`.
+
+### Constants
+
+Use `const` for top-level, compile-time known values. Constants require explicit type
+annotations and an initializer.
+
+```kira
+const PI: f64 = 3.14159265358979
+const MAX_RETRIES: i32 = 3
+pub const VERSION: string = "1.0.0"
+```
+
+**`const` vs `let`:**
+
+| | `const` | `let` |
+|---|---|---|
+| Scope | Top-level only | Top-level or local |
+| Generics | No | Yes (`let identity[T]: ...`) |
+| Mutability | Immutable | Immutable |
+| Initializer | Required | Required |
+| `pub` | Yes | Yes |
+
+Use `const` for simple named values (numbers, strings). Use `let` for function bindings
+and generic definitions.
+
+### Explicit Shadowing
+
+Kira does **not** allow implicit variable shadowing. If a binding in an inner scope
+would shadow a name from an outer scope, the compiler rejects it:
+
+```kira
+let x: i32 = 10
+if true {
+    let x: i32 = 20    // ERROR: shadowing 'x' requires 'shadow' binding
+}
+```
+
+To shadow intentionally, use the `shadow` keyword as a prefix:
+
+```kira
+let x: i32 = 10
+if true {
+    shadow let x: i32 = 20    // OK: explicitly opted in to shadowing
+}
+```
+
+`shadow` works with both `let` and `var` bindings:
+
+```kira
+let name: string = "Alice"
+shadow let name: string = "Bob"      // OK
+
+var count: i32 = 0
+shadow var count: i32 = 100          // OK
+```
+
+Shadowing within the same scope (re-declaration) is always an error, even with `shadow`.
+The `shadow` keyword only permits shadowing names from **outer** scopes.
+
+### Test and Bench Declarations
+
+Tests and benchmarks are top-level declarations with a string name and a block body.
+They cannot be `pub`.
+
+```kira
+test "addition works" {
+    std.assert.assert_eq(5, add(2, 3))
+    std.assert.assert_eq(0, add(-1, 1))
+}
+
+bench "fibonacci 20" {
+    fibonacci(20)
+}
+```
+
+Test and bench bodies are implicitly treated as effect functions — they can call
+effectful code (assertions, IO) without an `effect` annotation.
+
+Run tests and benchmarks from the CLI:
+
+```
+kira test file.ki               // run tests
+kira test --coverage file.ki    // run tests with coverage
+kira bench file.ki              // run benchmarks
+kira bench --iterations 1000 file.ki
+```
+
 ### Functions
 
 Functions are values with explicit signatures. All functions use explicit `return`.
@@ -147,6 +251,28 @@ let greet: fn(string) -> void = fn(name: string) -> void {
     // This would be an effect function in practice
     return
 }
+```
+
+### Memoized Functions
+
+The `memo` modifier caches function results by argument values. Memoized functions
+must be pure — combining `memo` with `effect` is a compile error.
+
+```kira
+memo fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+```
+
+Memoized functions cannot be generic (different type instantiations would alias
+cache entries).
+
+```kira
+memo effect fn bad() -> IO[void] { }  // ERROR: memo + effect cannot be combined
+memo fn bad2[T](x: T) -> T { }        // ERROR: memo functions cannot be generic
 ```
 
 ### Algebraic Data Types
@@ -218,7 +344,25 @@ let sum_list: fn(List[i32]) -> i32 = fn(items: List[i32]) -> i32 {
     }
     return total
 }
+
+// While loop (condition checked each iteration)
+var i: i32 = 0
+while i < 10 {
+    std.io.println(std.int.to_string(i))
+    i = i + 1
+}
+
+// Infinite loop (exit with break or return)
+loop {
+    let input: string = read_line()
+    if input == "quit" {
+        break
+    }
+}
 ```
+
+Use `for` to iterate over collections, `while` when you have a boolean condition,
+and `loop` for infinite loops that exit via `break` or `return`.
 
 ### Closures
 
@@ -308,6 +452,29 @@ let y: i64 = x              // ERROR: type mismatch
 
 let y: i64 = x.as[i64]      // OK: explicit conversion
 ```
+
+### Null Coalesce Operator (`??`)
+
+The `??` operator unwraps an `Option[T]`, returning the inner value if `Some` or a
+default value if `None`:
+
+```kira
+let name: Option[string] = get_name()
+let display: string = name ?? "anonymous"
+```
+
+The left operand must be `Option[T]` and the right operand must be type `T`. The
+result type is `T`. The default expression is only evaluated if the left is `None`.
+
+```kira
+let a: Option[i32] = Some(42)
+let b: i32 = a ?? 0          // 42
+
+let c: Option[i32] = None
+let d: i32 = c ?? 0          // 0
+```
+
+`??` works only with `Option` types, not `Result`. For `Result`, use `match` or `?`.
 
 ---
 
@@ -492,6 +659,25 @@ match value {
     n if n < 0 => { result = "negative" }
     n if n > 100 => { result = "large" }
     n => { result = "normal: ${n}" }
+}
+
+// Range patterns (integers and chars)
+match code {
+    0..10 => { result = "single digit" }      // exclusive end
+    10..=99 => { result = "two digits" }       // inclusive end
+    _ => { result = "large" }
+}
+
+match ch {
+    'a'..='z' => { result = "lowercase" }
+    'A'..='Z' => { result = "uppercase" }
+    '0'..='9' => { result = "digit" }
+    _ => { result = "other" }
+}
+
+// Rest pattern in records (ignore unmatched fields)
+match user {
+    User { name: n, .. } => { result = n }     // ignores other fields
 }
 ```
 

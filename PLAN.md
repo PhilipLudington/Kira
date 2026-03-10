@@ -3,7 +3,7 @@
 ## Overview
 Comprehensive plan to fix philosophy violations, align the spec with the implementation,
 complete partially-implemented features, and prepare for production codegen.
-Current status: Phase 0 complete. Phase 1 next.
+Current status: Phase 0 and Phase 1 complete. Phase 2 (Complete Traits) next.
 
 Audit performed against IDEA.md, PHILOSOPHY.md, and DESIGN.md.
 
@@ -35,7 +35,8 @@ Audit performed against IDEA.md, PHILOSOPHY.md, and DESIGN.md.
 
 ---
 
-## Phase 1: Spec Alignment
+## Phase 1: Spec Alignment ✅
+**Status:** Complete (2026-03-10)
 
 **Goal:** Update DESIGN.md to document every implemented feature not currently in the spec.
 **Estimated Effort:** 1-2 days
@@ -45,15 +46,15 @@ Audit performed against IDEA.md, PHILOSOPHY.md, and DESIGN.md.
 - No undocumented syntax in the compiler
 
 ### Tasks
-- [ ] Document `shadow` keyword: add to keywords list, add grammar section showing `shadow let` and `shadow var` with explanation of explicit shadowing opt-in.
-- [ ] Document `const` declarations: add to keywords list, add grammar section distinguishing `const` (compile-time known) from `let` (runtime immutable).
-- [ ] Document `test` and `bench` declarations: add syntax, semantics, and examples for `test "name" { ... }` and `bench "name" { ... }`.
-- [ ] Document `??` operator: add to operators list, add semantics section showing `val ?? default` for Option and Result types.
-- [ ] Document `while` and `loop`: add to control flow section with grammar and examples. Clarify when to use `for` vs `while` vs `loop`.
-- [ ] Document `memo fn`: add to function declarations section. Explain memoization, the purity requirement, and that `memo` + `effect` is a compile error.
-- [ ] Document `var` bindings explicitly: clarify that `var` is for local mutable bindings within function bodies, and that top-level bindings are always immutable.
-- [ ] Document range patterns (`1..10`, `'a'..='z'`) and rest patterns (`..`) in pattern matching section.
-- [ ] Review all keyword/operator lists in DESIGN.md for completeness against the lexer's actual keyword and operator tables.
+- [x] Document `shadow` keyword: add to keywords list, add grammar section showing `shadow let` and `shadow var` with explanation of explicit shadowing opt-in. (completed 2026-03-10)
+- [x] Document `const` declarations: add to keywords list, add grammar section distinguishing `const` (compile-time known) from `let` (runtime immutable). (completed 2026-03-10)
+- [x] Document `test` and `bench` declarations: add syntax, semantics, and examples for `test "name" { ... }` and `bench "name" { ... }`. (completed 2026-03-10)
+- [x] Document `??` operator: add to operators list (already present), add semantics section showing `val ?? default` for Option types. (completed 2026-03-10)
+- [x] Document `while` and `loop`: add to control flow section with grammar and examples. Clarify when to use `for` vs `while` vs `loop`. (completed 2026-03-10)
+- [x] Document `memo fn`: add to function declarations section. Explain memoization, the purity requirement, and that `memo` + `effect` is a compile error. (completed 2026-03-10)
+- [x] Document `var` bindings explicitly: clarify that `var` is for local mutable bindings within function bodies, and that top-level bindings are always immutable. (completed 2026-03-10)
+- [x] Document range patterns (`1..10`, `'a'..='z'`) and rest patterns (`..`) in pattern matching section. (completed 2026-03-10)
+- [x] Review all keyword/operator lists in DESIGN.md for completeness against the lexer's actual keyword and operator tables. Added missing `|` operator. All 34 keywords verified present. (completed 2026-03-10)
 
 ### Testing Strategy
 - No code changes in this phase — spec-only updates.
@@ -64,9 +65,9 @@ Audit performed against IDEA.md, PHILOSOPHY.md, and DESIGN.md.
 
 ## Phase 1 Readiness Gate
 Before Phase 2, these must be true:
-- [ ] All Phase 0 fixes merged and passing tests
-- [ ] DESIGN.md fully describes every language feature the compiler implements
-- [ ] No undocumented syntax exists in the parser
+- [x] All Phase 0 fixes merged and passing tests (completed 2026-03-10)
+- [x] DESIGN.md fully describes every language feature the compiler implements (completed 2026-03-10)
+- [x] No undocumented syntax exists in the parser (completed 2026-03-10)
 
 ---
 
