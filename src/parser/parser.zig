@@ -106,8 +106,16 @@ pub const Parser = struct {
             self.skipNewlines();
         }
 
-        // Parse imports
-        while (self.check(.import)) {
+        // Parse imports (discard any doc comments before imports)
+        while (self.check(.import) or self.check(.doc_comment)) {
+            if (self.check(.doc_comment)) {
+                // Discard doc comments before imports — they aren't attachable
+                while (self.check(.doc_comment)) {
+                    _ = self.advance();
+                    self.skipNewlines();
+                }
+                continue;
+            }
             const import_decl = try self.parseImportDecl();
             try imports.append(self.allocator, import_decl);
             self.skipNewlines();
