@@ -76,6 +76,9 @@ pub const TypeChecker = struct {
     self_type: ?ResolvedType,
     /// Optional scope used as a fallback for resolving AST type names.
     type_lookup_fallback_scope: ?ScopeId,
+    /// When resolving types in a cross-module context, use this span for errors
+    /// instead of the AST span (which belongs to another file).
+    cross_module_error_span: ?Span,
     /// Whether we're in an effect function
     in_effect_function: bool,
     /// Arena for temporary type allocations during type checking
@@ -93,6 +96,7 @@ pub const TypeChecker = struct {
             .type_var_substitutions = .{},
             .self_type = null,
             .type_lookup_fallback_scope = null,
+            .cross_module_error_span = null,
             .in_effect_function = false,
             .type_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -193,8 +197,9 @@ pub const TypeChecker = struct {
                             return ResolvedType.named(resolved_sym.id, n.name, ast_type.span);
                         }
                     }
-                    try self.addDiagnostic(try errors_mod.undefinedType(self.allocator, n.name, ast_type.span));
-                    return ResolvedType.errorType(ast_type.span);
+                    const err_span = self.cross_module_error_span orelse ast_type.span;
+                    try self.addDiagnostic(try errors_mod.undefinedType(self.allocator, n.name, err_span));
+                    return ResolvedType.errorType(err_span);
                 }
             },
 
@@ -216,8 +221,9 @@ pub const TypeChecker = struct {
                         .span = ast_type.span,
                     };
                 } else {
-                    try self.addDiagnostic(try errors_mod.undefinedType(self.allocator, g.base, ast_type.span));
-                    return ResolvedType.errorType(ast_type.span);
+                    const err_span = self.cross_module_error_span orelse ast_type.span;
+                    try self.addDiagnostic(try errors_mod.undefinedType(self.allocator, g.base, err_span));
+                    return ResolvedType.errorType(err_span);
                 }
             },
 
@@ -3936,8 +3942,10 @@ pub const TypeChecker = struct {
                 if (ia.resolved_id) |id| {
                     if (self.symbol_table.getSymbol(id)) |resolved_sym| {
                         const previous_scope_id = self.symbol_table.current_scope_id;
+                        const previous_error_span = self.cross_module_error_span;
                         var restore_scope = false;
                         defer {
+                            self.cross_module_error_span = previous_error_span;
                             if (restore_scope) {
                                 self.symbol_table.setCurrentScope(previous_scope_id) catch {
                                     if (builtin.mode == .Debug) {
@@ -3950,6 +3958,8 @@ pub const TypeChecker = struct {
                             if (source_scope_id != previous_scope_id) {
                                 self.symbol_table.setCurrentScope(source_scope_id) catch return error.TypeError;
                                 restore_scope = true;
+                                // Use call site span for errors in cross-module type resolution
+                                self.cross_module_error_span = span;
                             }
                         }
                         return try self.getSymbolType(resolved_sym, span);

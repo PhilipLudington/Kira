@@ -617,7 +617,12 @@ pub const ModuleLoader = struct {
                 defer self.allocator.free(import_path);
 
                 // Recursively load the imported module
-                _ = self.loadModule(import_path) catch continue;
+                const imported_scope_id = self.loadModule(import_path) catch continue;
+                const dep_scope_id = imported_scope_id orelse continue;
+
+                // Create import aliases so this module's scope has visibility
+                // into the imported symbols (needed for cross-module type resolution)
+                self.resolveModuleImport(import_decl, dep_scope_id, scope_id);
             }
 
             // Allocate program on heap to keep it alive
@@ -799,6 +804,97 @@ pub const ModuleLoader = struct {
         sym.doc_comment = doc_comment;
 
         _ = self.table.define(sym) catch {};
+    }
+
+    /// Resolve import aliases from one module scope into another.
+    /// Creates import alias symbols so that types referenced in the source
+    /// module's function signatures are visible for cross-module type resolution.
+    fn resolveModuleImport(
+        self: *ModuleLoader,
+        import_decl: ast.Declaration.ImportDecl,
+        source_scope_id: ScopeId,
+        target_scope_id: ScopeId,
+    ) void {
+        const previous_scope = self.table.current_scope_id;
+        self.table.setCurrentScope(target_scope_id) catch return;
+        defer self.table.setCurrentScope(previous_scope) catch {};
+
+        if (import_decl.items) |items| {
+            // Specific imports: create alias for each named item
+            for (items) |item| {
+                const source_sym = self.table.lookupInScope(source_scope_id, item.name) orelse continue;
+                if (!source_sym.is_public) continue;
+
+                const alias_name = item.alias orelse item.name;
+                const alias_sym = symbol_mod.Symbol{
+                    .id = 0,
+                    .name = alias_name,
+                    .kind = .{ .import_alias = .{
+                        .source_path = import_decl.path,
+                        .resolved_id = source_sym.id,
+                    } },
+                    .span = item.span,
+                    .is_public = false,
+                    .doc_comment = null,
+                };
+                _ = self.table.define(alias_sym) catch {};
+
+                // Also import sum type variant constructors
+                const sym_id = source_sym.id;
+                const resolved = if (source_sym.kind == .import_alias)
+                    (if (source_sym.kind.import_alias.resolved_id) |rid| self.table.getSymbol(rid) else null)
+                else
+                    self.table.getSymbol(sym_id);
+                const resolved_sym = resolved orelse continue;
+
+                if (resolved_sym.kind == .type_def) {
+                    switch (resolved_sym.kind.type_def.definition) {
+                        .sum_type => |st| {
+                            for (st.variants) |v| {
+                                const variant_alias = symbol_mod.Symbol{
+                                    .id = 0,
+                                    .name = v.name,
+                                    .kind = .{ .import_alias = .{
+                                        .source_path = import_decl.path,
+                                        .resolved_id = resolved_sym.id,
+                                    } },
+                                    .span = item.span,
+                                    .is_public = false,
+                                    .doc_comment = null,
+                                };
+                                _ = self.table.define(variant_alias) catch {};
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
+        } else {
+            // Import entire module: create aliases for all public symbols
+            const mod_scope = self.table.getScope(source_scope_id) orelse return;
+            var it = mod_scope.symbols.iterator();
+            while (it.next()) |entry| {
+                const sym_id = entry.value_ptr.*;
+                const sym = self.table.getSymbol(sym_id) orelse continue;
+                if (!sym.is_public) continue;
+
+                const alias_sym = symbol_mod.Symbol{
+                    .id = 0,
+                    .name = entry.key_ptr.*,
+                    .kind = .{ .import_alias = .{
+                        .source_path = import_decl.path,
+                        .resolved_id = sym.id,
+                    } },
+                    .span = .{
+                        .start = .{ .line = 0, .column = 0, .offset = 0 },
+                        .end = .{ .line = 0, .column = 0, .offset = 0 },
+                    },
+                    .is_public = false,
+                    .doc_comment = null,
+                };
+                _ = self.table.define(alias_sym) catch {};
+            }
+        }
     }
 
     /// Add a load error to the error list

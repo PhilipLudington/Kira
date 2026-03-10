@@ -737,17 +737,24 @@ pub const Resolver = struct {
                         .doc_comment = null,
                     };
 
+                    // Save ID before defineInScope — it may reallocate the symbols
+                    // ArrayList and invalidate the sym pointer.
+                    const sym_id = sym.id;
+
                     _ = self.table.defineInScope(scope_id, import_sym) catch |err| {
                         if (err == error.DuplicateDefinition) {
                             try self.addError("Import '{s}' conflicts with existing definition", .{alias_name}, item.span);
                         }
                     };
 
+                    // Re-fetch after potential reallocation
+                    const fresh_sym = self.table.getSymbol(sym_id) orelse continue;
+
                     // If the imported symbol is a sum type, also import its variant constructors
-                    const resolved_sym = if (sym.kind == .import_alias)
-                        (if (sym.kind.import_alias.resolved_id) |rid| self.table.getSymbol(rid) else null) orelse sym
+                    const resolved_sym = if (fresh_sym.kind == .import_alias)
+                        (if (fresh_sym.kind.import_alias.resolved_id) |rid| self.table.getSymbol(rid) else null) orelse fresh_sym
                     else
-                        sym;
+                        fresh_sym;
                     if (resolved_sym.kind == .type_def) {
                         const td = resolved_sym.kind.type_def;
                         switch (td.definition) {

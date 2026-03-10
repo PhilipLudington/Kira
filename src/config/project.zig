@@ -291,7 +291,14 @@ pub const ProjectConfig = struct {
                 continue;
             };
         }
+        // Module entries transferred to pkg_config; just free the hashmap shell
         parse_result.modules.deinit(allocator);
+
+        // Free remaining parse_result fields we don't use
+        // (package_name ownership moved to pkg_config.name, modules transferred above)
+        parse_result.package_name = null;
+        parse_result.modules = .{};
+        parse_result.deinit(allocator);
 
         // Store in packages map
         const key = try allocator.dupe(u8, pkg_name);
