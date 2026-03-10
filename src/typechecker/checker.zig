@@ -3900,33 +3900,115 @@ pub const TypeChecker = struct {
         }
 
         // If implementing a trait, verify all required methods are implemented
+        // and that provided method signatures match the trait's declarations
         if (impl_block.trait_name) |trait_name| {
             if (self.symbol_table.lookup(trait_name)) |trait_sym| {
                 if (trait_sym.kind == .trait_def) {
                     const trait_def = trait_sym.kind.trait_def;
 
-                    // Check each required method
-                    for (trait_def.methods) |req_method| {
-                        if (!req_method.hasDefault()) {
-                            var found = false;
-                            for (impl_block.methods) |impl_method| {
-                                if (std.mem.eql(u8, impl_method.name, req_method.name)) {
-                                    found = true;
-                                    // TODO: Check signature matches
-                                    break;
-                                }
+                    for (trait_def.methods) |trait_method| {
+                        // Find the corresponding impl method
+                        var impl_method_ptr: ?*const Declaration.FunctionDecl = null;
+                        for (impl_block.methods) |*impl_method| {
+                            if (std.mem.eql(u8, impl_method.name, trait_method.name)) {
+                                impl_method_ptr = impl_method;
+                                break;
                             }
-                            if (!found) {
-                                try self.addDiagnostic(try errors_mod.simpleError(
-                                    self.allocator,
-                                    "missing implementation for trait method",
-                                    impl_block.target_type.span,
-                                ));
-                            }
+                        }
+
+                        if (impl_method_ptr) |impl_method| {
+                            // Check signature compatibility
+                            try self.checkTraitMethodSignature(trait_name, trait_method, impl_method);
+                        } else if (!trait_method.hasDefault()) {
+                            try self.addDiagnostic(try errors_mod.simpleError(
+                                self.allocator,
+                                "missing implementation for trait method",
+                                impl_block.target_type.span,
+                            ));
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// Check that an impl method's signature matches the trait method's declaration.
+    /// Validates parameter count, parameter types, return type, and effect annotation.
+    fn checkTraitMethodSignature(
+        self: *TypeChecker,
+        trait_name: []const u8,
+        trait_method: Symbol.TraitMethodInfo,
+        impl_method: *const Declaration.FunctionDecl,
+    ) TypeCheckError!void {
+        const method_span = impl_method.return_type.span;
+
+        // Check effect annotation
+        if (trait_method.is_effect != impl_method.is_effect) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, method_span, .err);
+            try builder.write("method '");
+            try builder.write(impl_method.name);
+            try builder.write("' effect annotation mismatch: trait '");
+            try builder.write(trait_name);
+            if (trait_method.is_effect) {
+                try builder.write("' declares 'effect fn' but impl has 'fn'");
+            } else {
+                try builder.write("' declares 'fn' but impl has 'effect fn'");
+            }
+            try self.addDiagnostic(try builder.build());
+            return;
+        }
+
+        // Check parameter count
+        if (trait_method.parameter_types.len != impl_method.parameters.len) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, method_span, .err);
+            try builder.write("method '");
+            try builder.write(impl_method.name);
+            try builder.write("' has wrong number of parameters for trait '");
+            try builder.write(trait_name);
+            try builder.write("': expected ");
+            try builder.print("{d}", .{trait_method.parameter_types.len});
+            try builder.write(", found ");
+            try builder.print("{d}", .{impl_method.parameters.len});
+            try self.addDiagnostic(try builder.build());
+            return;
+        }
+
+        // Check each parameter type
+        for (trait_method.parameter_types, impl_method.parameters) |trait_param_type, impl_param| {
+            const resolved_trait = self.resolveAstType(trait_param_type) catch continue;
+            const resolved_impl = self.resolveAstType(impl_param.param_type) catch continue;
+            if (!unify.typesEqual(resolved_trait, resolved_impl)) {
+                var builder = errors_mod.DiagnosticBuilder.init(self.allocator, impl_param.span, .err);
+                try builder.write("method '");
+                try builder.write(impl_method.name);
+                try builder.write("' parameter '");
+                try builder.write(impl_param.name);
+                try builder.write("' type mismatch in impl for trait '");
+                try builder.write(trait_name);
+                try builder.write("': expected '");
+                try builder.writeType(resolved_trait);
+                try builder.write("', found '");
+                try builder.writeType(resolved_impl);
+                try builder.write("'");
+                try self.addDiagnostic(try builder.build());
+            }
+        }
+
+        // Check return type
+        const resolved_trait_ret = self.resolveAstType(trait_method.return_type) catch return;
+        const resolved_impl_ret = self.resolveAstType(impl_method.return_type) catch return;
+        if (!unify.typesEqual(resolved_trait_ret, resolved_impl_ret)) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, impl_method.return_type.span, .err);
+            try builder.write("method '");
+            try builder.write(impl_method.name);
+            try builder.write("' return type mismatch in impl for trait '");
+            try builder.write(trait_name);
+            try builder.write("': expected '");
+            try builder.writeType(resolved_trait_ret);
+            try builder.write("', found '");
+            try builder.writeType(resolved_impl_ret);
+            try builder.write("'");
+            try self.addDiagnostic(try builder.build());
         }
     }
 
@@ -6663,4 +6745,496 @@ test "where clause: where constraint stored in function symbol" {
     try std.testing.expectEqual(@as(usize, 2), func.where_clause.?[0].bounds.len);
     try std.testing.expectEqualStrings("Eq", func.where_clause.?[0].bounds[0]);
     try std.testing.expectEqualStrings("Show", func.where_clause.?[0].bounds[1]);
+}
+
+test "trait impl: correct signature produces no error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Trait: fn describe(self: Self) -> string
+    var self_type_trait = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_ret_trait = Type.primitive(.string, span);
+    const trait_param_types = try allocator.alloc(*Type, 1);
+    trait_param_types[0] = &self_type_trait;
+    const trait_param_names = try allocator.alloc([]const u8, 1);
+    trait_param_names[0] = "self";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "describe",
+        .generic_params = null,
+        .parameter_types = trait_param_types,
+        .parameter_names = trait_param_names,
+        .return_type = &string_ret_trait,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Describable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Foo", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Impl with matching signature: fn describe(self: Self) -> string
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_ret_impl = Type.primitive(.string, span);
+    var impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_type_impl, .span = span },
+    };
+    var target_type = Type.named("Foo", span);
+    var impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "describe",
+            .generic_params = null,
+            .parameters = &impl_params,
+            .return_type = &string_ret_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "Describable",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait impl: wrong parameter count produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Trait: fn equals(self: Self, other: Self) -> bool (2 params)
+    var self_type1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var self_type2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool_ret = Type.primitive(.bool, span);
+    const trait_param_types = try allocator.alloc(*Type, 2);
+    trait_param_types[0] = &self_type1;
+    trait_param_types[1] = &self_type2;
+    const trait_param_names = try allocator.alloc([]const u8, 2);
+    trait_param_names[0] = "self";
+    trait_param_names[1] = "other";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "equals",
+        .generic_params = null,
+        .parameter_types = trait_param_types,
+        .parameter_names = trait_param_names,
+        .return_type = &bool_ret,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Eq", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Foo", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Impl with only 1 param (wrong count)
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool_ret_impl = Type.primitive(.bool, span);
+    var impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_type_impl, .span = span },
+    };
+    var target_type = Type.named("Foo", span);
+    var impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "equals",
+            .generic_params = null,
+            .parameters = &impl_params,
+            .return_type = &bool_ret_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "Eq",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+    try std.testing.expect(checker.hasErrors());
+    var found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "wrong number of parameters") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "trait impl: wrong return type produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Trait: fn describe(self: Self) -> string
+    var self_type_trait = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_ret = Type.primitive(.string, span);
+    const trait_param_types = try allocator.alloc(*Type, 1);
+    trait_param_types[0] = &self_type_trait;
+    const trait_param_names = try allocator.alloc([]const u8, 1);
+    trait_param_names[0] = "self";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "describe",
+        .generic_params = null,
+        .parameter_types = trait_param_types,
+        .parameter_names = trait_param_names,
+        .return_type = &string_ret,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Describable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Impl returns i32 instead of string
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_ret = Type.primitive(.i32, span);
+    var impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_type_impl, .span = span },
+    };
+    var target_type = Type.named("Foo", span);
+    var impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "describe",
+            .generic_params = null,
+            .parameters = &impl_params,
+            .return_type = &i32_ret,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "Describable",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+    try std.testing.expect(checker.hasErrors());
+    var found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "return type mismatch") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "trait impl: wrong effect annotation produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Trait: fn describe(self: Self) -> string (pure, not effect)
+    var self_type_trait = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_ret = Type.primitive(.string, span);
+    const trait_param_types = try allocator.alloc(*Type, 1);
+    trait_param_types[0] = &self_type_trait;
+    const trait_param_names = try allocator.alloc([]const u8, 1);
+    trait_param_names[0] = "self";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "describe",
+        .generic_params = null,
+        .parameter_types = trait_param_types,
+        .parameter_names = trait_param_names,
+        .return_type = &string_ret,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Describable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Impl uses effect fn (mismatch)
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_ret_impl = Type.primitive(.string, span);
+    var impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_type_impl, .span = span },
+    };
+    var target_type = Type.named("Foo", span);
+    var impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "describe",
+            .generic_params = null,
+            .parameters = &impl_params,
+            .return_type = &string_ret_impl,
+            .is_effect = true, // Mismatch: trait says pure
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "Describable",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+    try std.testing.expect(checker.hasErrors());
+    var found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "effect annotation mismatch") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "trait impl: wrong parameter type produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Trait: fn process(self: Self, value: i32) -> bool
+    var self_type_trait = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_param_trait = Type.primitive(.i32, span);
+    var bool_ret = Type.primitive(.bool, span);
+    const trait_param_types = try allocator.alloc(*Type, 2);
+    trait_param_types[0] = &self_type_trait;
+    trait_param_types[1] = &i32_param_trait;
+    const trait_param_names = try allocator.alloc([]const u8, 2);
+    trait_param_names[0] = "self";
+    trait_param_names[1] = "value";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "process",
+        .generic_params = null,
+        .parameter_types = trait_param_types,
+        .parameter_names = trait_param_names,
+        .return_type = &bool_ret,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Processor", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Foo", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Impl uses string instead of i32 for 'value' parameter
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_param_impl = Type.primitive(.string, span);
+    var bool_ret_impl = Type.primitive(.bool, span);
+    var impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_type_impl, .span = span },
+        .{ .name = "value", .param_type = &string_param_impl, .span = span },
+    };
+    var target_type = Type.named("Foo", span);
+    var impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "process",
+            .generic_params = null,
+            .parameters = &impl_params,
+            .return_type = &bool_ret_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "Processor",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+    try std.testing.expect(checker.hasErrors());
+    var found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "parameter 'value' type mismatch") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "trait impl: override of default method with wrong signature produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    // Trait with a default method: fn short_describe(self: Self) -> string { ... }
+    var self_type_trait = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_ret = Type.primitive(.string, span);
+    const trait_param_types = try allocator.alloc(*Type, 1);
+    trait_param_types[0] = &self_type_trait;
+    const trait_param_names = try allocator.alloc([]const u8, 1);
+    trait_param_names[0] = "self";
+
+    // Create a dummy default body (just an empty statement list)
+    const default_body = try allocator.alloc(Statement, 0);
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "short_describe",
+        .generic_params = null,
+        .parameter_types = trait_param_types,
+        .parameter_names = trait_param_names,
+        .return_type = &string_ret,
+        .is_effect = false,
+        .default_body = default_body, // has default
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Describable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    // Override with wrong return type (i32 instead of string)
+    var self_type_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_ret = Type.primitive(.i32, span);
+    var impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_type_impl, .span = span },
+    };
+    var target_type = Type.named("Foo", span);
+    var impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "short_describe",
+            .generic_params = null,
+            .parameters = &impl_params,
+            .return_type = &i32_ret,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+    var impl_block = Declaration.ImplBlock{
+        .trait_name = "Describable",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block);
+    try std.testing.expect(checker.hasErrors());
+    var found = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "return type mismatch") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }
