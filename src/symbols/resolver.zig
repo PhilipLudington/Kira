@@ -742,6 +742,34 @@ pub const Resolver = struct {
                             try self.addError("Import '{s}' conflicts with existing definition", .{alias_name}, item.span);
                         }
                     };
+
+                    // If the imported symbol is a sum type, also import its variant constructors
+                    const resolved_sym = if (sym.kind == .import_alias)
+                        (if (sym.kind.import_alias.resolved_id) |rid| self.table.getSymbol(rid) else null) orelse sym
+                    else
+                        sym;
+                    if (resolved_sym.kind == .type_def) {
+                        const td = resolved_sym.kind.type_def;
+                        switch (td.definition) {
+                            .sum_type => |st| {
+                                for (st.variants) |v| {
+                                    const variant_alias = Symbol{
+                                        .id = 0,
+                                        .name = v.name,
+                                        .kind = .{ .import_alias = .{
+                                            .source_path = import_decl.path,
+                                            .resolved_id = resolved_sym.id,
+                                        } },
+                                        .span = item.span,
+                                        .is_public = false,
+                                        .doc_comment = null,
+                                    };
+                                    _ = self.table.defineInScope(scope_id, variant_alias) catch {};
+                                }
+                            },
+                            else => {},
+                        }
+                    }
                 } else {
                     try self.addError("'{s}' not found in module", .{item.name}, item.span);
                 }
@@ -845,10 +873,8 @@ pub const Resolver = struct {
         }
 
         // Add parameters to scope
+        // Note: parameters naturally shadow outer names since they're in a new scope.
         for (func.parameters) |param| {
-            if (self.table.lookupInParentScopes(param.name) != null) {
-                try self.addError("shadowing '{s}' requires 'shadow' binding", .{param.name}, param.span);
-            }
             const param_sym = Symbol.variable(0, param.name, param.param_type, false, false, param.span);
             _ = self.table.define(param_sym) catch |err| {
                 if (err == error.DuplicateDefinition) {
@@ -1052,10 +1078,8 @@ pub const Resolver = struct {
             .closure => |closure| {
                 _ = try self.table.enterScope(.function);
 
+                // Note: parameters naturally shadow outer names since they're in a new scope.
                 for (closure.parameters) |param| {
-                    if (self.table.lookupInParentScopes(param.name) != null) {
-                        try self.addError("shadowing '{s}' requires 'shadow' binding", .{param.name}, param.span);
-                    }
                     const param_sym = Symbol.variable(0, param.name, param.param_type, false, false, param.span);
                     _ = self.table.define(param_sym) catch {};
                 }

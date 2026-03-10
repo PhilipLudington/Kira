@@ -910,6 +910,14 @@ pub const TypeChecker = struct {
                         span,
                     );
                 }
+                if (resolved_sym.kind == .variable) {
+                    return try self.checkGenericVariableCall(
+                        resolved_sym,
+                        generic_args,
+                        fc.arguments,
+                        span,
+                    );
+                }
             }
         }
 
@@ -1778,6 +1786,32 @@ pub const TypeChecker = struct {
                 return ResolvedType.primitive(.i64, span);
             }
             return null;
+        }
+
+        // Reject std.i32 / std.i64 / std.f32 / std.f64 with helpful redirect
+        if (std.mem.eql(u8, path[1], "i32") or std.mem.eql(u8, path[1], "i64")) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+            errdefer builder.deinit();
+            try builder.write("module 'std.");
+            try builder.write(path[1]);
+            try builder.write("' does not exist; use 'std.int.' instead");
+            try self.addDiagnostic(try builder.build());
+            for (arguments) |arg| {
+                _ = try self.checkExpression(arg);
+            }
+            return ResolvedType.errorType(span);
+        }
+        if (std.mem.eql(u8, path[1], "f32") or std.mem.eql(u8, path[1], "f64")) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+            errdefer builder.deinit();
+            try builder.write("module 'std.");
+            try builder.write(path[1]);
+            try builder.write("' does not exist; use 'std.float.' instead");
+            try self.addDiagnostic(try builder.build());
+            for (arguments) |arg| {
+                _ = try self.checkExpression(arg);
+            }
+            return ResolvedType.errorType(span);
         }
 
         // std.int.* / std.float.* / std.char.*
@@ -3435,6 +3469,14 @@ pub const TypeChecker = struct {
                         l.value.span,
                     ));
                 }
+
+                // Cache the resolved type so that getSymbolType can find it later
+                // without needing to re-resolve (which would fail for generic params).
+                if (l.generic_params != null) {
+                    if (self.symbol_table.lookup(l.name)) |sym| {
+                        try self.type_env.put(self.allocator, sym.id, declared_type);
+                    }
+                }
             },
             .test_decl => |t| {
                 // Type check the test body - tests are implicitly effect functions
@@ -3532,14 +3574,8 @@ pub const TypeChecker = struct {
             errdefer self.scopeCleanup();
 
             // Add parameters to scope
+            // Note: parameters naturally shadow outer names since they're in a new scope.
             for (func.parameters) |param| {
-                if (self.symbol_table.lookupLocal(param.name) == null and self.symbol_table.lookupInParentScopes(param.name) != null) {
-                    try self.addDiagnostic(try errors_mod.simpleError(
-                        self.allocator,
-                        "shadowing binding requires 'shadow' keyword",
-                        param.span,
-                    ));
-                }
                 const param_sym = Symbol.variable(unassigned_symbol_id, param.name, param.param_type, false, false, param.span);
                 _ = self.symbol_table.define(param_sym) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -4131,6 +4167,98 @@ pub const TypeChecker = struct {
         const func_type = try self.getSymbolType(func_sym, span);
         if (func_type.kind != .function) {
             return ResolvedType.errorType(span);
+        }
+
+        // Instantiate parameter and return types
+        const f = func_type.kind.function;
+        var inst_params = std.ArrayListUnmanaged(ResolvedType){};
+        for (f.parameter_types) |pt| {
+            try inst_params.append(type_alloc, try instantiate_mod.instantiate(type_alloc, pt, &subst));
+        }
+
+        const inst_return = try type_alloc.create(ResolvedType);
+        inst_return.* = try instantiate_mod.instantiate(type_alloc, f.return_type.*, &subst);
+
+        // Check argument count
+        if (arguments.len != inst_params.items.len) {
+            try self.addDiagnostic(try errors_mod.wrongArgumentCount(
+                self.allocator,
+                inst_params.items.len,
+                arguments.len,
+                span,
+            ));
+            return ResolvedType.errorType(span);
+        }
+
+        // Check argument types against instantiated parameter types
+        for (arguments, inst_params.items) |arg, param| {
+            const arg_type = try self.checkExpression(arg);
+            if (!self.typeIsAssignable(param, arg_type)) {
+                try self.addDiagnostic(try errors_mod.typeMismatch(
+                    self.allocator,
+                    param,
+                    arg_type,
+                    arg.span,
+                ));
+            }
+        }
+
+        // Check effect
+        if (f.effect) |eff| {
+            if (eff != .pure and !self.in_effect_function) {
+                try self.addDiagnostic(try errors_mod.effectViolation(
+                    self.allocator,
+                    "cannot call effect function from pure function",
+                    span,
+                ));
+            }
+        }
+
+        return inst_return.*;
+    }
+
+    /// Check a generic call on a variable symbol (from `let name[T]: fn(...) -> ... = ...`).
+    /// Extracts type variables from the cached resolved type and instantiates them.
+    fn checkGenericVariableCall(
+        self: *TypeChecker,
+        var_sym: *const Symbol,
+        generic_args: []*Type,
+        arguments: []*Expression,
+        span: Span,
+    ) TypeCheckError!ResolvedType {
+        const type_alloc = self.typeAllocator();
+
+        // Get the uninstantiated function type (should be cached in type_env)
+        const func_type = try self.getSymbolType(var_sym, span);
+        if (func_type.kind != .function) {
+            try self.addDiagnostic(try errors_mod.simpleError(
+                self.allocator,
+                "expected a function type for generic call",
+                span,
+            ));
+            return ResolvedType.errorType(span);
+        }
+
+        // Collect type variables from the cached type
+        const type_vars = try instantiate_mod.collectTypeVariables(type_alloc, func_type);
+
+        if (generic_args.len != type_vars.len) {
+            var builder = errors_mod.DiagnosticBuilder.init(self.allocator, span, .err);
+            try builder.print("expected {d} type argument(s), found {d}", .{ type_vars.len, generic_args.len });
+            try self.addDiagnostic(try builder.build());
+            return ResolvedType.errorType(span);
+        }
+
+        // Resolve generic args and build substitution
+        var resolved_args = std.ArrayListUnmanaged(ResolvedType){};
+        for (generic_args) |arg| {
+            try resolved_args.append(type_alloc, try self.resolveAstType(arg));
+        }
+
+        var subst = instantiate_mod.TypeSubstitution{};
+        defer subst.deinit(type_alloc);
+        for (type_vars, resolved_args.items) |var_name, resolved_arg| {
+            try subst.put(type_alloc, var_name, resolved_arg);
         }
 
         // Instantiate parameter and return types
