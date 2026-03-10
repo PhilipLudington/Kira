@@ -145,15 +145,100 @@ pub const SymbolTable = struct {
             .end = .{ .line = 0, .column = 0, .offset = 0 },
         };
 
-        // Define trait declarations: Eq, Ord, Show
-        const trait_names = [_][]const u8{ "Eq", "Ord", "Show" };
-        for (trait_names) |trait_name| {
-            _ = self.define(Symbol.traitDef(0, trait_name, .{
+        // Allocate AST types for method signatures
+        const self_type = self.allocator.create(Type) catch unreachable;
+        self_type.* = Type.init(.self_type, builtin_span);
+        self.builtin_type_allocs.append(self.allocator, self_type) catch unreachable;
+
+        const bool_type = self.allocator.create(Type) catch unreachable;
+        bool_type.* = Type.primitive(.bool, builtin_span);
+        self.builtin_type_allocs.append(self.allocator, bool_type) catch unreachable;
+
+        const i32_type = self.allocator.create(Type) catch unreachable;
+        i32_type.* = Type.primitive(.i32, builtin_span);
+        self.builtin_type_allocs.append(self.allocator, i32_type) catch unreachable;
+
+        const string_type = self.allocator.create(Type) catch unreachable;
+        string_type.* = Type.primitive(.string, builtin_span);
+        self.builtin_type_allocs.append(self.allocator, string_type) catch unreachable;
+
+        // Eq trait: fn eq(self: Self, other: Self) -> bool
+        const eq_param_types = self.allocator.alloc(*Type, 2) catch unreachable;
+        eq_param_types[0] = self_type;
+        eq_param_types[1] = self_type;
+        const eq_param_names = self.allocator.alloc([]const u8, 2) catch unreachable;
+        eq_param_names[0] = "self";
+        eq_param_names[1] = "other";
+        const eq_methods = self.allocator.alloc(Symbol.TraitMethodInfo, 1) catch unreachable;
+        eq_methods[0] = .{
+            .name = "eq",
+            .generic_params = null,
+            .parameter_types = eq_param_types,
+            .parameter_names = eq_param_names,
+            .return_type = bool_type,
+            .is_effect = false,
+            .default_body = null,
+            .span = builtin_span,
+        };
+
+        // Ord trait: fn lt, gt, compare
+        const ord_methods = self.allocator.alloc(Symbol.TraitMethodInfo, 3) catch unreachable;
+        for (0..3) |i| {
+            const pt = self.allocator.alloc(*Type, 2) catch unreachable;
+            pt[0] = self_type;
+            pt[1] = self_type;
+            const pn = self.allocator.alloc([]const u8, 2) catch unreachable;
+            pn[0] = "self";
+            pn[1] = "other";
+            const names = [_][]const u8{ "lt", "gt", "compare" };
+            const ret_types = [_]*Type{ bool_type, bool_type, i32_type };
+            ord_methods[i] = .{
+                .name = names[i],
                 .generic_params = null,
-                .super_traits = null,
-                .methods = &[_]Symbol.TraitMethodInfo{},
-            }, true, builtin_span)) catch unreachable;
+                .parameter_types = pt,
+                .parameter_names = pn,
+                .return_type = ret_types[i],
+                .is_effect = false,
+                .default_body = null,
+                .span = builtin_span,
+            };
         }
+
+        // Show trait: fn show(self: Self) -> string
+        const show_param_types = self.allocator.alloc(*Type, 1) catch unreachable;
+        show_param_types[0] = self_type;
+        const show_param_names = self.allocator.alloc([]const u8, 1) catch unreachable;
+        show_param_names[0] = "self";
+        const show_methods = self.allocator.alloc(Symbol.TraitMethodInfo, 1) catch unreachable;
+        show_methods[0] = .{
+            .name = "show",
+            .generic_params = null,
+            .parameter_types = show_param_types,
+            .parameter_names = show_param_names,
+            .return_type = string_type,
+            .is_effect = false,
+            .default_body = null,
+            .span = builtin_span,
+        };
+
+        // Define trait declarations with method signatures
+        _ = self.define(Symbol.traitDef(0, "Eq", .{
+            .generic_params = null,
+            .super_traits = null,
+            .methods = eq_methods,
+        }, true, builtin_span)) catch unreachable;
+
+        _ = self.define(Symbol.traitDef(0, "Ord", .{
+            .generic_params = null,
+            .super_traits = @constCast(&[_][]const u8{"Eq"}),
+            .methods = ord_methods,
+        }, true, builtin_span)) catch unreachable;
+
+        _ = self.define(Symbol.traitDef(0, "Show", .{
+            .generic_params = null,
+            .super_traits = null,
+            .methods = show_methods,
+        }, true, builtin_span)) catch unreachable;
 
         // Register impls for each primitive type and each trait.
         // The type checker uses PrimitiveType.toString() names (e.g. "i32", "string", "bool").
@@ -172,7 +257,7 @@ pub const SymbolTable = struct {
             prim_type_ptr.* = Type.primitive(prim, builtin_span);
             self.builtin_type_allocs.append(self.allocator, prim_type_ptr) catch unreachable;
 
-            for (trait_names) |trait_name| {
+            for ([_][]const u8{ "Eq", "Ord", "Show" }) |trait_name| {
                 self.registerImpl(.{
                     .trait_name = trait_name,
                     .target_type = prim_type_ptr,

@@ -1918,13 +1918,15 @@ pub const TypeChecker = struct {
             try arg_types.append(type_alloc, try self.checkExpression(arg));
         }
 
-        // When inside a trait default body, resolve method calls on Self against the trait's own methods
+        // When the object is a type variable, resolve method calls via trait constraints
         if (object_type.kind == .type_var) {
-            if (std.mem.eql(u8, object_type.kind.type_var.name, "Self")) {
+            const tv = object_type.kind.type_var;
+
+            // Inside a trait default body, resolve Self methods against the current trait's AST methods
+            if (std.mem.eql(u8, tv.name, "Self")) {
                 if (self.current_trait) |trait_decl| {
                     for (trait_decl.methods) |trait_method| {
                         if (std.mem.eql(u8, trait_method.name, mc.method)) {
-                            // Count self parameter offset
                             var self_offset: usize = 0;
                             if (trait_method.parameters.len > 0) {
                                 if (trait_method.parameters[0].param_type.kind == .self_type or
@@ -1944,6 +1946,19 @@ pub const TypeChecker = struct {
                                 return ResolvedType.errorType(span);
                             }
                             return try self.resolveAstType(trait_method.return_type);
+                        }
+                    }
+                }
+            }
+
+            // For type variables with trait bounds (e.g., T: Eq), look up methods from the trait
+            if (tv.constraints) |constraints| {
+                for (constraints) |trait_name| {
+                    if (self.symbol_table.lookup(trait_name)) |trait_sym| {
+                        if (trait_sym.kind == .trait_def) {
+                            if (try self.resolveTraitMethod(trait_sym.kind.trait_def.methods, mc.method, mc.arguments.len, object_type, span)) |result| {
+                                return result;
+                            }
                         }
                     }
                 }
@@ -2066,6 +2081,50 @@ pub const TypeChecker = struct {
             span,
         ));
         return ResolvedType.errorType(span);
+    }
+
+    /// Resolve a method call against a list of trait method declarations.
+    /// Returns the method's return type if found, or null if the method is not in this trait.
+    fn resolveTraitMethod(
+        self: *TypeChecker,
+        methods: []const Symbol.TraitMethodInfo,
+        method_name: []const u8,
+        arg_count: usize,
+        self_type_val: ResolvedType,
+        span: Span,
+    ) TypeCheckError!?ResolvedType {
+        for (methods) |trait_method| {
+            if (!std.mem.eql(u8, trait_method.name, method_name)) continue;
+
+            // Count self parameter offset (first param is usually `self: Self`)
+            var self_offset: usize = 0;
+            if (trait_method.parameter_types.len > 0) {
+                const first = trait_method.parameter_types[0];
+                if (first.kind == .self_type or
+                    (first.kind == .named and std.mem.eql(u8, first.kind.named.name, "Self")))
+                {
+                    self_offset = 1;
+                }
+            }
+
+            const expected_args = trait_method.parameter_types.len - self_offset;
+            if (arg_count != expected_args) {
+                try self.addDiagnostic(try errors_mod.simpleError(
+                    self.allocator,
+                    "wrong number of arguments in method call",
+                    span,
+                ));
+                return ResolvedType.errorType(span);
+            }
+
+            // Resolve return type, substituting Self with the object's type
+            const saved_self_type = self.self_type;
+            self.self_type = self_type_val;
+            defer self.self_type = saved_self_type;
+
+            return try self.resolveAstType(trait_method.return_type);
+        }
+        return null;
     }
 
     /// Check closure
@@ -3618,13 +3677,35 @@ pub const TypeChecker = struct {
             self.in_effect_function = saved_in_effect;
         }
 
-        // Set up generic type variables if present
+        // Set up generic type variables if present, merging inline and where clause constraints
         if (func.generic_params) |params| {
             for (params) |p| {
+                // Collect all constraints: inline (T: Eq) + where clause (where T: Eq)
+                const type_alloc = self.typeAllocator();
+                var all_constraints = std.ArrayListUnmanaged([]const u8){};
+                if (p.constraints) |constraints| {
+                    for (constraints) |c| {
+                        try all_constraints.append(type_alloc, c);
+                    }
+                }
+                if (func.where_clause) |where_constraints| {
+                    for (where_constraints) |wc| {
+                        if (std.mem.eql(u8, wc.type_param, p.name)) {
+                            for (wc.bounds) |bound| {
+                                try all_constraints.append(type_alloc, bound);
+                            }
+                        }
+                    }
+                }
+                const merged: ?[][]const u8 = if (all_constraints.items.len > 0)
+                    try all_constraints.toOwnedSlice(type_alloc)
+                else
+                    null;
+
                 try self.type_var_substitutions.put(
                     self.allocator,
                     p.name,
-                    ResolvedType.typeVar(p.name, p.constraints orelse null, p.span),
+                    ResolvedType.typeVar(p.name, merged, p.span),
                 );
             }
         }
@@ -4174,6 +4255,33 @@ pub const TypeChecker = struct {
             },
             .function => |f| {
                 const type_alloc = self.typeAllocator();
+
+                // Temporarily register generic params as type variables so they resolve
+                // correctly when computing the function type from a call site.
+                if (f.generic_params) |params| {
+                    for (params) |p| {
+                        if (!self.type_var_substitutions.contains(p.name)) {
+                            try self.type_var_substitutions.put(
+                                self.allocator,
+                                p.name,
+                                ResolvedType.typeVar(p.name, p.constraints orelse null, span),
+                            );
+                        }
+                    }
+                }
+                defer {
+                    if (f.generic_params) |params| {
+                        for (params) |p| {
+                            // Only remove if we added it (avoid removing caller's substitutions)
+                            if (self.type_var_substitutions.get(p.name)) |tv| {
+                                if (tv.kind == .type_var and std.mem.eql(u8, tv.kind.type_var.name, p.name)) {
+                                    _ = self.type_var_substitutions.remove(p.name);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 var param_types = std.ArrayListUnmanaged(ResolvedType){};
                 for (f.parameter_types) |pt| {
                     try param_types.append(type_alloc, try self.resolveAstTypeInSymbolScope(sym, pt));

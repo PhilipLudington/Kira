@@ -1,0 +1,45 @@
+// Trait method dispatch on generic type parameters
+// Tests that calling trait methods on T: Eq resolves correctly
+
+// Generic function with inline trait bound
+fn are_equal[T: Eq](a: T, b: T) -> bool {
+    return a.eq(b)
+}
+
+// Generic function with where clause trait bound
+fn are_equal_where[T](a: T, b: T) -> bool where T: Eq {
+    return a.eq(b)
+}
+
+// Generic function using Show trait
+fn to_string[T: Show](x: T) -> string {
+    return x.show()
+}
+
+// Multiple trait bounds
+fn compare_and_show[T: Eq](a: T, b: T) -> bool where T: Show {
+    let _repr: string = a.show()
+    return a.eq(b)
+}
+
+effect fn main() -> i32 {
+    // Test with inline bound
+    let eq1: bool = are_equal[i32](1, 1)
+    let eq2: bool = are_equal[i32](1, 2)
+    let eq3: bool = are_equal[string]("hello", "hello")
+    let eq4: bool = are_equal[string]("hello", "world")
+
+    // Test with where clause bound
+    let eq5: bool = are_equal_where[i32](42, 42)
+    let eq6: bool = are_equal_where[bool](true, false)
+
+    // Test Show dispatch
+    let s1: string = to_string[i32](42)
+    let s2: string = to_string[bool](true)
+
+    // Test combined bounds
+    let eq7: bool = compare_and_show[i32](1, 1)
+
+    std.io.println("Trait dispatch works!")
+    return 0
+}
