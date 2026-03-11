@@ -580,6 +580,12 @@ pub const Lowerer = struct {
         // Derive context type for variant disambiguation
         const context_type = inferTypeFromArms(ms.arms) orelse self.inferTypeFromSubject(subject);
 
+        // Optimization: if all arms are constructor patterns (with optional
+        // wildcard/identifier default), emit a switch_tag instead of sequential branches.
+        if (self.canUseSwitchTag(ms.arms, context_type)) {
+            return self.lowerMatchStatementSwitch(ms.arms, subject, context_type);
+        }
+
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         // For each arm, create a block
@@ -625,6 +631,99 @@ pub const Lowerer = struct {
 
         // After all arms (default unreachable)
         self.setTerminator(.{ .jump = merge_blk });
+        self.current_block = merge_blk;
+    }
+
+    /// Check if a match can be lowered to a switch_tag terminator.
+    /// Requires: all arms are constructor patterns (with optional trailing wildcard/identifier),
+    /// no guards, and no nested refutable sub-patterns in the constructors.
+    fn canUseSwitchTag(self: *Lowerer, arms: anytype, context_type: ?[]const u8) bool {
+        _ = self;
+        if (arms.len < 2) return false;
+        var has_constructor = false;
+        for (arms) |*arm| {
+            if (arm.guard != null) return false;
+            switch (arm.pattern.kind) {
+                .constructor => |c| {
+                    has_constructor = true;
+                    // Check sub-patterns are all irrefutable
+                    if (c.arguments) |args| {
+                        for (args) |arg| {
+                            const inner = switch (arg) {
+                                .positional => |p| p,
+                                .named => |n| n.pattern,
+                            };
+                            if (!inner.isIrrefutable()) return false;
+                        }
+                    }
+                },
+                .wildcard, .identifier => {}, // allowed as default arm
+                else => {
+                    _ = context_type;
+                    return false;
+                },
+            }
+        }
+        return has_constructor;
+    }
+
+    /// Emit a match statement using switch_tag for constructor-only patterns.
+    fn lowerMatchStatementSwitch(self: *Lowerer, arms: anytype, subject: ValueRef, context_type: ?[]const u8) LowerError!void {
+        const func = self.currentFunc().?;
+        const alloc = self.irAlloc();
+        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+
+        const tag = try self.emit(.{ .get_tag = subject });
+
+        var cases = std.ArrayListUnmanaged(Terminator.SwitchCase){};
+        var default_block: ?BlockId = null;
+
+        // Create blocks and cases for each arm
+        const ArmBlock = struct { block: BlockId, arm_idx: usize };
+        var arm_blocks = std.ArrayListUnmanaged(ArmBlock){};
+
+        for (arms, 0..) |*arm, idx| {
+            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+            arm_blocks.append(alloc, .{ .block = arm_blk, .arm_idx = idx }) catch return LowerError.OutOfMemory;
+
+            switch (arm.pattern.kind) {
+                .constructor => |c| {
+                    const type_name: ?[]const u8 = if (c.type_path) |tp|
+                        (if (tp.len > 0) tp[0] else null)
+                    else
+                        context_type;
+                    const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse 0;
+                    cases.append(alloc, .{ .tag = tag_value, .block = arm_blk }) catch return LowerError.OutOfMemory;
+                },
+                .wildcard, .identifier => {
+                    default_block = arm_blk;
+                },
+                else => unreachable, // canUseSwitchTag already checked
+            }
+        }
+
+        // If no wildcard/identifier default, use merge_blk as unreachable default
+        const default = default_block orelse merge_blk;
+
+        self.setTerminator(.{ .switch_tag = .{
+            .value = tag,
+            .cases = cases.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            .default = default,
+        } });
+
+        // Emit arm bodies
+        for (arm_blocks.items) |ab| {
+            self.current_block = ab.block;
+            try self.pushScope();
+            errdefer self.popScope();
+            try self.lowerPatternBindings(arms[ab.arm_idx].pattern, subject);
+            try self.lowerStatements(arms[ab.arm_idx].body);
+            self.popScope();
+            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+                self.setTerminator(.{ .jump = merge_blk });
+            }
+        }
+
         self.current_block = merge_blk;
     }
 
@@ -1035,6 +1134,11 @@ pub const Lowerer = struct {
         // Derive context type for variant disambiguation
         const context_type = inferTypeFromArms(me.arms) orelse self.inferTypeFromSubject(subject);
 
+        // Optimization: emit switch_tag for constructor-only match expressions
+        if (self.canUseSwitchTag(me.arms, context_type)) {
+            return self.lowerMatchExprSwitch(me.arms, subject, context_type);
+        }
+
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
         var phi_entries = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
 
@@ -1089,6 +1193,77 @@ pub const Lowerer = struct {
         // NOTE: This block remains in the function's block list but is dead code.
         // Downstream CFG walkers must skip blocks with unreachable_term terminators.
         self.setTerminator(.{ .unreachable_term = {} });
+
+        self.current_block = merge_blk;
+        if (phi_entries.items.len > 0) {
+            return self.emit(.{ .phi = .{
+                .incoming = phi_entries.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            } });
+        }
+        return self.emit(.{ .const_void = {} });
+    }
+
+    /// Emit a match expression using switch_tag for constructor-only patterns.
+    fn lowerMatchExprSwitch(self: *Lowerer, arms: anytype, subject: ValueRef, context_type: ?[]const u8) LowerError!ValueRef {
+        const func = self.currentFunc().?;
+        const alloc = self.irAlloc();
+        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        var phi_entries = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
+
+        const tag = try self.emit(.{ .get_tag = subject });
+
+        var cases = std.ArrayListUnmanaged(Terminator.SwitchCase){};
+        var default_block: ?BlockId = null;
+
+        const ArmBlock = struct { block: BlockId, arm_idx: usize };
+        var arm_blocks = std.ArrayListUnmanaged(ArmBlock){};
+
+        for (arms, 0..) |*arm, idx| {
+            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+            arm_blocks.append(alloc, .{ .block = arm_blk, .arm_idx = idx }) catch return LowerError.OutOfMemory;
+
+            switch (arm.pattern.kind) {
+                .constructor => |c| {
+                    const type_name: ?[]const u8 = if (c.type_path) |tp|
+                        (if (tp.len > 0) tp[0] else null)
+                    else
+                        context_type;
+                    const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse 0;
+                    cases.append(alloc, .{ .tag = tag_value, .block = arm_blk }) catch return LowerError.OutOfMemory;
+                },
+                .wildcard, .identifier => {
+                    default_block = arm_blk;
+                },
+                else => unreachable,
+            }
+        }
+
+        const default = default_block orelse merge_blk;
+
+        self.setTerminator(.{ .switch_tag = .{
+            .value = tag,
+            .cases = cases.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            .default = default,
+        } });
+
+        // Emit arm bodies
+        for (arm_blocks.items) |ab| {
+            self.current_block = ab.block;
+            try self.pushScope();
+            errdefer self.popScope();
+            try self.lowerPatternBindings(arms[ab.arm_idx].pattern, subject);
+            const arm_val = try self.lowerMatchBody(&arms[ab.arm_idx].body);
+            const arm_end = self.current_block;
+
+            phi_entries.append(alloc, .{
+                .block = arm_end,
+                .value = arm_val,
+            }) catch return LowerError.OutOfMemory;
+            self.popScope();
+            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+                self.setTerminator(.{ .jump = merge_blk });
+            }
+        }
 
         self.current_block = merge_blk;
         if (phi_entries.items.len > 0) {
@@ -1198,13 +1373,21 @@ pub const Lowerer = struct {
     /// when the pattern itself doesn't carry a type_path.
     fn lowerPatternCheck(self: *Lowerer, pat: *const Pattern, subject: ValueRef, context_type: ?[]const u8) LowerError!ValueRef {
         return switch (pat.kind) {
-            .wildcard, .identifier => self.emit(.{ .const_bool = true }),
+            .wildcard, .identifier, .rest => self.emit(.{ .const_bool = true }),
             .bool_literal => |b| {
                 const lit = try self.emit(.{ .const_bool = b });
                 return self.emit(.{ .cmp = .{ .op = .eq, .left = subject, .right = lit } });
             },
             .integer_literal => |v| {
                 const lit = try self.emit(.{ .const_int = .{ .value = v } });
+                return self.emit(.{ .cmp = .{ .op = .eq, .left = subject, .right = lit } });
+            },
+            .float_literal => |v| {
+                const lit = try self.emit(.{ .const_float = v });
+                return self.emit(.{ .cmp = .{ .op = .eq, .left = subject, .right = lit } });
+            },
+            .char_literal => |v| {
+                const lit = try self.emit(.{ .const_char = v });
                 return self.emit(.{ .cmp = .{ .op = .eq, .left = subject, .right = lit } });
             },
             .string_literal => |s| {
@@ -1224,10 +1407,105 @@ pub const Lowerer = struct {
                     break :blk 0;
                 };
                 const expected_tag = try self.emit(.{ .const_int = .{ .value = tag_value } });
-                return self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected_tag } });
+                const tag_matches = try self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected_tag } });
+
+                // If the constructor has sub-patterns, check them too
+                if (c.arguments) |args| {
+                    var result = tag_matches;
+                    for (args, 0..) |arg, i| {
+                        const inner_pat = switch (arg) {
+                            .positional => |p| p,
+                            .named => |n| n.pattern,
+                        };
+                        // Skip irrefutable sub-patterns (wildcard, identifier)
+                        if (inner_pat.isIrrefutable()) continue;
+                        const field = try self.emit(.{ .get_payload = .{ .variant = subject, .field_index = @intCast(i) } });
+                        const sub_check = try self.lowerPatternCheck(inner_pat, field, null);
+                        result = try self.emitShortCircuitAnd(result, sub_check);
+                    }
+                    return result;
+                }
+
+                return tag_matches;
             },
-            else => self.emit(.{ .const_bool = true }),
+            .tuple => |t| {
+                var result = try self.emit(.{ .const_bool = true });
+                for (t.elements, 0..) |elem, i| {
+                    if (elem.isIrrefutable()) continue;
+                    const extracted = try self.emit(.{ .tuple_get = .{ .tuple = subject, .index = @intCast(i) } });
+                    const sub_check = try self.lowerPatternCheck(elem, extracted, null);
+                    result = try self.emitShortCircuitAnd(result, sub_check);
+                }
+                return result;
+            },
+            .record => |r| {
+                var result = try self.emit(.{ .const_bool = true });
+                for (r.fields) |field| {
+                    if (field.pattern) |inner| {
+                        if (inner.isIrrefutable()) continue;
+                        const val = try self.emit(.{ .field_get = .{ .object = subject, .field = field.name } });
+                        const sub_check = try self.lowerPatternCheck(inner, val, null);
+                        result = try self.emitShortCircuitAnd(result, sub_check);
+                    }
+                    // Shorthand `{ x }` is irrefutable — just binds
+                }
+                return result;
+            },
+            .range => |r| {
+                // Range pattern: start..end or start..=end
+                var result = try self.emit(.{ .const_bool = true });
+                if (r.start) |start| {
+                    const bound = switch (start) {
+                        .integer => |v| try self.emit(.{ .const_int = .{ .value = v } }),
+                        .char => |v| try self.emit(.{ .const_char = v }),
+                    };
+                    const ge = try self.emit(.{ .cmp = .{ .op = .ge, .left = subject, .right = bound } });
+                    result = try self.emitShortCircuitAnd(result, ge);
+                }
+                if (r.end) |end| {
+                    const bound = switch (end) {
+                        .integer => |v| try self.emit(.{ .const_int = .{ .value = v } }),
+                        .char => |v| try self.emit(.{ .const_char = v }),
+                    };
+                    const cmp_op: Instruction.CmpKind = if (r.inclusive) .le else .lt;
+                    const le = try self.emit(.{ .cmp = .{ .op = cmp_op, .left = subject, .right = bound } });
+                    result = try self.emitShortCircuitAnd(result, le);
+                }
+                return result;
+            },
+            .or_pattern => |o| {
+                if (o.patterns.len == 0) return self.emit(.{ .const_bool = false });
+                var result = try self.lowerPatternCheck(o.patterns[0], subject, context_type);
+                for (o.patterns[1..]) |alt| {
+                    const alt_check = try self.lowerPatternCheck(alt, subject, context_type);
+                    result = try self.emitShortCircuitOr(result, alt_check);
+                }
+                return result;
+            },
+            .guarded => |g| {
+                const pat_check = try self.lowerPatternCheck(g.pattern, subject, context_type);
+                // Guard expression evaluation happens in the match arm lowering,
+                // but guarded patterns nested inside other patterns need inline check
+                const guard_val = try self.lowerExpression(g.guard);
+                return self.emitShortCircuitAnd(pat_check, guard_val);
+            },
+            .typed => |t| self.lowerPatternCheck(t.pattern, subject, context_type),
         };
+    }
+
+    /// Emit a short-circuit AND: if `left` is false, result is false; otherwise result is `right`.
+    /// Uses simple multiplication since both operands are 0 or 1.
+    fn emitShortCircuitAnd(self: *Lowerer, left: ValueRef, right: ValueRef) LowerError!ValueRef {
+        // Both are booleans (0 or 1), so multiply works as AND
+        return self.emit(.{ .int_binop = .{ .op = .mul, .left = left, .right = right } });
+    }
+
+    /// Emit a short-circuit OR: result is true if either operand is true.
+    /// Uses `(left + right) > 0` since both operands are 0 or 1.
+    fn emitShortCircuitOr(self: *Lowerer, left: ValueRef, right: ValueRef) LowerError!ValueRef {
+        const sum = try self.emit(.{ .int_binop = .{ .op = .add, .left = left, .right = right } });
+        const zero = try self.emit(.{ .const_int = .{ .value = 0 } });
+        return self.emit(.{ .cmp = .{ .op = .gt, .left = sum, .right = zero } });
     }
 
     /// Try to determine the sum type name from a set of match arms.
@@ -2239,6 +2517,123 @@ test "lowerPatternCheck uses context_type for untyped constructor" {
     const tag_inst = f.getInstruction(expected_tag_ref);
     try std.testing.expect(tag_inst.op == .const_int);
     try std.testing.expectEqual(@as(i128, 1), tag_inst.op.const_int.value);
+
+    lowerer.popScope();
+}
+
+test "lowerPatternCheck integer range pattern" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_range";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const subject = try lowerer.emit(.{ .const_int = .{ .value = 5 } });
+
+    // Pattern: 1..=10 (inclusive range)
+    var pat = Pattern{
+        .kind = .{ .range = .{
+            .start = .{ .integer = 1 },
+            .end = .{ .integer = 10 },
+            .inclusive = true,
+        } },
+        .span = span,
+    };
+
+    const check_ref = try lowerer.lowerPatternCheck(&pat, subject, null);
+    // Result should be a compound boolean (the AND of two comparisons)
+    const f = lowerer.currentFunc().?;
+    const check_inst = f.getInstruction(check_ref);
+    // The final result is a mul (short-circuit AND of two comparisons)
+    try std.testing.expect(check_inst.op == .int_binop);
+
+    lowerer.popScope();
+}
+
+test "lowerPatternCheck or-pattern" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_or";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const subject = try lowerer.emit(.{ .const_int = .{ .value = 1 } });
+
+    // Pattern: 1 | 2 | 3
+    var pat1 = Pattern{ .kind = .{ .integer_literal = 1 }, .span = span };
+    var pat2 = Pattern{ .kind = .{ .integer_literal = 2 }, .span = span };
+    var pat3 = Pattern{ .kind = .{ .integer_literal = 3 }, .span = span };
+    const alts = [_]*Pattern{ &pat1, &pat2, &pat3 };
+    var pat = Pattern{
+        .kind = .{ .or_pattern = .{ .patterns = @constCast(&alts) } },
+        .span = span,
+    };
+
+    const check_ref = try lowerer.lowerPatternCheck(&pat, subject, null);
+    // Result should be a comparison (the OR chain produces cmp > 0)
+    const f = lowerer.currentFunc().?;
+    const check_inst = f.getInstruction(check_ref);
+    // Final result is cmp(sum > 0) from the last OR
+    try std.testing.expect(check_inst.op == .cmp);
+
+    lowerer.popScope();
+}
+
+test "lowerPatternCheck char literal" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_char";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = ast.Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    const subject = try lowerer.emit(.{ .const_char = 'a' });
+
+    var pat = Pattern{
+        .kind = .{ .char_literal = 'a' },
+        .span = span,
+    };
+
+    const check_ref = try lowerer.lowerPatternCheck(&pat, subject, null);
+    const f = lowerer.currentFunc().?;
+    const check_inst = f.getInstruction(check_ref);
+    try std.testing.expect(check_inst.op == .cmp);
+    try std.testing.expectEqual(Instruction.CmpKind.eq, check_inst.op.cmp.op);
 
     lowerer.popScope();
 }

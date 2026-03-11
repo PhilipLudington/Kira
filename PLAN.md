@@ -124,7 +124,7 @@ Before Phase 3, these must be true:
 - [x] Implement C representations for closures: heap-allocated kira_int array with function pointer at [0], captures at [1..N]. (completed 2026-03-10)
 - [x] Implement proper type-specific code generation (replace uniform `kira_int` with actual types). (completed 2026-03-10)
 - [x] Implement string representation and string interpolation in C output: to_string via snprintf, str_concat via malloc+strcat. (completed 2026-03-10)
-- [ ] Implement pattern matching compilation to C (decision trees or backtracking).
+- [x] Implement pattern matching compilation to C (decision trees or backtracking). (completed 2026-03-11)
 - [ ] Implement effect tracking in compiled code (ensure pure/effect boundary survives compilation).
 - [ ] Test compiled output against interpreter output for all example programs.
 - [ ] Verify Klar interop: call Klar functions from Kira compiled code and vice versa.
