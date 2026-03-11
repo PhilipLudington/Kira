@@ -6,8 +6,14 @@
 //! Each IR function becomes a C function. SSA values become local variables.
 //! Basic blocks become labeled sections with goto-based control flow.
 //!
-//! All values use a uniform `kira_int` (i64) representation. Compound types
-//! are heap-allocated and referenced via intptr_t casts:
+//! Type-specific code generation:
+//! - Function signatures use proper C types (int32_t, double, bool, etc.)
+//!   derived from IR param type_name and return_type_name
+//! - Record struct fields use proper C types from FieldDecl.type_name
+//! - Constants use type-appropriate C declarations
+//! - SSA variables use uniform kira_int internally for compound type compat
+//!
+//! Compound types are heap-allocated and referenced via intptr_t casts:
 //! - Tuples: kira_int* with elements at [0..N)
 //! - Arrays: kira_int* with length at [0], elements at [1..N]
 //! - Records: kira_int* with fields at [0..N) indexed by declaration order
@@ -147,7 +153,8 @@ pub const CCodeGen = struct {
                     self.indent_level += 1;
                     for (pt.fields) |f| {
                         try self.writeIndent();
-                        try self.writeFmt("kira_int {s};\n", .{f.name});
+                        try self.write(kiraTypeToCType(f.type_name));
+                        try self.writeFmt(" {s};\n", .{f.name});
                     }
                     self.indent_level -= 1;
                     try self.write("} kira_");
@@ -166,12 +173,14 @@ pub const CCodeGen = struct {
         if (module.functions.items.len == 0) return;
         try self.write("/* Forward declarations */\n");
         for (module.functions.items) |*func| {
-            try self.write("kira_int ");
+            try self.write(kiraTypeToCType(func.return_type_name));
+            try self.write(" ");
             try self.emitFunctionName(func);
             try self.write("(");
             for (func.params, 0..) |p, i| {
                 if (i > 0) try self.write(", ");
-                try self.writeFmt("kira_int {s}", .{p.name});
+                try self.write(kiraTypeToCType(p.type_name));
+                try self.writeFmt(" {s}", .{p.name});
             }
             if (func.params.len == 0) try self.write("void");
             try self.write(");\n");
@@ -187,20 +196,18 @@ pub const CCodeGen = struct {
         if (module.constants.items.len == 0) return;
         try self.write("/* Constants */\n");
         for (module.constants.items) |c| {
-            try self.writeFmt("static const kira_int kira_const_{s} = ", .{c.name});
             switch (c.value) {
-                .integer => |v| try self.writeFmt("{d}", .{v}),
-                .float => |v| try self.writeFmt("{d}", .{v}),
-                .boolean => |b| try self.write(if (b) "1" else "0"),
+                .integer => |v| try self.writeFmt("static const int64_t kira_const_{s} = {d};\n", .{ c.name, v }),
+                .float => |v| try self.writeFmt("static const double kira_const_{s} = {d};\n", .{ c.name, v }),
+                .boolean => |b| try self.writeFmt("static const bool kira_const_{s} = {s};\n", .{ c.name, if (b) "true" else "false" }),
                 .string => |s| {
-                    try self.write("(kira_int)(intptr_t)\"");
+                    try self.writeFmt("static const char* kira_const_{s} = \"", .{c.name});
                     try self.write(s);
-                    try self.write("\"");
+                    try self.write("\";\n");
                 },
-                .char => |c_val| try self.writeFmt("{d}", .{c_val}),
-                .void_val => try self.write("0"),
+                .char => |c_val| try self.writeFmt("static const uint32_t kira_const_{s} = {d};\n", .{ c.name, c_val }),
+                .void_val => try self.writeFmt("static const int64_t kira_const_{s} = 0;\n", .{c.name}),
             }
-            try self.write(";\n");
         }
         try self.write("\n");
     }
@@ -212,12 +219,14 @@ pub const CCodeGen = struct {
     fn emitFunction(self: *CCodeGen, func: *const Function) CodeGenError!void {
         // Function signature
         if (func.is_effect) try self.write("/* effect */ ");
-        try self.write("kira_int ");
+        try self.write(kiraTypeToCType(func.return_type_name));
+        try self.write(" ");
         try self.emitFunctionName(func);
         try self.write("(");
         for (func.params, 0..) |p, i| {
             if (i > 0) try self.write(", ");
-            try self.writeFmt("kira_int {s}", .{p.name});
+            try self.write(kiraTypeToCType(p.type_name));
+            try self.writeFmt(" {s}", .{p.name});
         }
         if (func.params.len == 0) try self.write("void");
         try self.write(") {\n");
@@ -264,7 +273,7 @@ pub const CCodeGen = struct {
         }
 
         // Terminator
-        try self.emitTerminator(&blk.terminator);
+        try self.emitTerminator(func, &blk.terminator);
     }
 
     // ----------------------------------------------------------------
@@ -494,11 +503,14 @@ pub const CCodeGen = struct {
     // Terminator emission
     // ----------------------------------------------------------------
 
-    fn emitTerminator(self: *CCodeGen, term: *const Terminator) CodeGenError!void {
+    fn emitTerminator(self: *CCodeGen, func: *const Function, term: *const Terminator) CodeGenError!void {
         try self.writeIndent();
         switch (term.*) {
             .ret => |v| {
-                if (v) |val| {
+                const is_void = std.mem.eql(u8, func.return_type_name, "void");
+                if (is_void) {
+                    try self.write("return;\n");
+                } else if (v) |val| {
                     try self.writeFmt("return v{d};\n", .{val});
                 } else {
                     try self.write("return 0;\n");
@@ -569,6 +581,31 @@ pub const CCodeGen = struct {
             }
         }
         return 0;
+    }
+
+    // ----------------------------------------------------------------
+    // Type mapping
+    // ----------------------------------------------------------------
+
+    /// Map a Kira source-level type name to the corresponding C type string.
+    fn kiraTypeToCType(type_name: []const u8) []const u8 {
+        if (std.mem.eql(u8, type_name, "i8")) return "int8_t";
+        if (std.mem.eql(u8, type_name, "i16")) return "int16_t";
+        if (std.mem.eql(u8, type_name, "i32")) return "int32_t";
+        if (std.mem.eql(u8, type_name, "i64")) return "int64_t";
+        if (std.mem.eql(u8, type_name, "i128")) return "__int128";
+        if (std.mem.eql(u8, type_name, "u8")) return "uint8_t";
+        if (std.mem.eql(u8, type_name, "u16")) return "uint16_t";
+        if (std.mem.eql(u8, type_name, "u32")) return "uint32_t";
+        if (std.mem.eql(u8, type_name, "u64")) return "uint64_t";
+        if (std.mem.eql(u8, type_name, "u128")) return "unsigned __int128";
+        if (std.mem.eql(u8, type_name, "f32")) return "float";
+        if (std.mem.eql(u8, type_name, "f64")) return "double";
+        if (std.mem.eql(u8, type_name, "bool")) return "bool";
+        if (std.mem.eql(u8, type_name, "string")) return "const char*";
+        if (std.mem.eql(u8, type_name, "char")) return "uint32_t";
+        if (std.mem.eql(u8, type_name, "void")) return "void";
+        return "int64_t"; // fallback for compound/unknown types
     }
 
     // ----------------------------------------------------------------
@@ -646,7 +683,7 @@ test "codegen function call" {
     try gen.generateModule(&module);
 
     const output = gen.getOutput();
-    try std.testing.expect(std.mem.indexOf(u8, output, "kira_caller(kira_int f)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_caller(int64_t f)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "v0 = f;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "return v2;") != null);
 }
@@ -1318,4 +1355,145 @@ test "codegen preamble includes int_to_string helper" {
 
     const output = gen.getOutput();
     try std.testing.expect(std.mem.indexOf(u8, output, "kira_int_to_string") != null);
+}
+
+test "codegen typed function signatures" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn distance(x: f64, y: f64) -> f64
+    const params = [_]Function.Param{
+        .{ .name = "x", .value_ref = 0, .type_name = "f64" },
+        .{ .name = "y", .value_ref = 1, .type_name = "f64" },
+    };
+    var func = Function.init(alloc);
+    func.name = "distance";
+    func.params = &params;
+    func.return_type_name = "f64";
+    const blk = try func.addBlock(alloc);
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 0 } });
+    const p1 = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 1 } });
+    func.setTerminator(blk, .{ .ret = p1 });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Forward declaration has proper types
+    try std.testing.expect(std.mem.indexOf(u8, output, "double kira_distance(double x, double y);") != null);
+    // Definition also has proper types
+    try std.testing.expect(std.mem.indexOf(u8, output, "double kira_distance(double x, double y) {") != null);
+}
+
+test "codegen typed record fields" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+
+    // Record with typed fields
+    _ = try module.addTypeDecl(.{
+        .name = "Vec2",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "x", .index = 0, .type_name = "f64" },
+                .{ .name = "y", .index = 1, .type_name = "f64" },
+            },
+        } },
+    });
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Record fields use proper C types
+    try std.testing.expect(std.mem.indexOf(u8, output, "double x;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "double y;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_Vec2") != null);
+}
+
+test "codegen typed constants" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+
+    _ = try module.addConstant(.{ .name = "PI", .value = .{ .float = 3.14159 } });
+    _ = try module.addConstant(.{ .name = "MAX", .value = .{ .integer = 100 } });
+    _ = try module.addConstant(.{ .name = "DEBUG", .value = .{ .boolean = true } });
+    _ = try module.addConstant(.{ .name = "NAME", .value = .{ .string = "kira" } });
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    try std.testing.expect(std.mem.indexOf(u8, output, "static const double kira_const_PI") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "static const int64_t kira_const_MAX") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "static const bool kira_const_DEBUG = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "static const char* kira_const_NAME") != null);
+}
+
+test "codegen void return type" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // effect fn greet() -> void
+    var func = Function.init(alloc);
+    func.name = "greet";
+    func.is_effect = true;
+    func.return_type_name = "void";
+    const blk = try func.addBlock(alloc);
+    const void_val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_void = {} } });
+    func.setTerminator(blk, .{ .ret = void_val });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Void function signature
+    try std.testing.expect(std.mem.indexOf(u8, output, "void kira_greet(void)") != null);
+    // Void return (no value)
+    try std.testing.expect(std.mem.indexOf(u8, output, "return;\n") != null);
+}
+
+test "codegen mixed typed params" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn process(name: string, count: i32, flag: bool) -> i32
+    const params = [_]Function.Param{
+        .{ .name = "name", .value_ref = 0, .type_name = "string" },
+        .{ .name = "count", .value_ref = 1, .type_name = "i32" },
+        .{ .name = "flag", .value_ref = 2, .type_name = "bool" },
+    };
+    var func = Function.init(alloc);
+    func.name = "process";
+    func.params = &params;
+    func.return_type_name = "i32";
+    const blk = try func.addBlock(alloc);
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 0 } });
+    const p1 = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 1 } });
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 2 } });
+    func.setTerminator(blk, .{ .ret = p1 });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Forward declaration with mixed types
+    try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(const char* name, int32_t count, bool flag);") != null);
+    // Definition with mixed types
+    try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(const char* name, int32_t count, bool flag) {") != null);
 }
