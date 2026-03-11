@@ -96,11 +96,30 @@ pub const CCodeGen = struct {
         try self.write("typedef uint32_t kira_char;\n");
         try self.write("typedef const char* kira_string;\n");
         try self.write("typedef void kira_void;\n\n");
-        try self.write("/* Kira runtime IO functions */\n");
-        try self.write("static void kira_println(kira_string s) { printf(\"%s\\n\", s); }\n");
-        try self.write("static void kira_print(kira_string s) { printf(\"%s\", s); }\n");
-        try self.write("static void kira_println_int(kira_int n) { printf(\"%lld\\n\", (long long)n); }\n");
-        try self.write("static void kira_print_int(kira_int n) { printf(\"%lld\", (long long)n); }\n");
+
+        // Effect tracking system
+        try self.write("/* Kira effect tracking */\n");
+        try self.write("#ifdef KIRA_DEBUG_EFFECTS\n");
+        try self.write("static int _kira_pure_depth = 0;\n");
+        try self.write("#define KIRA_ENTER_PURE() (_kira_pure_depth++)\n");
+        try self.write("#define KIRA_LEAVE_PURE() (_kira_pure_depth--)\n");
+        try self.write("#define KIRA_ASSERT_EFFECT(fn_name) do { \\\n");
+        try self.write("    if (_kira_pure_depth > 0) { \\\n");
+        try self.write("        fprintf(stderr, \"Kira effect violation: %s called from pure context\\n\", fn_name); \\\n");
+        try self.write("        abort(); \\\n");
+        try self.write("    } \\\n");
+        try self.write("} while(0)\n");
+        try self.write("#else\n");
+        try self.write("#define KIRA_ENTER_PURE() ((void)0)\n");
+        try self.write("#define KIRA_LEAVE_PURE() ((void)0)\n");
+        try self.write("#define KIRA_ASSERT_EFFECT(fn_name) ((void)0)\n");
+        try self.write("#endif\n\n");
+
+        try self.write("/* Kira runtime IO functions (effect-only) */\n");
+        try self.write("static void kira_println(kira_string s) { KIRA_ASSERT_EFFECT(\"println\"); printf(\"%s\\n\", s); }\n");
+        try self.write("static void kira_print(kira_string s) { KIRA_ASSERT_EFFECT(\"print\"); printf(\"%s\", s); }\n");
+        try self.write("static void kira_println_int(kira_int n) { KIRA_ASSERT_EFFECT(\"println_int\"); printf(\"%lld\\n\", (long long)n); }\n");
+        try self.write("static void kira_print_int(kira_int n) { KIRA_ASSERT_EFFECT(\"print_int\"); printf(\"%lld\", (long long)n); }\n");
         try self.write("static kira_string kira_int_to_string(kira_int n) {\n");
         try self.write("    char* s = (char*)malloc(32);\n");
         try self.write("    snprintf(s, 32, \"%lld\", (long long)n);\n");
@@ -173,6 +192,11 @@ pub const CCodeGen = struct {
         if (module.functions.items.len == 0) return;
         try self.write("/* Forward declarations */\n");
         for (module.functions.items) |*func| {
+            if (func.is_effect) {
+                try self.write("/* effect */ ");
+            } else {
+                try self.write("/* pure */ ");
+            }
             try self.write(kiraTypeToCType(func.return_type_name));
             try self.write(" ");
             try self.emitFunctionName(func);
@@ -217,8 +241,12 @@ pub const CCodeGen = struct {
     // ----------------------------------------------------------------
 
     fn emitFunction(self: *CCodeGen, func: *const Function) CodeGenError!void {
-        // Function signature
-        if (func.is_effect) try self.write("/* effect */ ");
+        // Function signature with effect annotation
+        if (func.is_effect) {
+            try self.write("/* effect */ ");
+        } else {
+            try self.write("/* pure */ ");
+        }
         try self.write(kiraTypeToCType(func.return_type_name));
         try self.write(" ");
         try self.emitFunctionName(func);
@@ -231,6 +259,12 @@ pub const CCodeGen = struct {
         if (func.params.len == 0) try self.write("void");
         try self.write(") {\n");
         self.indent_level += 1;
+
+        // Effect tracking: pure functions enter pure context
+        if (!func.is_effect) {
+            try self.writeIndent();
+            try self.write("KIRA_ENTER_PURE();\n");
+        }
 
         // Declare all SSA variables
         if (func.instructions.items.len > 0) {
@@ -507,6 +541,10 @@ pub const CCodeGen = struct {
         try self.writeIndent();
         switch (term.*) {
             .ret => |v| {
+                // Effect tracking: pure functions leave pure context before returning
+                if (!func.is_effect) {
+                    try self.write("KIRA_LEAVE_PURE(); ");
+                }
                 const is_void = std.mem.eql(u8, func.return_type_name, "void");
                 if (is_void) {
                     try self.write("return;\n");
@@ -1496,4 +1534,151 @@ test "codegen mixed typed params" {
     try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(const char* name, int32_t count, bool flag);") != null);
     // Definition with mixed types
     try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(const char* name, int32_t count, bool flag) {") != null);
+}
+
+test "codegen effect tracking preamble" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+
+    // Empty module still emits effect tracking infrastructure
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Effect tracking macros
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_DEBUG_EFFECTS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_kira_pure_depth") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_ENTER_PURE()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_LEAVE_PURE()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_ASSERT_EFFECT") != null);
+    // IO functions are guarded
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_ASSERT_EFFECT(\"println\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_ASSERT_EFFECT(\"print\")") != null);
+}
+
+test "codegen pure function has effect tracking" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn add(a: i32, b: i32) -> i32 { return a + b; }  (pure by default)
+    const params = [_]Function.Param{
+        .{ .name = "a", .value_ref = 0, .type_name = "i32" },
+        .{ .name = "b", .value_ref = 1, .type_name = "i32" },
+    };
+    var func = Function.init(alloc);
+    func.name = "add";
+    func.params = &params;
+    func.return_type_name = "i32";
+    const blk = try func.addBlock(alloc);
+    const pa = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 0 } });
+    const pb = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 1 } });
+    const sum = try func.addInstruction(alloc, blk, .{ .op = .{ .int_binop = .{ .op = .add, .left = pa, .right = pb } } });
+    func.setTerminator(blk, .{ .ret = sum });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Pure function annotated in forward declaration and definition
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* pure */ int32_t kira_add(") != null);
+    // Pure function enters pure context
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_ENTER_PURE();") != null);
+    // Pure function leaves pure context before return
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_LEAVE_PURE(); return v2;") != null);
+    // Should NOT have effect annotation
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* effect */ int32_t kira_add(") == null);
+}
+
+test "codegen effect function has no pure tracking" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // effect fn greet(msg: string) -> void { println(msg); }
+    const params = [_]Function.Param{
+        .{ .name = "msg", .value_ref = 0, .type_name = "string" },
+    };
+    var func = Function.init(alloc);
+    func.name = "greet";
+    func.is_effect = true;
+    func.params = &params;
+    func.return_type_name = "void";
+    const blk = try func.addBlock(alloc);
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 0 } });
+    const void_val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_void = {} } });
+    func.setTerminator(blk, .{ .ret = void_val });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Effect function annotated
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* effect */ void kira_greet(") != null);
+    // Effect function does NOT enter pure context (no ENTER/LEAVE around its body)
+    // Find the function body to verify
+    const func_start = std.mem.indexOf(u8, output, "/* effect */ void kira_greet(const char* msg) {") orelse unreachable;
+    const func_body = output[func_start..];
+    const func_end = std.mem.indexOf(u8, func_body, "}\n\n") orelse unreachable;
+    const body = func_body[0..func_end];
+    // No ENTER_PURE in this function's body
+    try std.testing.expect(std.mem.indexOf(u8, body, "KIRA_ENTER_PURE()") == null);
+    // No LEAVE_PURE before return
+    try std.testing.expect(std.mem.indexOf(u8, body, "KIRA_LEAVE_PURE()") == null);
+}
+
+test "codegen mixed pure and effect functions" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Pure function: fn double(x: i32) -> i32 { return x * 2; }
+    {
+        const params = [_]Function.Param{.{ .name = "x", .value_ref = 0, .type_name = "i32" }};
+        var func = Function.init(alloc);
+        func.name = "double";
+        func.params = &params;
+        func.return_type_name = "i32";
+        const blk = try func.addBlock(alloc);
+        const px = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 0 } });
+        const two = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 2 } } });
+        const result = try func.addInstruction(alloc, blk, .{ .op = .{ .int_binop = .{ .op = .mul, .left = px, .right = two } } });
+        func.setTerminator(blk, .{ .ret = result });
+        _ = try module.addFunction(func);
+    }
+
+    // Effect function: effect fn main() -> void { }
+    {
+        var func = Function.init(alloc);
+        func.name = "main";
+        func.is_effect = true;
+        func.return_type_name = "void";
+        const blk = try func.addBlock(alloc);
+        const void_val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_void = {} } });
+        func.setTerminator(blk, .{ .ret = void_val });
+        _ = try module.addFunction(func);
+    }
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Forward declarations preserve annotations
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* pure */ int32_t kira_double(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* effect */ void kira_main(") != null);
+    // Function definitions preserve annotations
+    const pure_def = std.mem.indexOf(u8, output, "/* pure */ int32_t kira_double(int32_t x) {");
+    try std.testing.expect(pure_def != null);
+    const effect_def = std.mem.indexOf(u8, output, "/* effect */ void kira_main(void) {");
+    try std.testing.expect(effect_def != null);
 }
