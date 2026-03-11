@@ -117,13 +117,13 @@ Before Phase 3, these must be true:
 - Klar interop verified end-to-end
 
 ### Tasks
-- [ ] Implement C representations for tuples: struct with indexed fields.
-- [ ] Implement C representations for records: struct with named fields.
-- [ ] Implement C representations for arrays: pointer + length, with fixed-size optimization.
-- [ ] Implement C representations for ADT variants: tagged union with payload.
-- [ ] Implement C representations for closures: function pointer + captured environment struct.
+- [x] Implement C representations for tuples: heap-allocated kira_int array with indexed fields. (completed 2026-03-10)
+- [x] Implement C representations for records: heap-allocated kira_int array with field index lookup from type declarations. (completed 2026-03-10)
+- [x] Implement C representations for arrays: heap-allocated kira_int array with length at [0], elements at [1..N]. (completed 2026-03-10)
+- [x] Implement C representations for ADT variants: heap-allocated kira_int array with tag at [0], payload at [1..N]. (completed 2026-03-10)
+- [x] Implement C representations for closures: heap-allocated kira_int array with function pointer at [0], captures at [1..N]. (completed 2026-03-10)
 - [ ] Implement proper type-specific code generation (replace uniform `kira_int` with actual types).
-- [ ] Implement string representation and string interpolation in C output.
+- [x] Implement string representation and string interpolation in C output: to_string via snprintf, str_concat via malloc+strcat. (completed 2026-03-10)
 - [ ] Implement pattern matching compilation to C (decision trees or backtracking).
 - [ ] Implement effect tracking in compiled code (ensure pure/effect boundary survives compilation).
 - [ ] Test compiled output against interpreter output for all example programs.

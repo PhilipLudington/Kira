@@ -6,12 +6,14 @@
 //! Each IR function becomes a C function. SSA values become local variables.
 //! Basic blocks become labeled sections with goto-based control flow.
 //!
-//! Limitations (scaffolding phase):
-//! - All values use a uniform `kira_int` (i64) representation. Float operations
-//!   use bit-punning; strings cast through intptr_t. This is 64-bit only.
-//! - Compound types (tuples, arrays, records, closures) emit `abort()` stubs.
-//!   The Zig runtime module (`src/runtime/`) defines the proper representations
-//!   but is not yet linked into the C output.
+//! All values use a uniform `kira_int` (i64) representation. Compound types
+//! are heap-allocated and referenced via intptr_t casts:
+//! - Tuples: kira_int* with elements at [0..N)
+//! - Arrays: kira_int* with length at [0], elements at [1..N]
+//! - Records: kira_int* with fields at [0..N) indexed by declaration order
+//! - Variants: kira_int* with tag at [0], payload fields at [1..N]
+//! - Closures: kira_int* with function pointer at [0], captures at [1..N]
+//! - Strings: char* cast through intptr_t; concat via malloc+strcat
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -92,7 +94,12 @@ pub const CCodeGen = struct {
         try self.write("static void kira_println(kira_string s) { printf(\"%s\\n\", s); }\n");
         try self.write("static void kira_print(kira_string s) { printf(\"%s\", s); }\n");
         try self.write("static void kira_println_int(kira_int n) { printf(\"%lld\\n\", (long long)n); }\n");
-        try self.write("static void kira_print_int(kira_int n) { printf(\"%lld\", (long long)n); }\n\n");
+        try self.write("static void kira_print_int(kira_int n) { printf(\"%lld\", (long long)n); }\n");
+        try self.write("static kira_string kira_int_to_string(kira_int n) {\n");
+        try self.write("    char* s = (char*)malloc(32);\n");
+        try self.write("    snprintf(s, 32, \"%lld\", (long long)n);\n");
+        try self.write("    return s;\n");
+        try self.write("}\n\n");
     }
 
     // ----------------------------------------------------------------
@@ -314,7 +321,10 @@ pub const CCodeGen = struct {
             .log_not => |v| try self.writeFmt("v{d} = !v{d};\n", .{ ref, v }),
             .int_to_float => |v| try self.writeFmt("{{ kira_float _f = (kira_float)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ v, ref }),
             .float_to_int => |v| try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)_f; }}\n", .{ v, ref }),
-            .to_string => |_| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: to_string not implemented\\n\"); abort(); /* to_string */\n", .{ref}),
+            .to_string => |v| {
+                // Convert integer to string via snprintf
+                try self.writeFmt("{{ char* _s = (char*)malloc(32); snprintf(_s, 32, \"%lld\", (long long)v{d}); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ v, ref });
+            },
             .alloc_var => |a| {
                 if (a.init_value) |iv| {
                     try self.writeFmt("v{d} = v{d}; /* var {s} */\n", .{ ref, iv, a.name });
@@ -339,40 +349,120 @@ pub const CCodeGen = struct {
                 try self.write(");\n");
             },
             .make_closure => |c| {
-                try self.writeFmt("v{d} = (kira_int)0; /* closure func#{d} */\n", .{ ref, c.function_index });
+                // Layout: [function_ptr][capture0][capture1]...
+                try self.writeFmt("{{ kira_int* _c = (kira_int*)malloc({d} * sizeof(kira_int)); _c[0] = (kira_int)(intptr_t)&", .{c.captures.len + 1});
+                // Emit the function name reference
+                const module = self.current_module;
+                if (module) |m| {
+                    if (c.function_index < m.functions.items.len) {
+                        const target_func = &m.functions.items[c.function_index];
+                        try self.emitFunctionName(target_func);
+                    } else {
+                        try self.write("kira_anon");
+                    }
+                } else {
+                    try self.write("kira_anon");
+                }
+                try self.write("; ");
+                for (c.captures, 0..) |cap, i| {
+                    try self.writeFmt("_c[{d}] = v{d}; ", .{ i + 1, cap });
+                }
+                try self.writeFmt("v{d} = (kira_int)(intptr_t)_c; }}\n", .{ref});
             },
             .make_tuple => |elems| {
-                try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: make_tuple({d}) not implemented\\n\"); abort();\n", .{ ref, elems.len });
+                // Heap-allocate a kira_int array, store elements, cast to kira_int
+                try self.writeFmt("{{ kira_int* _t = (kira_int*)malloc({d} * sizeof(kira_int)); ", .{elems.len});
+                for (elems, 0..) |elem, i| {
+                    try self.writeFmt("_t[{d}] = v{d}; ", .{ i, elem });
+                }
+                try self.writeFmt("v{d} = (kira_int)(intptr_t)_t; }}\n", .{ref});
             },
             .make_array => |elems| {
-                try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: make_array[{d}] not implemented\\n\"); abort();\n", .{ ref, elems.len });
+                // Layout: [length][elem0][elem1]... — length at index 0, elements at 1..N
+                try self.writeFmt("{{ kira_int* _a = (kira_int*)malloc({d} * sizeof(kira_int)); _a[0] = {d}; ", .{ elems.len + 1, elems.len });
+                for (elems, 0..) |elem, i| {
+                    try self.writeFmt("_a[{d}] = v{d}; ", .{ i + 1, elem });
+                }
+                try self.writeFmt("v{d} = (kira_int)(intptr_t)_a; }}\n", .{ref});
             },
             .make_record => |r| {
+                // Heap-allocate a kira_int array for fields, cast to kira_int
+                try self.writeFmt("{{ kira_int* _r = (kira_int*)malloc({d} * sizeof(kira_int)); ", .{r.field_values.len});
+                for (r.field_values, 0..) |fv, i| {
+                    try self.writeFmt("_r[{d}] = v{d}; ", .{ i, fv });
+                }
                 if (r.type_name) |tn| {
-                    try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: make_record {s} not implemented\\n\"); abort();\n", .{ ref, tn });
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)_r; }} /* record {s} */\n", .{ ref, tn });
                 } else {
-                    try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: make_record not implemented\\n\"); abort();\n", .{ref});
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)_r; }}\n", .{ref});
                 }
             },
             .make_variant => |v| {
-                // Look up actual tag from module type declarations
                 const tag = self.lookupVariantTag(v.type_name, v.variant_name);
-                try self.writeFmt("v{d} = {d}; /* variant {s} tag */\n", .{ ref, tag, v.variant_name });
+                const payload_len: usize = if (v.payload) |p| p.len else 0;
+                // Layout: [tag][field0][field1]... — always heap-allocated for uniform get_tag
+                try self.writeFmt("{{ kira_int* _v = (kira_int*)malloc({d} * sizeof(kira_int)); _v[0] = {d}; ", .{ payload_len + 1, tag });
+                if (v.payload) |payload| {
+                    for (payload, 0..) |p, i| {
+                        try self.writeFmt("_v[{d}] = v{d}; ", .{ i + 1, p });
+                    }
+                }
+                try self.writeFmt("v{d} = (kira_int)(intptr_t)_v; }} /* variant {s} */\n", .{ ref, v.variant_name });
             },
-            .tuple_get => |t| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: tuple_get.{d} not implemented\\n\"); abort();\n", .{ ref, t.index }),
-            .field_get => |f| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: field_get .{s} not implemented\\n\"); abort();\n", .{ ref, f.field }),
-            .index_get => |idx| try self.writeFmt("v{d} = 0; /* index_get v{d}[v{d}] */\n", .{ ref, idx.object, idx.index }),
-            .array_len => |v| try self.writeFmt("v{d} = 0; /* array_len v{d} */\n", .{ ref, v }),
-            .field_set => |f| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: field_set .{s} not implemented\\n\"); abort();\n", .{ ref, f.field }),
-            .index_set => |_| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: index_set not implemented\\n\"); abort();\n", .{ref}),
-            .get_tag => |v| try self.writeFmt("v{d} = v{d}; /* get_tag */\n", .{ ref, v }),
-            .get_payload => |p| try self.writeFmt("v{d} = 0; /* get_payload v{d}.{d} — TODO: extract from ADT struct */\n", .{ ref, p.variant, p.field_index }),
+            .tuple_get => |t| try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[{d}];\n", .{ ref, t.tuple, t.index }),
+            .field_get => |f| {
+                // Look up field index from type declarations, fallback to linear search
+                const field_idx = self.lookupFieldIndex(f.field);
+                try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[{d}]; /* .{s} */\n", .{ ref, f.object, field_idx, f.field });
+            },
+            .index_get => |idx| {
+                // Elements start at index 1 (index 0 is length)
+                try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[v{d} + 1];\n", .{ ref, idx.object, idx.index });
+            },
+            .array_len => |v| {
+                // Length is stored at index 0
+                try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[0];\n", .{ ref, v });
+            },
+            .field_set => |f| {
+                const field_idx = self.lookupFieldIndex(f.field);
+                try self.writeFmt("((kira_int*)(intptr_t)v{d})[{d}] = v{d}; v{d} = 0; /* .{s} = */\n", .{ f.object, field_idx, f.value, ref, f.field });
+            },
+            .index_set => |idx| {
+                // Elements start at index 1 (index 0 is length)
+                try self.writeFmt("((kira_int*)(intptr_t)v{d})[v{d} + 1] = v{d}; v{d} = 0;\n", .{ idx.object, idx.index, idx.value, ref });
+            },
+            .get_tag => |v| {
+                // Tag is at index 0 of the heap-allocated variant struct
+                try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[0]; /* get_tag */\n", .{ ref, v });
+            },
+            .get_payload => |p| {
+                // Payload fields start at index 1
+                try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[{d}]; /* get_payload */\n", .{ ref, p.variant, p.field_index + 1 });
+            },
             .wrap_some => |v| try self.writeFmt("v{d} = v{d}; /* wrap_some */\n", .{ ref, v }),
             .wrap_none => try self.writeFmt("v{d} = 0; /* wrap_none */\n", .{ref}),
             .wrap_ok => |v| try self.writeFmt("v{d} = v{d}; /* wrap_ok */\n", .{ ref, v }),
             .wrap_err => |v| try self.writeFmt("v{d} = v{d}; /* wrap_err */\n", .{ ref, v }),
             .unwrap => |v| try self.writeFmt("v{d} = v{d}; /* unwrap */\n", .{ ref, v }),
-            .str_concat => |_| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: str_concat not implemented\\n\"); abort();\n", .{ref}),
+            .str_concat => |sc| {
+                // Concatenate string parts using runtime helper
+                if (sc.parts.len == 0) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)\"\";\n", .{ref});
+                } else if (sc.parts.len == 1) {
+                    try self.writeFmt("v{d} = v{d};\n", .{ ref, sc.parts[0] });
+                } else {
+                    // Compute total length, allocate, then copy parts
+                    try self.writeFmt("{{ size_t _len = 0; ", .{});
+                    for (sc.parts) |p| {
+                        try self.writeFmt("_len += strlen((const char*)(intptr_t)v{d}); ", .{p});
+                    }
+                    try self.write("char* _s = (char*)malloc(_len + 1); _s[0] = '\\0'; ");
+                    for (sc.parts) |p| {
+                        try self.writeFmt("strcat(_s, (const char*)(intptr_t)v{d}); ", .{p});
+                    }
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)_s; }}\n", .{ref});
+                }
+            },
             .param => |idx| {
                 // Map parameter index to parameter name
                 if (idx < func.params.len) {
@@ -381,7 +471,11 @@ pub const CCodeGen = struct {
                     try self.writeFmt("v{d} = 0; /* param {d} */\n", .{ ref, idx });
                 }
             },
-            .capture => |idx| try self.writeFmt("v{d} = 0; /* capture {d} — TODO: load from closure env */\n", .{ ref, idx }),
+            .capture => |idx| {
+                // Load captured value from closure environment (passed as hidden first param)
+                // Captures start at index 1 (index 0 is function pointer)
+                try self.writeFmt("v{d} = ((kira_int*)(intptr_t)_env)[{d}]; /* capture {d} */\n", .{ ref, idx + 1, idx });
+            },
             .store_param => |sp| {
                 if (sp.param_index < func.params.len) {
                     try self.writeFmt("{s} = v{d}; /* TCO param reassign */\n", .{ func.params[sp.param_index].name, sp.value });
@@ -456,6 +550,22 @@ pub const CCodeGen = struct {
                     }
                 },
                 .product_type => {},
+            }
+        }
+        return 0;
+    }
+
+    /// Look up the index of a field by name, searching all product type declarations.
+    fn lookupFieldIndex(self: *const CCodeGen, field_name: []const u8) u32 {
+        const module = self.current_module orelse return 0;
+        for (module.type_decls.items) |td| {
+            switch (td.kind) {
+                .product_type => |pt| {
+                    for (pt.fields) |f| {
+                        if (std.mem.eql(u8, f.name, field_name)) return f.index;
+                    }
+                },
+                .sum_type => {},
             }
         }
         return 0;
@@ -801,4 +911,411 @@ test "codegen error propagation with try" {
 
     const output = gen.getOutput();
     try std.testing.expect(std.mem.indexOf(u8, output, "/* unwrap */") != null);
+}
+
+test "codegen tuple construction and access" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn test_tuple() { let t = (10, 20, 30); return t.1; }
+    var func = Function.init(alloc);
+    func.name = "test_tuple";
+    const blk = try func.addBlock(alloc);
+
+    const a = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 10 } } });
+    const b = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 20 } } });
+    const c = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 30 } } });
+    const elems = [_]ValueRef{ a, b, c };
+    const tuple = try func.addInstruction(alloc, blk, .{ .op = .{ .make_tuple = &elems } });
+    const elem1 = try func.addInstruction(alloc, blk, .{ .op = .{ .tuple_get = .{ .tuple = tuple, .index = 1 } } });
+    func.setTerminator(blk, .{ .ret = elem1 });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Tuple construction: heap-alloc + fill
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(3 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_t[0] = v0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_t[1] = v1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_t[2] = v2;") != null);
+    // Tuple access: index into the heap array
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v3)[1]") != null);
+}
+
+test "codegen record construction and field access" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Add type declaration for Point record
+    _ = try module.addTypeDecl(.{
+        .name = "Point",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "x", .index = 0 },
+                .{ .name = "y", .index = 1 },
+            },
+        } },
+    });
+
+    // fn test_record() { let p = Point { x: 10, y: 20 }; return p.y; }
+    var func = Function.init(alloc);
+    func.name = "test_record";
+    const blk = try func.addBlock(alloc);
+
+    const x = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 10 } } });
+    const y = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 20 } } });
+    const names = [_][]const u8{ "x", "y" };
+    const vals = [_]ValueRef{ x, y };
+    const record = try func.addInstruction(alloc, blk, .{ .op = .{ .make_record = .{
+        .type_name = "Point",
+        .field_names = &names,
+        .field_values = &vals,
+    } } });
+    const field_y = try func.addInstruction(alloc, blk, .{ .op = .{ .field_get = .{ .object = record, .field = "y" } } });
+    func.setTerminator(blk, .{ .ret = field_y });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Record construction
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(2 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_r[0] = v0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_r[1] = v1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "record Point") != null);
+    // Field access: index 1 for "y"
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v2)[1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* .y */") != null);
+}
+
+test "codegen array construction, index, and length" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn test_array() { let a = [1, 2, 3]; let len = a.len; return a[1]; }
+    var func = Function.init(alloc);
+    func.name = "test_array";
+    const blk = try func.addBlock(alloc);
+
+    const e0 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 1 } } });
+    const e1 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 2 } } });
+    const e2 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 3 } } });
+    const elems = [_]ValueRef{ e0, e1, e2 };
+    const arr = try func.addInstruction(alloc, blk, .{ .op = .{ .make_array = &elems } });
+    const len = try func.addInstruction(alloc, blk, .{ .op = .{ .array_len = arr } });
+    _ = len;
+    const idx = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 1 } } });
+    const elem = try func.addInstruction(alloc, blk, .{ .op = .{ .index_get = .{ .object = arr, .index = idx } } });
+    func.setTerminator(blk, .{ .ret = elem });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Array construction: length at [0], elements at [1..N]
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(4 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_a[0] = 3;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_a[1] = v0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_a[2] = v1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_a[3] = v2;") != null);
+    // Array length: index 0
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v3)[0]") != null);
+    // Index access: elements offset by 1
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v3)[v5 + 1]") != null);
+}
+
+test "codegen ADT variant with payload" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Add Option type declaration
+    _ = try module.addTypeDecl(.{
+        .name = "Option",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Some", .tag = 0, .field_count = 1 },
+                .{ .name = "None", .tag = 1, .field_count = 0 },
+            },
+        } },
+    });
+
+    // fn test_variant() { let x = Some(42); let tag = get_tag(x); let val = get_payload(x, 0); return val; }
+    var func = Function.init(alloc);
+    func.name = "test_variant";
+    const blk = try func.addBlock(alloc);
+
+    const val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 42 } } });
+    const payload = [_]ValueRef{val};
+    const variant = try func.addInstruction(alloc, blk, .{ .op = .{ .make_variant = .{
+        .type_name = "Option",
+        .variant_name = "Some",
+        .payload = &payload,
+    } } });
+    const tag = try func.addInstruction(alloc, blk, .{ .op = .{ .get_tag = variant } });
+    _ = tag;
+    const extracted = try func.addInstruction(alloc, blk, .{ .op = .{ .get_payload = .{ .variant = variant, .field_index = 0 } } });
+    func.setTerminator(blk, .{ .ret = extracted });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Variant construction: heap-alloc [tag][payload...]
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(2 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_v[0] = 0;") != null); // tag = 0 (Some)
+    try std.testing.expect(std.mem.indexOf(u8, output, "_v[1] = v0;") != null); // payload
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* variant Some */") != null);
+    // get_tag: read index 0
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v1)[0]") != null);
+    // get_payload: read index 1 (field_index 0 + 1)
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v1)[1]") != null);
+}
+
+test "codegen unit variant (no payload)" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    _ = try module.addTypeDecl(.{
+        .name = "Option",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{ .name = "Some", .tag = 0, .field_count = 1 },
+                .{ .name = "None", .tag = 1, .field_count = 0 },
+            },
+        } },
+    });
+
+    // fn test_none() { let x = None; return get_tag(x); }
+    var func = Function.init(alloc);
+    func.name = "test_none";
+    const blk = try func.addBlock(alloc);
+
+    const none = try func.addInstruction(alloc, blk, .{ .op = .{ .make_variant = .{
+        .type_name = "Option",
+        .variant_name = "None",
+        .payload = null,
+    } } });
+    const tag = try func.addInstruction(alloc, blk, .{ .op = .{ .get_tag = none } });
+    func.setTerminator(blk, .{ .ret = tag });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Unit variant: still heap-allocated with just the tag
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(1 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_v[0] = 1;") != null); // tag = 1 (None)
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* variant None */") != null);
+}
+
+test "codegen closure construction" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // Inner closure function
+    var inner = Function.init(alloc);
+    inner.name = "adder_inner";
+    const inner_blk = try inner.addBlock(alloc);
+    const ret_val = try inner.addInstruction(alloc, inner_blk, .{ .op = .{ .const_int = .{ .value = 0 } } });
+    inner.setTerminator(inner_blk, .{ .ret = ret_val });
+    const inner_idx = try module.addFunction(inner);
+
+    // Outer function that creates the closure
+    var outer = Function.init(alloc);
+    outer.name = "make_adder";
+    const blk = try outer.addBlock(alloc);
+    const captured_val = try outer.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 10 } } });
+    const captures = [_]ValueRef{captured_val};
+    const closure = try outer.addInstruction(alloc, blk, .{ .op = .{ .make_closure = .{
+        .function_index = inner_idx,
+        .captures = &captures,
+    } } });
+    outer.setTerminator(blk, .{ .ret = closure });
+    _ = try module.addFunction(outer);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Closure: heap-alloc [func_ptr][captures...]
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(2 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "&kira_adder_inner") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_c[1] = v0;") != null);
+}
+
+test "codegen string concat" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn test_concat() { return "hello" ++ " " ++ "world"; }
+    var func = Function.init(alloc);
+    func.name = "test_concat";
+    const blk = try func.addBlock(alloc);
+
+    const s1 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_string = "hello" } });
+    const s2 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_string = " world" } });
+    const parts = [_]ValueRef{ s1, s2 };
+    const result = try func.addInstruction(alloc, blk, .{ .op = .{ .str_concat = .{ .parts = &parts } } });
+    func.setTerminator(blk, .{ .ret = result });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // String concat: compute length, malloc, strcat
+    try std.testing.expect(std.mem.indexOf(u8, output, "strlen") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "strcat") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(_len + 1)") != null);
+}
+
+test "codegen to_string" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn test_to_string() { return to_string(42); }
+    var func = Function.init(alloc);
+    func.name = "test_to_string";
+    const blk = try func.addBlock(alloc);
+
+    const val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 42 } } });
+    const str = try func.addInstruction(alloc, blk, .{ .op = .{ .to_string = val } });
+    func.setTerminator(blk, .{ .ret = str });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // to_string: snprintf into heap buffer
+    try std.testing.expect(std.mem.indexOf(u8, output, "snprintf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(32)") != null);
+}
+
+test "codegen field_set on record" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    _ = try module.addTypeDecl(.{
+        .name = "Point",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "x", .index = 0 },
+                .{ .name = "y", .index = 1 },
+            },
+        } },
+    });
+
+    // fn test_set() { var p = Point{x: 1, y: 2}; p.x = 99; return p.x; }
+    var func = Function.init(alloc);
+    func.name = "test_set";
+    const blk = try func.addBlock(alloc);
+
+    const x = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 1 } } });
+    const y = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 2 } } });
+    const names = [_][]const u8{ "x", "y" };
+    const vals = [_]ValueRef{ x, y };
+    const record = try func.addInstruction(alloc, blk, .{ .op = .{ .make_record = .{
+        .type_name = "Point",
+        .field_names = &names,
+        .field_values = &vals,
+    } } });
+    const new_val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 99 } } });
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .field_set = .{
+        .object = record,
+        .field = "x",
+        .value = new_val,
+    } } });
+    const read_x = try func.addInstruction(alloc, blk, .{ .op = .{ .field_get = .{ .object = record, .field = "x" } } });
+    func.setTerminator(blk, .{ .ret = read_x });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // field_set: write to index 0 for field "x"
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v2)[0] = v3;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* .x = */") != null);
+}
+
+test "codegen index_set on array" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // fn test_index_set() { var a = [10, 20]; a[0] = 99; return a[0]; }
+    var func = Function.init(alloc);
+    func.name = "test_index_set";
+    const blk = try func.addBlock(alloc);
+
+    const e0 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 10 } } });
+    const e1 = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 20 } } });
+    const elems = [_]ValueRef{ e0, e1 };
+    const arr = try func.addInstruction(alloc, blk, .{ .op = .{ .make_array = &elems } });
+    const idx = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 0 } } });
+    const new_val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_int = .{ .value = 99 } } });
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .index_set = .{
+        .object = arr,
+        .index = idx,
+        .value = new_val,
+    } } });
+    const read = try func.addInstruction(alloc, blk, .{ .op = .{ .index_get = .{ .object = arr, .index = idx } } });
+    func.setTerminator(blk, .{ .ret = read });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // index_set: elements offset by 1
+    try std.testing.expect(std.mem.indexOf(u8, output, "((kira_int*)(intptr_t)v2)[v3 + 1] = v4;") != null);
+}
+
+test "codegen preamble includes int_to_string helper" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_int_to_string") != null);
 }
