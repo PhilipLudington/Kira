@@ -3,7 +3,7 @@
 ## Overview
 Comprehensive plan to fix philosophy violations, align the spec with the implementation,
 complete partially-implemented features, and prepare for production codegen.
-Current status: Phase 0 and Phase 1 complete. Phase 2 (Complete Traits) next.
+Current status: Phase 0, Phase 1, and Phase 2 complete. Phase 3 (Production Codegen) next.
 
 Audit performed against IDEA.md, PHILOSOPHY.md, and DESIGN.md.
 
@@ -71,7 +71,8 @@ Before Phase 2, these must be true:
 
 ---
 
-## Phase 2: Complete Traits
+## Phase 2: Complete Traits ✅
+**Status:** Complete (2026-03-10)
 
 **Goal:** Make the trait system production-ready per the DESIGN.md spec.
 **Estimated Effort:** 1-2 weeks
@@ -87,7 +88,7 @@ Before Phase 2, these must be true:
 - [x] Validate where clause constraints: type checker must resolve and enforce `where T: Eq, U: Show` constraints on generic functions and impl blocks. (completed 2026-03-10)
 - [x] Check method signature compatibility in impl blocks: verify that each method in an `impl Trait for Type` block matches the trait's declared signature (parameter types, return type, effect annotation). (completed 2026-03-10)
 - [x] Implement trait method dispatch: when calling a method on a generic `T: Eq`, resolve to the concrete impl's method. (completed 2026-03-10)
-- [ ] Add comprehensive trait tests: default methods, missing methods (error), wrong signatures (error), multiple trait bounds, where clauses.
+- [x] Add comprehensive trait tests: default methods, missing methods (error), wrong signatures (error), multiple trait bounds, where clauses. (completed 2026-03-10)
 - [x] Wire up `Eq`, `Ord`, `Show` in the standard library so they can be implemented by user types. (completed 2026-03-10)
 
 ### Testing Strategy
@@ -99,9 +100,9 @@ Before Phase 2, these must be true:
 
 ## Phase 2 Readiness Gate
 Before Phase 3, these must be true:
-- [ ] Traits with default methods, where clauses, and signature checking all pass tests
-- [ ] At least `Eq` and `Show` are usable from user code
-- [ ] No trait-related TODOs remain in the type checker
+- [x] Traits with default methods, where clauses, and signature checking all pass tests (completed 2026-03-10)
+- [x] At least `Eq` and `Show` are usable from user code (completed 2026-03-10)
+- [x] No trait-related TODOs remain in the type checker (completed 2026-03-10)
 
 ---
 

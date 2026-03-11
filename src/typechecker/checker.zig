@@ -7346,3 +7346,935 @@ test "trait impl: override of default method with wrong signature produces error
     }
     try std.testing.expect(found);
 }
+
+// ============================================================
+// Comprehensive trait tests (Phase 2 coverage)
+// ============================================================
+
+test "trait: method dispatch on bounded generic type parameter" {
+    // fn display[T: Show](x: T) -> string
+    // Calling display[i32](42) should resolve to string
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var string_ret = Type.primitive(.string, span);
+    var t_param_type = Type{
+        .kind = .{ .type_variable = .{ .name = "T", .constraints = null } },
+        .span = span,
+    };
+
+    const param_types = try allocator.alloc(*Type, 1);
+    param_types[0] = &t_param_type;
+    const param_names = try allocator.alloc([]const u8, 1);
+    param_names[0] = "x";
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    var show_constraints = [_][]const u8{"Show"};
+    generic_params[0] = .{ .name = "T", .constraints = &show_constraints };
+
+    _ = try table.define(Symbol.function(unassigned_symbol_id, "display", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &string_ret,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = null,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var callee_expr = Expression{
+        .kind = .{ .identifier = .{ .name = "display", .generic_args = null } },
+        .span = span,
+    };
+    var arg1 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 42, .suffix = null } },
+        .span = span,
+    };
+    var generic_arg = Type.primitive(.i32, span);
+    var generic_args_arr = [_]*Type{&generic_arg};
+    var args_arr = [_]*Expression{&arg1};
+
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &callee_expr,
+            .generic_args = &generic_args_arr,
+            .arguments = &args_arr,
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&call_expr);
+
+    try std.testing.expect(!checker.hasErrors());
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .string), result.kind.primitive);
+}
+
+test "trait: where clause with multiple type parameters" {
+    // fn combine[T, U](a: T, b: U) -> string where T: Show, U: Show
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var string_ret2 = Type.primitive(.string, span);
+    var t_type = Type{ .kind = .{ .type_variable = .{ .name = "T", .constraints = null } }, .span = span };
+    var u_type = Type{ .kind = .{ .type_variable = .{ .name = "U", .constraints = null } }, .span = span };
+
+    const param_types = try allocator.alloc(*Type, 2);
+    param_types[0] = &t_type;
+    param_types[1] = &u_type;
+    const param_names = try allocator.alloc([]const u8, 2);
+    param_names[0] = "a";
+    param_names[1] = "b";
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 2);
+    generic_params[0] = .{ .name = "T", .constraints = null };
+    generic_params[1] = .{ .name = "U", .constraints = null };
+
+    var t_bounds = [_][]const u8{"Show"};
+    var u_bounds = [_][]const u8{"Show"};
+    const where_clause = try allocator.alloc(Symbol.WhereConstraintInfo, 2);
+    where_clause[0] = .{ .type_param = "T", .bounds = &t_bounds };
+    where_clause[1] = .{ .type_param = "U", .bounds = &u_bounds };
+
+    _ = try table.define(Symbol.function(unassigned_symbol_id, "combine", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &string_ret2,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = where_clause,
+    }, true, span));
+
+    const sym = table.lookup("combine").?;
+    const func = sym.kind.function;
+    try std.testing.expect(func.where_clause != null);
+    try std.testing.expectEqual(@as(usize, 2), func.where_clause.?.len);
+    try std.testing.expectEqualStrings("T", func.where_clause.?[0].type_param);
+    try std.testing.expectEqualStrings("U", func.where_clause.?[1].type_param);
+}
+
+test "trait: impl with multiple methods checks all signatures" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var self1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var self2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool_type = Type.primitive(.bool, span);
+
+    const eq_params = try allocator.alloc(*Type, 2);
+    eq_params[0] = &self1;
+    eq_params[1] = &self2;
+    const eq_names = try allocator.alloc([]const u8, 2);
+    eq_names[0] = "self";
+    eq_names[1] = "other";
+
+    var self3 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var self4 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_type = Type.primitive(.i32, span);
+
+    const cmp_params = try allocator.alloc(*Type, 2);
+    cmp_params[0] = &self3;
+    cmp_params[1] = &self4;
+    const cmp_names = try allocator.alloc([]const u8, 2);
+    cmp_names[0] = "self";
+    cmp_names[1] = "other";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 2);
+    methods[0] = .{
+        .name = "eq",
+        .generic_params = null,
+        .parameter_types = eq_params,
+        .parameter_names = eq_names,
+        .return_type = &bool_type,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+    methods[1] = .{
+        .name = "compare",
+        .generic_params = null,
+        .parameter_types = cmp_params,
+        .parameter_names = cmp_names,
+        .return_type = &i32_type,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Comparable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    // Register target type
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Score", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var self_impl1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var self_impl2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool_impl = Type.primitive(.bool, span);
+    var eq_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl1, .span = span },
+        .{ .name = "other", .param_type = &self_impl2, .span = span },
+    };
+
+    var self_impl3 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var self_impl4 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_impl = Type.primitive(.i32, span);
+    var cmp_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl3, .span = span },
+        .{ .name = "other", .param_type = &self_impl4, .span = span },
+    };
+
+    var target_type = Type.named("Score", span);
+    var impl_methods2 = [_]Declaration.FunctionDecl{
+        .{
+            .name = "eq",
+            .generic_params = null,
+            .parameters = &eq_impl_params,
+            .return_type = &bool_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+        .{
+            .name = "compare",
+            .generic_params = null,
+            .parameters = &cmp_impl_params,
+            .return_type = &i32_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+
+    var impl_block2 = Declaration.ImplBlock{
+        .trait_name = "Comparable",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &impl_methods2,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&impl_block2);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait: impl missing one of multiple required methods" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var self1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_type1 = Type.primitive(.i32, span);
+    const alpha_params = try allocator.alloc(*Type, 1);
+    alpha_params[0] = &self1;
+    const alpha_names = try allocator.alloc([]const u8, 1);
+    alpha_names[0] = "self";
+
+    var self2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_type2 = Type.primitive(.i32, span);
+    const beta_params = try allocator.alloc(*Type, 1);
+    beta_params[0] = &self2;
+    const beta_names = try allocator.alloc([]const u8, 1);
+    beta_names[0] = "self";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 2);
+    methods[0] = .{
+        .name = "alpha",
+        .generic_params = null,
+        .parameter_types = alpha_params,
+        .parameter_names = alpha_names,
+        .return_type = &i32_type1,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+    methods[1] = .{
+        .name = "beta",
+        .generic_params = null,
+        .parameter_types = beta_params,
+        .parameter_names = beta_names,
+        .return_type = &i32_type2,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "TwoMethods", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    // Register target type
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Half", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var self_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_impl = Type.primitive(.i32, span);
+    var alpha_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl, .span = span },
+    };
+    var target_type = Type.named("Half", span);
+    var half_impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "alpha",
+            .generic_params = null,
+            .parameters = &alpha_impl_params,
+            .return_type = &i32_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+
+    var half_impl_block = Declaration.ImplBlock{
+        .trait_name = "TwoMethods",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &half_impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&half_impl_block);
+    try std.testing.expect(checker.hasErrors());
+    var found_missing = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "missing implementation") != null) {
+            found_missing = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_missing);
+}
+
+test "trait: default method inherited when impl provides only required" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var item_type_ast = Type.named("Item", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Item", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    // Trait Printable: format (required), print (default)
+    var self1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string1 = Type.primitive(.string, span);
+    const fmt_params = try allocator.alloc(*Type, 1);
+    fmt_params[0] = &self1;
+    const fmt_names = try allocator.alloc([]const u8, 1);
+    fmt_names[0] = "self";
+
+    var self2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string2 = Type.primitive(.string, span);
+    const print_params = try allocator.alloc(*Type, 1);
+    print_params[0] = &self2;
+    const print_names = try allocator.alloc([]const u8, 1);
+    print_names[0] = "self";
+
+    var empty_body = [_]Statement{};
+
+    const trait_methods = try allocator.alloc(Symbol.TraitMethodInfo, 2);
+    trait_methods[0] = .{
+        .name = "format",
+        .generic_params = null,
+        .parameter_types = fmt_params,
+        .parameter_names = fmt_names,
+        .return_type = &string1,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+    trait_methods[1] = .{
+        .name = "print",
+        .generic_params = null,
+        .parameter_types = print_params,
+        .parameter_names = print_names,
+        .return_type = &string2,
+        .is_effect = false,
+        .default_body = &empty_body,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Printable", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = trait_methods,
+    }, true, span));
+
+    var self_impl = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var string_impl = Type.primitive(.string, span);
+    const impl_params = try allocator.alloc(*Type, 1);
+    impl_params[0] = &self_impl;
+    const impl_names = try allocator.alloc([]const u8, 1);
+    impl_names[0] = "self";
+
+    const format_sym = try table.define(Symbol.function(unassigned_symbol_id, "format", .{
+        .generic_params = null,
+        .parameter_types = impl_params,
+        .parameter_names = impl_names,
+        .return_type = &string_impl,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = null,
+    }, true, span));
+
+    const method_ids = try allocator.alloc(symbols.SymbolId, 1);
+    method_ids[0] = format_sym;
+    try table.registerImpl(.{
+        .trait_name = "Printable",
+        .target_type = &item_type_ast,
+        .methods = method_ids,
+        .scope_id = 0,
+        .span = span,
+        .where_clause = null,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var item_type_ast2 = Type.named("Item", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "item", &item_type_ast2, false, false, span));
+
+    var item_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "item", .generic_args = null } },
+        .span = span,
+    };
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &item_ident,
+            .method = "print",
+            .generic_args = null,
+            .arguments = &[_]*Expression{},
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .string), result.kind.primitive);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait: bound references non-existent trait produces error" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    const i32_type = ResolvedType.primitive(.i32, span);
+    try checker.checkTraitBound(i32_type, "Nonexistent", span);
+
+    try std.testing.expect(checker.hasErrors());
+    var found_nonexistent = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "Nonexistent") != null) {
+            found_nonexistent = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_nonexistent);
+}
+
+test "trait: method with extra parameter (self + arg) resolves correctly" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var token_type_ast = Type.named("Token", span);
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Token", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{
+            .fields = &[_]Symbol.RecordFieldInfo{},
+        } },
+    }, true, span));
+
+    var self_type1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var self_type2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool_type = Type.primitive(.bool, span);
+
+    const param_types = try allocator.alloc(*Type, 2);
+    param_types[0] = &self_type1;
+    param_types[1] = &self_type2;
+    const param_names = try allocator.alloc([]const u8, 2);
+    param_names[0] = "self";
+    param_names[1] = "other";
+
+    const eq_sym = try table.define(Symbol.function(unassigned_symbol_id, "eq", .{
+        .generic_params = null,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &bool_type,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = null,
+    }, true, span));
+
+    const method_ids = try allocator.alloc(symbols.SymbolId, 1);
+    method_ids[0] = eq_sym;
+    try table.registerImpl(.{
+        .trait_name = "Eq",
+        .target_type = &token_type_ast,
+        .methods = method_ids,
+        .scope_id = 0,
+        .span = span,
+        .where_clause = null,
+    });
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var token_ast1 = Type.named("Token", span);
+    var token_ast2 = Type.named("Token", span);
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "x", &token_ast1, false, false, span));
+    _ = try table.define(Symbol.variable(unassigned_symbol_id, "y", &token_ast2, false, false, span));
+
+    var x_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "x", .generic_args = null } },
+        .span = span,
+    };
+    var y_ident = Expression{
+        .kind = .{ .identifier = .{ .name = "y", .generic_args = null } },
+        .span = span,
+    };
+    var args_arr = [_]*Expression{&y_ident};
+    var mc = Expression{
+        .kind = .{ .method_call = .{
+            .object = &x_ident,
+            .method = "eq",
+            .generic_args = null,
+            .arguments = &args_arr,
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&mc);
+
+    try std.testing.expect(result.kind == .primitive);
+    try std.testing.expectEqual(@as(Type.PrimitiveType, .bool), result.kind.primitive);
+    try std.testing.expect(!checker.hasErrors());
+}
+
+test "trait: impl with wrong effect annotation on one of multiple methods" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var self1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_1 = Type.primitive(.i32, span);
+    const pure_params = try allocator.alloc(*Type, 1);
+    pure_params[0] = &self1;
+    const pure_names = try allocator.alloc([]const u8, 1);
+    pure_names[0] = "self";
+
+    var self2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_2 = Type.primitive(.i32, span);
+    const eff_params = try allocator.alloc(*Type, 1);
+    eff_params[0] = &self2;
+    const eff_names = try allocator.alloc([]const u8, 1);
+    eff_names[0] = "self";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 2);
+    methods[0] = .{
+        .name = "pure_op",
+        .generic_params = null,
+        .parameter_types = pure_params,
+        .parameter_names = pure_names,
+        .return_type = &i32_1,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+    methods[1] = .{
+        .name = "effect_op",
+        .generic_params = null,
+        .parameter_types = eff_params,
+        .parameter_names = eff_names,
+        .return_type = &i32_2,
+        .is_effect = true,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Mixed", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    // Register target type
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Widget", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var self_impl1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_impl1 = Type.primitive(.i32, span);
+    var pure_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl1, .span = span },
+    };
+
+    var self_impl2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_impl2 = Type.primitive(.i32, span);
+    var eff_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl2, .span = span },
+    };
+
+    var target_type = Type.named("Widget", span);
+    var mixed_impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "pure_op",
+            .generic_params = null,
+            .parameters = &pure_impl_params,
+            .return_type = &i32_impl1,
+            .is_effect = true, // WRONG
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+        .{
+            .name = "effect_op",
+            .generic_params = null,
+            .parameters = &eff_impl_params,
+            .return_type = &i32_impl2,
+            .is_effect = false, // WRONG
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+
+    var mixed_impl_block = Declaration.ImplBlock{
+        .trait_name = "Mixed",
+        .generic_params = null,
+        .target_type = &target_type,
+        .methods = &mixed_impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&mixed_impl_block);
+    try std.testing.expect(checker.hasErrors());
+
+    var found_effect_error = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "effect") != null) {
+            found_effect_error = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_effect_error);
+}
+
+test "trait: generic call with multiple trait bounds on same param" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var bool_ret = Type.primitive(.bool, span);
+    var t_type = Type{ .kind = .{ .type_variable = .{ .name = "T", .constraints = null } }, .span = span };
+
+    const param_types = try allocator.alloc(*Type, 1);
+    param_types[0] = &t_type;
+    const param_names = try allocator.alloc([]const u8, 1);
+    param_names[0] = "x";
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    var multi_constraints = [_][]const u8{ "Eq", "Ord", "Show" };
+    generic_params[0] = .{ .name = "T", .constraints = &multi_constraints };
+
+    _ = try table.define(Symbol.function(unassigned_symbol_id, "show_ordered", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &bool_ret,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = null,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var callee_expr = Expression{
+        .kind = .{ .identifier = .{ .name = "show_ordered", .generic_args = null } },
+        .span = span,
+    };
+    var arg1 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 5, .suffix = null } },
+        .span = span,
+    };
+    var generic_arg = Type.primitive(.i32, span);
+    var generic_args_arr = [_]*Type{&generic_arg};
+    var args_arr = [_]*Expression{&arg1};
+
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &callee_expr,
+            .generic_args = &generic_args_arr,
+            .arguments = &args_arr,
+        } },
+        .span = span,
+    };
+
+    const result = try checker.checkExpression(&call_expr);
+
+    try std.testing.expect(!checker.hasErrors());
+    try std.testing.expect(result.isBool());
+}
+
+test "trait: generic call fails when one of multiple bounds unsatisfied" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Serialize", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = &[_]Symbol.TraitMethodInfo{},
+    }, true, span));
+
+    var bool_ret = Type.primitive(.bool, span);
+    var t_type = Type{ .kind = .{ .type_variable = .{ .name = "T", .constraints = null } }, .span = span };
+
+    const param_types = try allocator.alloc(*Type, 1);
+    param_types[0] = &t_type;
+    const param_names = try allocator.alloc([]const u8, 1);
+    param_names[0] = "x";
+
+    const generic_params = try allocator.alloc(Symbol.GenericParamInfo, 1);
+    var constraints = [_][]const u8{ "Eq", "Serialize" };
+    generic_params[0] = .{ .name = "T", .constraints = &constraints };
+
+    _ = try table.define(Symbol.function(unassigned_symbol_id, "serialize_eq", .{
+        .generic_params = generic_params,
+        .parameter_types = param_types,
+        .parameter_names = param_names,
+        .return_type = &bool_ret,
+        .is_effect = false,
+        .is_memoized = false,
+        .has_body = true,
+        .where_clause = null,
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var callee_expr = Expression{
+        .kind = .{ .identifier = .{ .name = "serialize_eq", .generic_args = null } },
+        .span = span,
+    };
+    var arg1 = Expression{
+        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
+        .span = span,
+    };
+    var generic_arg = Type.primitive(.i32, span);
+    var generic_args_arr = [_]*Type{&generic_arg};
+    var args_arr = [_]*Expression{&arg1};
+
+    var call_expr = Expression{
+        .kind = .{ .function_call = .{
+            .callee = &callee_expr,
+            .generic_args = &generic_args_arr,
+            .arguments = &args_arr,
+        } },
+        .span = span,
+    };
+
+    _ = try checker.checkExpression(&call_expr);
+
+    try std.testing.expect(checker.hasErrors());
+    var found_serialize = false;
+    for (checker.diagnostics.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "Serialize") != null) {
+            found_serialize = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_serialize);
+}
+
+test "trait: impl provides extra method not in trait (no error)" {
+    const allocator = std.testing.allocator;
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var self1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool1 = Type.primitive(.bool, span);
+    const req_params = try allocator.alloc(*Type, 1);
+    req_params[0] = &self1;
+    const req_names = try allocator.alloc([]const u8, 1);
+    req_names[0] = "self";
+
+    const methods = try allocator.alloc(Symbol.TraitMethodInfo, 1);
+    methods[0] = .{
+        .name = "required",
+        .generic_params = null,
+        .parameter_types = req_params,
+        .parameter_names = req_names,
+        .return_type = &bool1,
+        .is_effect = false,
+        .default_body = null,
+        .span = span,
+    };
+
+    _ = try table.define(Symbol.traitDef(unassigned_symbol_id, "Simple", .{
+        .generic_params = null,
+        .super_traits = null,
+        .methods = methods,
+    }, true, span));
+
+    // Register target type
+    _ = try table.define(Symbol.typeDef(unassigned_symbol_id, "Thing", .{
+        .generic_params = null,
+        .definition = .{ .product_type = .{ .fields = &[_]Symbol.RecordFieldInfo{} } },
+    }, true, span));
+
+    var checker = TypeChecker.init(allocator, &table);
+    defer checker.deinit();
+
+    var self_impl1 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var bool_impl = Type.primitive(.bool, span);
+    var req_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl1, .span = span },
+    };
+
+    var self_impl2 = Type{ .kind = .{ .self_type = {} }, .span = span };
+    var i32_impl = Type.primitive(.i32, span);
+    var extra_impl_params = [_]Declaration.Parameter{
+        .{ .name = "self", .param_type = &self_impl2, .span = span },
+    };
+
+    var target = Type.named("Thing", span);
+    var simple_impl_methods = [_]Declaration.FunctionDecl{
+        .{
+            .name = "required",
+            .generic_params = null,
+            .parameters = &req_impl_params,
+            .return_type = &bool_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+        .{
+            .name = "extra_helper",
+            .generic_params = null,
+            .parameters = &extra_impl_params,
+            .return_type = &i32_impl,
+            .is_effect = false,
+            .is_memoized = false,
+            .is_public = false,
+            .body = null,
+            .where_clause = null,
+        },
+    };
+
+    var simple_impl_block = Declaration.ImplBlock{
+        .trait_name = "Simple",
+        .generic_params = null,
+        .target_type = &target,
+        .methods = &simple_impl_methods,
+        .where_clause = null,
+    };
+
+    try checker.checkImplBlock(&simple_impl_block);
+    try std.testing.expect(!checker.hasErrors());
+}
