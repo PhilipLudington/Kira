@@ -1013,7 +1013,13 @@ pub const Lowerer = struct {
             } });
             // Mark string-returning builtins
             if (std.mem.eql(u8, builtin_name, "int_to_string") or
-                std.mem.eql(u8, builtin_name, "float_to_string"))
+                std.mem.eql(u8, builtin_name, "float_to_string") or
+                std.mem.eql(u8, builtin_name, "string_trim") or
+                std.mem.eql(u8, builtin_name, "string_substring") or
+                std.mem.eql(u8, builtin_name, "string_to_upper") or
+                std.mem.eql(u8, builtin_name, "string_to_lower") or
+                std.mem.eql(u8, builtin_name, "string_replace") or
+                std.mem.eql(u8, builtin_name, "read_line"))
             {
                 try self.markString(ref);
             }
@@ -1049,7 +1055,9 @@ pub const Lowerer = struct {
         if (std.mem.eql(u8, module_name, "io")) {
             if (std.mem.eql(u8, method, "println") or
                 std.mem.eql(u8, method, "print") or
-                std.mem.eql(u8, method, "eprintln"))
+                std.mem.eql(u8, method, "eprintln") or
+                std.mem.eql(u8, method, "eprint") or
+                std.mem.eql(u8, method, "read_line"))
             {
                 return method;
             }
@@ -1058,11 +1066,27 @@ pub const Lowerer = struct {
         // std.int builtins
         if (std.mem.eql(u8, module_name, "int")) {
             if (std.mem.eql(u8, method, "to_string")) return "int_to_string";
+            if (std.mem.eql(u8, method, "abs")) return "int_abs";
+            if (std.mem.eql(u8, method, "min")) return "int_min";
+            if (std.mem.eql(u8, method, "max")) return "int_max";
+            if (std.mem.eql(u8, method, "sign")) return "int_sign";
+            if (std.mem.eql(u8, method, "parse")) return "int_parse";
         }
 
         // std.float builtins
         if (std.mem.eql(u8, module_name, "float")) {
             if (std.mem.eql(u8, method, "to_string")) return "float_to_string";
+            if (std.mem.eql(u8, method, "abs")) return "float_abs";
+            if (std.mem.eql(u8, method, "floor")) return "float_floor";
+            if (std.mem.eql(u8, method, "ceil")) return "float_ceil";
+            if (std.mem.eql(u8, method, "round")) return "float_round";
+            if (std.mem.eql(u8, method, "sqrt")) return "float_sqrt";
+            if (std.mem.eql(u8, method, "min")) return "float_min";
+            if (std.mem.eql(u8, method, "max")) return "float_max";
+            if (std.mem.eql(u8, method, "is_nan")) return "float_is_nan";
+            if (std.mem.eql(u8, method, "is_infinite")) return "float_is_infinite";
+            if (std.mem.eql(u8, method, "from_int")) return "float_from_int";
+            if (std.mem.eql(u8, method, "parse")) return "float_parse";
         }
 
         // std.string builtins
@@ -1071,11 +1095,29 @@ pub const Lowerer = struct {
             if (std.mem.eql(u8, method, "char_at")) return "string_char_at";
             if (std.mem.eql(u8, method, "split")) return "string_split";
             if (std.mem.eql(u8, method, "trim")) return "string_trim";
+            if (std.mem.eql(u8, method, "contains")) return "string_contains";
+            if (std.mem.eql(u8, method, "starts_with")) return "string_starts_with";
+            if (std.mem.eql(u8, method, "ends_with")) return "string_ends_with";
+            if (std.mem.eql(u8, method, "substring")) return "string_substring";
+            if (std.mem.eql(u8, method, "index_of")) return "string_index_of";
+            if (std.mem.eql(u8, method, "equals")) return "string_equals";
+            if (std.mem.eql(u8, method, "to_upper")) return "string_to_upper";
+            if (std.mem.eql(u8, method, "to_lower")) return "string_to_lower";
+            if (std.mem.eql(u8, method, "replace")) return "string_replace";
+            if (std.mem.eql(u8, method, "parse_int")) return "string_parse_int";
+            if (std.mem.eql(u8, method, "parse_float")) return "string_parse_float";
         }
 
         // std.char builtins
         if (std.mem.eql(u8, module_name, "char")) {
             if (std.mem.eql(u8, method, "to_i")) return "char_to_int";
+            if (std.mem.eql(u8, method, "to_i32")) return "char_to_int";
+            if (std.mem.eql(u8, method, "from_i32")) return "char_from_int";
+        }
+
+        // std.math builtins
+        if (std.mem.eql(u8, module_name, "math")) {
+            if (std.mem.eql(u8, method, "trunc_to_i64")) return "math_trunc_to_i64";
         }
 
         return null;

@@ -90,20 +90,28 @@ fn makeBuiltin(
 // ============================================================================
 
 fn builtinPrint(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
-    const stdout = std.fs.File.stdout();
     for (args) |arg| {
         const str = arg.toString(ctx.allocator) catch return error.OutOfMemory;
         // Remove quotes from strings for printing
         const output = if (arg == .string) arg.string else str;
-        stdout.writeAll(output) catch return error.InvalidOperation;
+        if (ctx.stdout_capture) |capture| {
+            capture.appendSlice(ctx.stdout_capture_alloc.?, output) catch return error.OutOfMemory;
+        } else {
+            const stdout = std.fs.File.stdout();
+            stdout.writeAll(output) catch return error.InvalidOperation;
+        }
     }
     return Value{ .void = {} };
 }
 
 fn builtinPrintln(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     _ = try builtinPrint(ctx, args);
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll("\n") catch return error.InvalidOperation;
+    if (ctx.stdout_capture) |capture| {
+        capture.appendSlice(ctx.stdout_capture_alloc.?, "\n") catch return error.OutOfMemory;
+    } else {
+        const stdout = std.fs.File.stdout();
+        stdout.writeAll("\n") catch return error.InvalidOperation;
+    }
     return Value{ .void = {} };
 }
 

@@ -151,6 +151,11 @@ pub const Value = union(enum) {
         call_fn: ?*const fn (interp: *anyopaque, func: FunctionValue, args: []const Value) InterpreterError!Value,
         /// Environment arguments (command-line args passed to the program)
         env_args: ?[]const Value,
+        /// Optional buffer for capturing stdout output (used in E2E tests).
+        /// When set, print/println write here instead of real stdout.
+        stdout_capture: ?*std.ArrayListUnmanaged(u8) = null,
+        /// Allocator for stdout_capture append operations.
+        stdout_capture_alloc: ?Allocator = null,
 
         /// Call a function value (works for both builtins and AST-based functions)
         pub fn callFunction(self: BuiltinContext, func: FunctionValue, args: []const Value) InterpreterError!Value {

@@ -46,6 +46,8 @@ pub const CCodeGen = struct {
     indent_level: u32,
     /// Reference to the module being generated (set during generateModule).
     current_module: ?*const Module,
+    /// SSA values known to hold string values (for string comparison via strcmp).
+    string_values: std.AutoArrayHashMapUnmanaged(ValueRef, void),
 
     pub fn init(allocator: Allocator) CCodeGen {
         return .{
@@ -53,11 +55,13 @@ pub const CCodeGen = struct {
             .output = .{},
             .indent_level = 0,
             .current_module = null,
+            .string_values = .{},
         };
     }
 
     pub fn deinit(self: *CCodeGen) void {
         self.output.deinit(self.allocator);
+        self.string_values.deinit(self.allocator);
     }
 
     /// Get the generated C source code.
@@ -88,6 +92,8 @@ pub const CCodeGen = struct {
             try self.write("int main(void) {\n");
             self.indent_level += 1;
             try self.writeIndent();
+            try self.write("GC_INIT();\n");
+            try self.writeIndent();
             if (has_return) {
                 try self.writeFmt("kira_int result = kira_main();\n", .{});
                 try self.writeIndent();
@@ -115,7 +121,8 @@ pub const CCodeGen = struct {
         try self.write("#include <stdio.h>\n");
         try self.write("#include <stdlib.h>\n");
         try self.write("#include <string.h>\n");
-        try self.write("#include <math.h>\n\n");
+        try self.write("#include <math.h>\n");
+        try self.write("#include <gc.h>\n\n");
         try self.write("/* Kira runtime types */\n");
         try self.write("typedef int64_t kira_int;\n");
         try self.write("typedef double kira_float;\n");
@@ -148,9 +155,83 @@ pub const CCodeGen = struct {
         try self.write("static void kira_println_int(kira_int n) { KIRA_ASSERT_EFFECT(\"println_int\"); printf(\"%lld\\n\", (long long)n); }\n");
         try self.write("static void kira_print_int(kira_int n) { KIRA_ASSERT_EFFECT(\"print_int\"); printf(\"%lld\", (long long)n); }\n");
         try self.write("static kira_string kira_int_to_string(kira_int n) {\n");
-        try self.write("    char* s = (char*)malloc(32);\n");
+        try self.write("    char* s = (char*)GC_MALLOC(32);\n");
         try self.write("    snprintf(s, 32, \"%lld\", (long long)n);\n");
         try self.write("    return s;\n");
+        try self.write("}\n\n");
+
+        // String helper functions
+        try self.write("#include <ctype.h>\n");
+        try self.write("static kira_string kira_string_trim(kira_string s) {\n");
+        try self.write("    while (*s && isspace((unsigned char)*s)) s++;\n");
+        try self.write("    size_t len = strlen(s);\n");
+        try self.write("    while (len > 0 && isspace((unsigned char)s[len-1])) len--;\n");
+        try self.write("    char* r = (char*)GC_MALLOC(len + 1);\n");
+        try self.write("    memcpy(r, s, len); r[len] = '\\0';\n");
+        try self.write("    return r;\n");
+        try self.write("}\n");
+
+        try self.write("static kira_int kira_string_split(kira_string str, kira_string delim) {\n");
+        try self.write("    size_t dlen = strlen(delim);\n");
+        try self.write("    size_t count = 1;\n");
+        try self.write("    const char* p = str;\n");
+        try self.write("    if (dlen > 0) { while ((p = strstr(p, delim)) != NULL) { count++; p += dlen; } }\n");
+        try self.write("    kira_int* arr = (kira_int*)GC_MALLOC((count + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = (kira_int)count;\n");
+        try self.write("    p = str;\n");
+        try self.write("    for (size_t i = 0; i < count; i++) {\n");
+        try self.write("        const char* next = (dlen > 0) ? strstr(p, delim) : NULL;\n");
+        try self.write("        size_t slen = next ? (size_t)(next - p) : strlen(p);\n");
+        try self.write("        char* seg = (char*)GC_MALLOC(slen + 1);\n");
+        try self.write("        memcpy(seg, p, slen); seg[slen] = '\\0';\n");
+        try self.write("        arr[i + 1] = (kira_int)(intptr_t)seg;\n");
+        try self.write("        p = next ? next + dlen : p + slen;\n");
+        try self.write("    }\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+
+        try self.write("static kira_string kira_string_substring(kira_string s, kira_int start, kira_int end) {\n");
+        try self.write("    size_t len = strlen(s);\n");
+        try self.write("    if (start < 0) start = 0;\n");
+        try self.write("    if ((size_t)end > len) end = (kira_int)len;\n");
+        try self.write("    if (start >= end) { char* r = (char*)GC_MALLOC(1); r[0] = '\\0'; return r; }\n");
+        try self.write("    size_t slen = (size_t)(end - start);\n");
+        try self.write("    char* r = (char*)GC_MALLOC(slen + 1);\n");
+        try self.write("    memcpy(r, s + start, slen); r[slen] = '\\0';\n");
+        try self.write("    return r;\n");
+        try self.write("}\n");
+
+        try self.write("static kira_string kira_string_to_upper(kira_string s) {\n");
+        try self.write("    size_t len = strlen(s);\n");
+        try self.write("    char* r = (char*)GC_MALLOC(len + 1);\n");
+        try self.write("    for (size_t i = 0; i < len; i++) r[i] = (char)toupper((unsigned char)s[i]);\n");
+        try self.write("    r[len] = '\\0';\n");
+        try self.write("    return r;\n");
+        try self.write("}\n");
+
+        try self.write("static kira_string kira_string_to_lower(kira_string s) {\n");
+        try self.write("    size_t len = strlen(s);\n");
+        try self.write("    char* r = (char*)GC_MALLOC(len + 1);\n");
+        try self.write("    for (size_t i = 0; i < len; i++) r[i] = (char)tolower((unsigned char)s[i]);\n");
+        try self.write("    r[len] = '\\0';\n");
+        try self.write("    return r;\n");
+        try self.write("}\n");
+
+        try self.write("static kira_string kira_string_replace(kira_string s, kira_string old, kira_string new_s) {\n");
+        try self.write("    size_t olen = strlen(old), nlen = strlen(new_s), slen = strlen(s);\n");
+        try self.write("    if (olen == 0) { char* r = (char*)GC_MALLOC(slen+1); memcpy(r,s,slen+1); return r; }\n");
+        try self.write("    size_t count = 0;\n");
+        try self.write("    const char* p = s;\n");
+        try self.write("    while ((p = strstr(p, old)) != NULL) { count++; p += olen; }\n");
+        try self.write("    size_t rlen = slen + count * (nlen - olen);\n");
+        try self.write("    char* r = (char*)GC_MALLOC(rlen + 1);\n");
+        try self.write("    char* w = r; p = s;\n");
+        try self.write("    while (*p) {\n");
+        try self.write("        if (strncmp(p, old, olen) == 0) { memcpy(w, new_s, nlen); w += nlen; p += olen; }\n");
+        try self.write("        else { *w++ = *p++; }\n");
+        try self.write("    }\n");
+        try self.write("    *w = '\\0';\n");
+        try self.write("    return r;\n");
         try self.write("}\n\n");
     }
 
@@ -268,6 +349,37 @@ pub const CCodeGen = struct {
     // ----------------------------------------------------------------
 
     fn emitFunction(self: *CCodeGen, func: *const Function) CodeGenError!void {
+        // Clear per-function string tracking
+        self.string_values.clearRetainingCapacity();
+        // Pre-scan: mark string-typed params
+        for (func.params) |p| {
+            if (std.mem.eql(u8, p.type_name, "string")) {
+                self.string_values.put(self.allocator, p.value_ref, {}) catch {};
+            }
+        }
+        // Pre-scan: mark string-producing instructions
+        for (func.instructions.items, 0..) |inst, idx| {
+            const ref: ValueRef = @intCast(idx);
+            switch (inst.op) {
+                .const_string => self.string_values.put(self.allocator, ref, {}) catch {},
+                .str_concat => self.string_values.put(self.allocator, ref, {}) catch {},
+                .call_builtin => |cb| {
+                    if (std.mem.eql(u8, cb.name, "int_to_string") or
+                        std.mem.eql(u8, cb.name, "float_to_string") or
+                        std.mem.eql(u8, cb.name, "string_trim") or
+                        std.mem.eql(u8, cb.name, "string_substring") or
+                        std.mem.eql(u8, cb.name, "string_to_upper") or
+                        std.mem.eql(u8, cb.name, "string_to_lower") or
+                        std.mem.eql(u8, cb.name, "string_replace") or
+                        std.mem.eql(u8, cb.name, "read_line"))
+                    {
+                        self.string_values.put(self.allocator, ref, {}) catch {};
+                    }
+                },
+                else => {},
+            }
+        }
+
         // Function signature with effect annotation
         if (func.is_effect) {
             try self.write("/* effect */ ");
@@ -409,22 +521,35 @@ pub const CCodeGen = struct {
             .int_neg => |v| try self.writeFmt("v{d} = -v{d};\n", .{ ref, v }),
             .float_neg => |v| try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = -_f; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ v, ref }),
             .cmp => |c| {
-                const op_str: []const u8 = switch (c.op) {
-                    .eq => "==",
-                    .ne => "!=",
-                    .lt => "<",
-                    .le => "<=",
-                    .gt => ">",
-                    .ge => ">=",
-                };
-                try self.writeFmt("v{d} = (v{d} {s} v{d});\n", .{ ref, c.left, op_str, c.right });
+                // String comparison: use strcmp instead of pointer equality
+                if (self.string_values.contains(c.left) or self.string_values.contains(c.right)) {
+                    const cmp_op: []const u8 = switch (c.op) {
+                        .eq => "== 0",
+                        .ne => "!= 0",
+                        .lt => "< 0",
+                        .le => "<= 0",
+                        .gt => "> 0",
+                        .ge => ">= 0",
+                    };
+                    try self.writeFmt("v{d} = (strcmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) {s});\n", .{ ref, c.left, c.right, cmp_op });
+                } else {
+                    const op_str: []const u8 = switch (c.op) {
+                        .eq => "==",
+                        .ne => "!=",
+                        .lt => "<",
+                        .le => "<=",
+                        .gt => ">",
+                        .ge => ">=",
+                    };
+                    try self.writeFmt("v{d} = (v{d} {s} v{d});\n", .{ ref, c.left, op_str, c.right });
+                }
             },
             .log_not => |v| try self.writeFmt("v{d} = !v{d};\n", .{ ref, v }),
             .int_to_float => |v| try self.writeFmt("{{ kira_float _f = (kira_float)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ v, ref }),
             .float_to_int => |v| try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)_f; }}\n", .{ v, ref }),
             .to_string => |v| {
                 // Convert integer to string via snprintf
-                try self.writeFmt("{{ char* _s = (char*)malloc(32); snprintf(_s, 32, \"%lld\", (long long)v{d}); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ v, ref });
+                try self.writeFmt("{{ char* _s = (char*)GC_MALLOC(32); snprintf(_s, 32, \"%lld\", (long long)v{d}); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ v, ref });
             },
             .alloc_var => |a| {
                 if (a.init_value) |iv| {
@@ -498,9 +623,102 @@ pub const CCodeGen = struct {
                 } else if (std.mem.eql(u8, c.name, "int_to_string")) {
                     try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_int_to_string(v{d});\n", .{ ref, c.args[0] });
                 } else if (std.mem.eql(u8, c.name, "float_to_string")) {
-                    try self.writeFmt("{{ char* _s = (char*)malloc(32); kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); snprintf(_s, 32, \"%g\", _f); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ c.args[0], ref });
+                    try self.writeFmt("{{ char* _s = (char*)GC_MALLOC(32); kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); snprintf(_s, 32, \"%g\", _f); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ c.args[0], ref });
                 } else if (std.mem.eql(u8, c.name, "string_length")) {
                     try self.writeFmt("v{d} = (kira_int)strlen((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+
+                    // --- Tier 1: already lowered, now codegen'd ---
+                } else if (std.mem.eql(u8, c.name, "string_char_at")) {
+                    try self.writeFmt("v{d} = (kira_int)((const char*)(intptr_t)v{d})[v{d}];\n", .{ ref, c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "string_trim")) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_trim((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "string_split")) {
+                    try self.writeFmt("v{d} = kira_string_split((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "char_to_int")) {
+                    try self.writeFmt("v{d} = v{d};\n", .{ ref, c.args[0] });
+
+                    // --- Tier 2: string operations ---
+                } else if (std.mem.eql(u8, c.name, "string_contains")) {
+                    try self.writeFmt("v{d} = (strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) != NULL) ? 1 : 0;\n", .{ ref, c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "string_starts_with")) {
+                    try self.writeFmt("v{d} = (strncmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}, strlen((const char*)(intptr_t)v{d})) == 0) ? 1 : 0;\n", .{ ref, c.args[0], c.args[1], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "string_ends_with")) {
+                    try self.writeFmt("{{ const char* _s = (const char*)(intptr_t)v{d}; const char* _sfx = (const char*)(intptr_t)v{d}; size_t _sl = strlen(_s), _xl = strlen(_sfx); v{d} = (_sl >= _xl && strcmp(_s + _sl - _xl, _sfx) == 0) ? 1 : 0; }}\n", .{ c.args[0], c.args[1], ref });
+                } else if (std.mem.eql(u8, c.name, "string_substring")) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_substring((const char*)(intptr_t)v{d}, v{d}, v{d});\n", .{ ref, c.args[0], c.args[1], c.args[2] });
+                } else if (std.mem.eql(u8, c.name, "string_index_of")) {
+                    try self.writeFmt("{{ const char* _p = strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}); v{d} = _p ? (kira_int)(_p - (const char*)(intptr_t)v{d}) : -1; }}\n", .{ c.args[0], c.args[1], ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "string_equals")) {
+                    try self.writeFmt("v{d} = (strcmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) == 0) ? 1 : 0;\n", .{ ref, c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "string_to_upper")) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_to_upper((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "string_to_lower")) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_to_lower((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "string_replace")) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_replace((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1], c.args[2] });
+                } else if (std.mem.eql(u8, c.name, "string_parse_int")) {
+                    // Returns Option[i64] encoded as variant: tag=0 (None) or tag=1,payload (Some)
+                    try self.writeFmt("{{ char* _end; long long _v = strtoll((const char*)(intptr_t)v{d}, &_end, 10); ", .{c.args[0]});
+                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)GC_MALLOC(2 * sizeof(kira_int)); _opt[0] = 1; _opt[1] = (kira_int)_v; v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
+                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)GC_MALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
+                } else if (std.mem.eql(u8, c.name, "string_parse_float")) {
+                    try self.writeFmt("{{ char* _end; double _v = strtod((const char*)(intptr_t)v{d}, &_end); ", .{c.args[0]});
+                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)GC_MALLOC(2 * sizeof(kira_int)); _opt[0] = 1; memcpy(&_opt[1], &_v, sizeof(double)); v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
+                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)GC_MALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
+
+                    // --- Tier 3: numeric builtins ---
+                } else if (std.mem.eql(u8, c.name, "int_abs")) {
+                    try self.writeFmt("v{d} = (v{d} < 0) ? -v{d} : v{d};\n", .{ ref, c.args[0], c.args[0], c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "int_min")) {
+                    try self.writeFmt("v{d} = (v{d} < v{d}) ? v{d} : v{d};\n", .{ ref, c.args[0], c.args[1], c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "int_max")) {
+                    try self.writeFmt("v{d} = (v{d} > v{d}) ? v{d} : v{d};\n", .{ ref, c.args[0], c.args[1], c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "int_sign")) {
+                    try self.writeFmt("v{d} = (v{d} > 0) - (v{d} < 0);\n", .{ ref, c.args[0], c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "int_parse")) {
+                    // Same as string_parse_int
+                    try self.writeFmt("{{ char* _end; long long _v = strtoll((const char*)(intptr_t)v{d}, &_end, 10); ", .{c.args[0]});
+                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)GC_MALLOC(2 * sizeof(kira_int)); _opt[0] = 1; _opt[1] = (kira_int)_v; v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
+                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)GC_MALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
+                } else if (std.mem.eql(u8, c.name, "float_abs")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = fabs(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_floor")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = floor(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_ceil")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = ceil(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_round")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = round(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_sqrt")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = sqrt(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_min")) {
+                    try self.writeFmt("{{ kira_float _a, _b; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _a = fmin(_a, _b); memcpy(&v{d}, &_a, sizeof(kira_float)); }}\n", .{ c.args[0], c.args[1], ref });
+                } else if (std.mem.eql(u8, c.name, "float_max")) {
+                    try self.writeFmt("{{ kira_float _a, _b; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _a = fmax(_a, _b); memcpy(&v{d}, &_a, sizeof(kira_float)); }}\n", .{ c.args[0], c.args[1], ref });
+                } else if (std.mem.eql(u8, c.name, "float_is_nan")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = isnan(_f) ? 1 : 0; }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_is_infinite")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = isinf(_f) ? 1 : 0; }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_from_int")) {
+                    try self.writeFmt("{{ kira_float _f = (double)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "float_parse")) {
+                    try self.writeFmt("{{ char* _end; double _v = strtod((const char*)(intptr_t)v{d}, &_end); ", .{c.args[0]});
+                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)GC_MALLOC(2 * sizeof(kira_int)); _opt[0] = 1; memcpy(&_opt[1], &_v, sizeof(double)); v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
+                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)GC_MALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
+                } else if (std.mem.eql(u8, c.name, "char_from_int")) {
+                    try self.writeFmt("v{d} = v{d};\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "math_trunc_to_i64")) {
+                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)trunc(_f); }}\n", .{ c.args[0], ref });
+
+                    // --- Tier 4: IO builtins ---
+                } else if (std.mem.eql(u8, c.name, "eprint")) {
+                    if (c.args.len > 0) {
+                        try self.writeFmt("fprintf(stderr, \"%s\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
+                    } else {
+                        try self.writeFmt("v{d} = 0;\n", .{ref});
+                    }
+                } else if (std.mem.eql(u8, c.name, "read_line")) {
+                    try self.writeFmt("{{ char* _buf = (char*)GC_MALLOC(4096); if (fgets(_buf, 4096, stdin)) {{ size_t _l = strlen(_buf); if (_l > 0 && _buf[_l-1] == '\\n') _buf[_l-1] = '\\0'; v{d} = (kira_int)(intptr_t)_buf; }} else {{ v{d} = (kira_int)(intptr_t)\"\"; }} }}\n", .{ ref, ref });
+
                 } else {
                     // Unknown builtin — emit as comment for debugging
                     try self.writeFmt("v{d} = 0; /* unknown builtin: {s} */\n", .{ ref, c.name });
@@ -522,7 +740,7 @@ pub const CCodeGen = struct {
             },
             .make_closure => |c| {
                 // Layout: [function_ptr][capture0][capture1]...
-                try self.writeFmt("{{ kira_int* _c = (kira_int*)malloc({d} * sizeof(kira_int)); _c[0] = (kira_int)(intptr_t)&", .{c.captures.len + 1});
+                try self.writeFmt("{{ kira_int* _c = (kira_int*)GC_MALLOC({d} * sizeof(kira_int)); _c[0] = (kira_int)(intptr_t)&", .{c.captures.len + 1});
                 // Emit the function name reference
                 const module = self.current_module;
                 if (module) |m| {
@@ -543,7 +761,7 @@ pub const CCodeGen = struct {
             },
             .make_tuple => |elems| {
                 // Heap-allocate a kira_int array, store elements, cast to kira_int
-                try self.writeFmt("{{ kira_int* _t = (kira_int*)malloc({d} * sizeof(kira_int)); ", .{elems.len});
+                try self.writeFmt("{{ kira_int* _t = (kira_int*)GC_MALLOC({d} * sizeof(kira_int)); ", .{elems.len});
                 for (elems, 0..) |elem, i| {
                     try self.writeFmt("_t[{d}] = v{d}; ", .{ i, elem });
                 }
@@ -551,7 +769,7 @@ pub const CCodeGen = struct {
             },
             .make_array => |elems| {
                 // Layout: [length][elem0][elem1]... — length at index 0, elements at 1..N
-                try self.writeFmt("{{ kira_int* _a = (kira_int*)malloc({d} * sizeof(kira_int)); _a[0] = {d}; ", .{ elems.len + 1, elems.len });
+                try self.writeFmt("{{ kira_int* _a = (kira_int*)GC_MALLOC({d} * sizeof(kira_int)); _a[0] = {d}; ", .{ elems.len + 1, elems.len });
                 for (elems, 0..) |elem, i| {
                     try self.writeFmt("_a[{d}] = v{d}; ", .{ i + 1, elem });
                 }
@@ -559,7 +777,7 @@ pub const CCodeGen = struct {
             },
             .make_record => |r| {
                 // Heap-allocate a kira_int array for fields, cast to kira_int
-                try self.writeFmt("{{ kira_int* _r = (kira_int*)malloc({d} * sizeof(kira_int)); ", .{r.field_values.len});
+                try self.writeFmt("{{ kira_int* _r = (kira_int*)GC_MALLOC({d} * sizeof(kira_int)); ", .{r.field_values.len});
                 for (r.field_values, 0..) |fv, i| {
                     try self.writeFmt("_r[{d}] = v{d}; ", .{ i, fv });
                 }
@@ -573,7 +791,7 @@ pub const CCodeGen = struct {
                 const tag = self.lookupVariantTag(v.type_name, v.variant_name);
                 const payload_len: usize = if (v.payload) |p| p.len else 0;
                 // Layout: [tag][field0][field1]... — always heap-allocated for uniform get_tag
-                try self.writeFmt("{{ kira_int* _v = (kira_int*)malloc({d} * sizeof(kira_int)); _v[0] = {d}; ", .{ payload_len + 1, tag });
+                try self.writeFmt("{{ kira_int* _v = (kira_int*)GC_MALLOC({d} * sizeof(kira_int)); _v[0] = {d}; ", .{ payload_len + 1, tag });
                 if (v.payload) |payload| {
                     for (payload, 0..) |p, i| {
                         try self.writeFmt("_v[{d}] = v{d}; ", .{ i + 1, p });
@@ -588,6 +806,12 @@ pub const CCodeGen = struct {
                 try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[{d}]; /* .{s} */\n", .{ ref, f.object, field_idx, f.field });
             },
             .index_get => |idx| {
+                // Bounds check (enabled by -DKIRA_BOUNDS_CHECK)
+                try self.write("#ifdef KIRA_BOUNDS_CHECK\n");
+                try self.writeIndent();
+                try self.writeFmt("if (v{d} < 0 || v{d} >= ((kira_int*)(intptr_t)v{d})[0]) {{ fprintf(stderr, \"Kira bounds error: index %lld out of range [0, %lld)\\n\", (long long)v{d}, (long long)((kira_int*)(intptr_t)v{d})[0]); abort(); }}\n", .{ idx.index, idx.index, idx.object, idx.index, idx.object });
+                try self.write("#endif\n");
+                try self.writeIndent();
                 // Elements start at index 1 (index 0 is length)
                 try self.writeFmt("v{d} = ((kira_int*)(intptr_t)v{d})[v{d} + 1];\n", .{ ref, idx.object, idx.index });
             },
@@ -600,6 +824,12 @@ pub const CCodeGen = struct {
                 try self.writeFmt("((kira_int*)(intptr_t)v{d})[{d}] = v{d}; v{d} = 0; /* .{s} = */\n", .{ f.object, field_idx, f.value, ref, f.field });
             },
             .index_set => |idx| {
+                // Bounds check (enabled by -DKIRA_BOUNDS_CHECK)
+                try self.write("#ifdef KIRA_BOUNDS_CHECK\n");
+                try self.writeIndent();
+                try self.writeFmt("if (v{d} < 0 || v{d} >= ((kira_int*)(intptr_t)v{d})[0]) {{ fprintf(stderr, \"Kira bounds error: index %lld out of range [0, %lld)\\n\", (long long)v{d}, (long long)((kira_int*)(intptr_t)v{d})[0]); abort(); }}\n", .{ idx.index, idx.index, idx.object, idx.index, idx.object });
+                try self.write("#endif\n");
+                try self.writeIndent();
                 // Elements start at index 1 (index 0 is length)
                 try self.writeFmt("((kira_int*)(intptr_t)v{d})[v{d} + 1] = v{d}; v{d} = 0;\n", .{ idx.object, idx.index, idx.value, ref });
             },
@@ -628,7 +858,7 @@ pub const CCodeGen = struct {
                     for (sc.parts) |p| {
                         try self.writeFmt("_len += strlen((const char*)(intptr_t)v{d}); ", .{p});
                     }
-                    try self.write("char* _s = (char*)malloc(_len + 1); _s[0] = '\\0'; ");
+                    try self.write("char* _s = (char*)GC_MALLOC(_len + 1); _s[0] = '\\0'; ");
                     for (sc.parts) |p| {
                         try self.writeFmt("strcat(_s, (const char*)(intptr_t)v{d}); ", .{p});
                     }
@@ -653,7 +883,10 @@ pub const CCodeGen = struct {
                     try self.writeFmt("{s} = v{d}; /* TCO param reassign */\n", .{ func.params[sp.param_index].name, sp.value });
                 }
             },
-            .method_call => |mc| try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: method_call .{s} not implemented\\n\"); abort();\n", .{ ref, mc.method }),
+            .method_call => |mc| {
+                const fn_name = if (func.name) |n| n else "anonymous";
+                try self.writeFmt("v{d} = 0; fprintf(stderr, \"runtime: unresolved method_call .{s} in function '{s}' (v{d})\\n\"); abort();\n", .{ ref, mc.method, fn_name, ref });
+            },
             .phi => |p| {
                 // Phi nodes are handled by placing values in the predecessor blocks
                 // For C, we just declare the variable (already done above)
@@ -1195,7 +1428,7 @@ test "codegen tuple construction and access" {
 
     const output = gen.getOutput();
     // Tuple construction: heap-alloc + fill
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(3 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(3 * sizeof(kira_int))") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_t[0] = v0;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_t[1] = v1;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_t[2] = v2;") != null);
@@ -1244,7 +1477,7 @@ test "codegen record construction and field access" {
 
     const output = gen.getOutput();
     // Record construction
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(2 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(2 * sizeof(kira_int))") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_r[0] = v0;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_r[1] = v1;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "record Point") != null);
@@ -1282,7 +1515,7 @@ test "codegen array construction, index, and length" {
 
     const output = gen.getOutput();
     // Array construction: length at [0], elements at [1..N]
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(4 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(4 * sizeof(kira_int))") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_a[0] = 3;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_a[1] = v0;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_a[2] = v1;") != null);
@@ -1334,7 +1567,7 @@ test "codegen ADT variant with payload" {
 
     const output = gen.getOutput();
     // Variant construction: heap-alloc [tag][payload...]
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(2 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(2 * sizeof(kira_int))") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_v[0] = 0;") != null); // tag = 0 (Some)
     try std.testing.expect(std.mem.indexOf(u8, output, "_v[1] = v0;") != null); // payload
     try std.testing.expect(std.mem.indexOf(u8, output, "/* variant Some */") != null);
@@ -1380,7 +1613,7 @@ test "codegen unit variant (no payload)" {
 
     const output = gen.getOutput();
     // Unit variant: still heap-allocated with just the tag
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(1 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(1 * sizeof(kira_int))") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_v[0] = 1;") != null); // tag = 1 (None)
     try std.testing.expect(std.mem.indexOf(u8, output, "/* variant None */") != null);
 }
@@ -1418,7 +1651,7 @@ test "codegen closure construction" {
 
     const output = gen.getOutput();
     // Closure: heap-alloc [func_ptr][captures...]
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(2 * sizeof(kira_int))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(2 * sizeof(kira_int))") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "&kira_adder_inner") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "_c[1] = v0;") != null);
 }
@@ -1449,7 +1682,7 @@ test "codegen string concat" {
     // String concat: compute length, malloc, strcat
     try std.testing.expect(std.mem.indexOf(u8, output, "strlen") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "strcat") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(_len + 1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(_len + 1)") != null);
 }
 
 test "codegen to_string" {
@@ -1475,7 +1708,7 @@ test "codegen to_string" {
     const output = gen.getOutput();
     // to_string: snprintf into heap buffer
     try std.testing.expect(std.mem.indexOf(u8, output, "snprintf") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "malloc(32)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "GC_MALLOC(32)") != null);
 }
 
 test "codegen field_set on record" {

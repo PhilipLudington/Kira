@@ -38,14 +38,17 @@ pub fn createModule(allocator: Allocator) !Value {
 
 /// Print to stdout without newline: print(args...) -> void
 fn ioPrint(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
-    const stdout = std.fs.File.stdout();
-
     for (args) |arg| {
         const str = switch (arg) {
             .string => |s| s,
             else => arg.toString(ctx.allocator) catch return error.OutOfMemory,
         };
-        stdout.writeAll(str) catch return error.InvalidOperation;
+        if (ctx.stdout_capture) |capture| {
+            capture.appendSlice(ctx.stdout_capture_alloc.?, str) catch return error.OutOfMemory;
+        } else {
+            const stdout = std.fs.File.stdout();
+            stdout.writeAll(str) catch return error.InvalidOperation;
+        }
     }
 
     return Value{ .void = {} };
@@ -54,8 +57,12 @@ fn ioPrint(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
 /// Print to stdout with newline: println(args...) -> void
 fn ioPrintln(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     _ = try ioPrint(ctx, args);
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll("\n") catch return error.InvalidOperation;
+    if (ctx.stdout_capture) |capture| {
+        capture.appendSlice(ctx.stdout_capture_alloc.?, "\n") catch return error.OutOfMemory;
+    } else {
+        const stdout = std.fs.File.stdout();
+        stdout.writeAll("\n") catch return error.InvalidOperation;
+    }
     return Value{ .void = {} };
 }
 

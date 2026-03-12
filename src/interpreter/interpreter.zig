@@ -78,6 +78,10 @@ pub const Interpreter = struct {
     /// Optional coverage tracker (set when running with --coverage)
     coverage_tracker: ?*coverage_mod.CoverageTracker = null,
 
+    /// Optional buffer for capturing stdout output (used in E2E tests)
+    stdout_capture: ?*std.ArrayListUnmanaged(u8) = null,
+    stdout_capture_alloc: ?Allocator = null,
+
     /// Memoization cache: function name -> argument hash -> cached result.
     /// Used for functions declared with the `memo` keyword.
     memo_cache: MemoCache = .{},
@@ -1434,6 +1438,12 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Set a capture buffer for stdout output (used in E2E tests)
+    pub fn setStdoutCapture(self: *Interpreter, buf: *std.ArrayListUnmanaged(u8), alloc: Allocator) void {
+        self.stdout_capture = buf;
+        self.stdout_capture_alloc = alloc;
+    }
+
     /// Create a BuiltinContext for calling builtin functions
     fn makeBuiltinContext(self: *Interpreter) Value.BuiltinContext {
         return .{
@@ -1441,6 +1451,8 @@ pub const Interpreter = struct {
             .interpreter = self,
             .call_fn = &builtinCallFunction,
             .env_args = self.env_args,
+            .stdout_capture = self.stdout_capture,
+            .stdout_capture_alloc = self.stdout_capture_alloc,
         };
     }
 
