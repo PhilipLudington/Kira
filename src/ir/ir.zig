@@ -337,8 +337,14 @@ pub const Instruction = struct {
         get_payload: GetPayload,
 
         // -- Functions / Calls --
-        /// Call a function value with arguments.
+        /// Reference to a named function (for direct calls and passing as values).
+        func_ref: []const u8,
+        /// Direct call to a named function (bypasses indirect call overhead).
+        call_direct: CallDirect,
+        /// Call a function value with arguments (indirect/closure call).
         call: Call,
+        /// Call a runtime builtin (e.g. std.io.println).
+        call_builtin: CallBuiltin,
         /// Create a closure (function + captured values).
         make_closure: MakeClosure,
 
@@ -469,8 +475,20 @@ pub const Instruction = struct {
         field_index: u32,
     };
 
+    pub const CallDirect = struct {
+        /// Name of the function to call.
+        name: []const u8,
+        args: []const ValueRef,
+    };
+
     pub const Call = struct {
         callee: ValueRef,
+        args: []const ValueRef,
+    };
+
+    pub const CallBuiltin = struct {
+        /// Builtin function name (e.g., "println", "print", "eprintln").
+        name: []const u8,
         args: []const ValueRef,
     };
 
@@ -568,8 +586,25 @@ pub const Instruction = struct {
             .index_set => |idx| try writer.print("index_set %{d}[%{d}] = %{d}", .{ idx.object, idx.index, idx.value }),
             .get_tag => |v| try writer.print("get_tag %{d}", .{v}),
             .get_payload => |p| try writer.print("get_payload %{d}.{d}", .{ p.variant, p.field_index }),
+            .func_ref => |name| try writer.print("func_ref @{s}", .{name}),
+            .call_direct => |c| {
+                try writer.print("call_direct @{s}(", .{c.name});
+                for (c.args, 0..) |a, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try writer.print("%{d}", .{a});
+                }
+                try writer.writeAll(")");
+            },
             .call => |c| {
                 try writer.print("call %{d}(", .{c.callee});
+                for (c.args, 0..) |a, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try writer.print("%{d}", .{a});
+                }
+                try writer.writeAll(")");
+            },
+            .call_builtin => |c| {
+                try writer.print("call_builtin @{s}(", .{c.name});
                 for (c.args, 0..) |a, i| {
                     if (i > 0) try writer.writeAll(", ");
                     try writer.print("%{d}", .{a});

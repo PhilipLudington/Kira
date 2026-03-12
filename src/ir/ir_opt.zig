@@ -210,7 +210,7 @@ fn eliminateDeadCode(allocator: Allocator, func: *Function) OptError!void {
 /// Check if an instruction has side effects and cannot be eliminated.
 fn hasSideEffect(inst: *const Instruction) bool {
     return switch (inst.op) {
-        .call, .method_call => true,
+        .call, .call_direct, .call_builtin, .method_call => true,
         .store_var => true,
         .field_set => true,
         .index_set => true,
@@ -297,6 +297,12 @@ fn collectInstructionRefs(inst: *const Instruction, worklist: *std.ArrayListUnma
             try markRef(c.callee, worklist, used, allocator);
             for (c.args) |a| try markRef(a, worklist, used, allocator);
         },
+        .call_direct => |c| {
+            for (c.args) |a| try markRef(a, worklist, used, allocator);
+        },
+        .call_builtin => |c| {
+            for (c.args) |a| try markRef(a, worklist, used, allocator);
+        },
         .method_call => |mc| {
             try markRef(mc.object, worklist, used, allocator);
             for (mc.args) |a| try markRef(a, worklist, used, allocator);
@@ -311,6 +317,7 @@ fn collectInstructionRefs(inst: *const Instruction, worklist: *std.ArrayListUnma
         .phi => |p| {
             for (p.incoming) |inc| try markRef(inc.value, worklist, used, allocator);
         },
+        .func_ref => {},
         .param, .capture => {},
         .const_int, .const_float, .const_string, .const_char, .const_bool, .const_void, .wrap_none => {},
     }
@@ -375,24 +382,33 @@ fn tailCallOptimize(allocator: Allocator, module: *const Module, func: *Function
         // Check: the returned value is a call instruction
         if (ret_ref >= func.instructions.items.len) continue;
         const ret_inst = &func.instructions.items[ret_ref];
-        const call_info = switch (ret_inst.op) {
-            .call => |c| c,
+
+        // Extract call info — support both indirect calls and direct calls
+        const call_args: []const ValueRef = switch (ret_inst.op) {
+            .call_direct => |c| c.args,
+            .call => |c| c.args,
             else => continue,
         };
 
-        // Check: the callee is a reference to this same function
-        if (call_info.callee >= func.instructions.items.len) continue;
-        const callee_inst = func.instructions.items[call_info.callee];
-
-        const is_self_call = switch (callee_inst.op) {
-            .const_int => |c| blk2: {
-                if (c.value >= 0 and c.value < module.functions.items.len) {
-                    const target = &module.functions.items[@intCast(c.value)];
-                    if (target.name) |tn| {
-                        break :blk2 std.mem.eql(u8, tn, func_name);
-                    }
-                }
-                break :blk2 false;
+        // Check: is this a self-recursive call?
+        const is_self_call = switch (ret_inst.op) {
+            .call_direct => |c| std.mem.eql(u8, c.name, func_name),
+            .call => |c| blk2: {
+                if (c.callee >= func.instructions.items.len) break :blk2 false;
+                const callee_inst = func.instructions.items[c.callee];
+                break :blk2 switch (callee_inst.op) {
+                    .func_ref => |n| std.mem.eql(u8, n, func_name),
+                    .const_int => |ci| blk3: {
+                        if (ci.value >= 0 and ci.value < module.functions.items.len) {
+                            const target = &module.functions.items[@intCast(ci.value)];
+                            if (target.name) |tn| {
+                                break :blk3 std.mem.eql(u8, tn, func_name);
+                            }
+                        }
+                        break :blk3 false;
+                    },
+                    else => false,
+                };
             },
             else => false,
         };
@@ -400,7 +416,7 @@ fn tailCallOptimize(allocator: Allocator, module: *const Module, func: *Function
         if (!is_self_call) continue;
 
         // Check: argument count matches parameter count
-        if (call_info.args.len != func.params.len) continue;
+        if (call_args.len != func.params.len) continue;
 
         // Check: the call is the last meaningful instruction in the block
         var call_in_block = false;
@@ -412,12 +428,12 @@ fn tailCallOptimize(allocator: Allocator, module: *const Module, func: *Function
         }
         if (!call_in_block) continue;
 
-        // Snapshot args before mutating — call_info.args may be invalidated
+        // Snapshot args before mutating — call_args may be invalidated
         // when we add instructions below (since they share the arena).
-        const arg_count = call_info.args.len;
+        const arg_count = call_args.len;
         var arg_snapshot: [16]ValueRef = undefined;
         if (arg_count > 16) continue; // Safety: skip if too many params
-        for (call_info.args, 0..) |a, i| {
+        for (call_args, 0..) |a, i| {
             arg_snapshot[i] = a;
         }
 

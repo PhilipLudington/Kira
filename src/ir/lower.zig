@@ -53,6 +53,8 @@ pub const Lowerer = struct {
     break_target: ?BlockId,
     /// ValueRefs known to produce float values (from param/capture type info).
     float_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
+    /// ValueRefs known to produce string values.
+    string_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
 
     const Scope = std.StringArrayHashMapUnmanaged(ValueRef);
 
@@ -65,6 +67,7 @@ pub const Lowerer = struct {
             .current_block = ir.no_block,
             .break_target = null,
             .float_refs = .{},
+            .string_refs = .{},
         };
     }
 
@@ -80,6 +83,7 @@ pub const Lowerer = struct {
         for (self.scope_stack.items) |*s| s.deinit(self.allocator);
         self.scope_stack.deinit(self.allocator);
         self.float_refs.deinit(self.allocator);
+        self.string_refs.deinit(self.allocator);
         self.module.deinit();
     }
 
@@ -135,6 +139,7 @@ pub const Lowerer = struct {
 
         // Clear per-function float tracking (ValueRefs are function-local indices)
         self.float_refs.clearRetainingCapacity();
+        self.string_refs.clearRetainingCapacity();
 
         // Create entry block (so param instructions can be emitted into it)
         self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
@@ -735,11 +740,32 @@ pub const Lowerer = struct {
         return switch (expr.kind) {
             .integer_literal => |lit| self.emit(.{ .const_int = .{ .value = lit.value } }),
             .float_literal => |lit| self.emit(.{ .const_float = lit.value }),
-            .string_literal => |lit| self.emit(.{ .const_string = lit.value }),
+            .string_literal => |lit| blk: {
+                const ref = try self.emit(.{ .const_string = lit.value });
+                try self.markString(ref);
+                break :blk ref;
+            },
             .char_literal => |lit| self.emit(.{ .const_char = lit.value }),
             .bool_literal => |b| self.emit(.{ .const_bool = b }),
             .identifier => |id| {
                 if (self.lookupVar(id.name)) |ref| return ref;
+                // Fall back to module-level function lookup
+                if (self.module.function_map.get(id.name) != null) {
+                    return self.emit(.{ .func_ref = id.name });
+                }
+                // Fall back to module-level constant lookup
+                for (self.module.constants.items) |c| {
+                    if (std.mem.eql(u8, c.name, id.name)) {
+                        return switch (c.value) {
+                            .integer => |v| self.emit(.{ .const_int = .{ .value = v } }),
+                            .float => |v| self.emit(.{ .const_float = v }),
+                            .string => |v| self.emit(.{ .const_string = v }),
+                            .boolean => |v| self.emit(.{ .const_bool = v }),
+                            .char => |v| self.emit(.{ .const_char = v }),
+                            .void_val => self.emit(.{ .const_void = {} }),
+                        };
+                    }
+                }
                 return LowerError.UndefinedVariable;
             },
             .binary => |*bin| self.lowerBinaryOp(bin),
@@ -782,9 +808,18 @@ pub const Lowerer = struct {
 
         // C1 fix: choose int_binop vs float_binop based on operand types
         const is_float = self.isFloatValue(left) or self.isFloatValue(right);
+        const is_string = self.isStringValue(left) or self.isStringValue(right);
 
         return switch (bin.operator) {
-            .add => if (is_float)
+            .add => if (is_string) blk: {
+                const alloc = self.irAlloc();
+                const parts = try alloc.alloc(ValueRef, 2);
+                parts[0] = left;
+                parts[1] = right;
+                const ref = try self.emit(.{ .str_concat = .{ .parts = parts } });
+                try self.markString(ref);
+                break :blk ref;
+            } else if (is_float)
                 self.emit(.{ .float_binop = .{ .op = .add, .left = left, .right = right } })
             else
                 self.emit(.{ .int_binop = .{ .op = .add, .left = left, .right = right } }),
@@ -887,6 +922,32 @@ pub const Lowerer = struct {
 
     fn lowerFunctionCall(self: *Lowerer, call: *const Expression.FunctionCall) LowerError!ValueRef {
         const alloc = self.irAlloc();
+
+        // Check for builtin calls (std.io.println, etc.)
+        if (self.tryResolveBuiltin(call.callee)) |builtin_name| {
+            var args = std.ArrayListUnmanaged(ValueRef){};
+            for (call.arguments) |arg| {
+                args.append(alloc, try self.lowerExpression(arg)) catch return LowerError.OutOfMemory;
+            }
+            return self.emit(.{ .call_builtin = .{
+                .name = builtin_name,
+                .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            } });
+        }
+
+        // Check for direct named function calls (avoid indirect call overhead)
+        if (self.tryResolveFuncName(call.callee)) |func_name| {
+            var args = std.ArrayListUnmanaged(ValueRef){};
+            for (call.arguments) |arg| {
+                args.append(alloc, try self.lowerExpression(arg)) catch return LowerError.OutOfMemory;
+            }
+            return self.emit(.{ .call_direct = .{
+                .name = func_name,
+                .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            } });
+        }
+
+        // General case: indirect call through a value
         const callee = try self.lowerExpression(call.callee);
         var args = std.ArrayListUnmanaged(ValueRef){};
         for (call.arguments) |arg| {
@@ -898,9 +959,68 @@ pub const Lowerer = struct {
         } });
     }
 
+    /// Check if an expression is a known builtin like std.io.println.
+    /// Returns the builtin name if matched.
+    fn tryResolveBuiltin(self: *Lowerer, expr: *const Expression) ?[]const u8 {
+        _ = self;
+        // Match std.io.println, std.io.print, std.io.eprintln
+        if (expr.kind != .field_access) return null;
+        const fa = &expr.kind.field_access;
+        const method = fa.field;
+
+        // Check if object is std.io (another field_access)
+        if (fa.object.kind != .field_access) return null;
+        const fa2 = &fa.object.kind.field_access;
+        if (!std.mem.eql(u8, fa2.field, "io")) return null;
+
+        // Check if object is "std" identifier
+        if (fa2.object.kind != .identifier) return null;
+        if (!std.mem.eql(u8, fa2.object.kind.identifier.name, "std")) return null;
+
+        // Recognized std.io.* builtins
+        if (std.mem.eql(u8, method, "println") or
+            std.mem.eql(u8, method, "print") or
+            std.mem.eql(u8, method, "eprintln"))
+        {
+            return method;
+        }
+        return null;
+    }
+
+    /// Check if an expression is a direct reference to a known function.
+    /// Returns the function name if it's a simple identifier referencing a module function.
+    fn tryResolveFuncName(self: *Lowerer, expr: *const Expression) ?[]const u8 {
+        if (expr.kind != .identifier) return null;
+        const name = expr.kind.identifier.name;
+        // Only match if it's a module-level function (not a local variable)
+        if (self.lookupVar(name) != null) return null;
+        if (self.module.function_map.get(name) != null) return name;
+        return null;
+    }
+
     fn lowerMethodCall(self: *Lowerer, mc: *const Expression.MethodCall) LowerError!ValueRef {
-        // L3 fix: use dedicated method_call instruction instead of call(const_string)
         const alloc = self.irAlloc();
+
+        // Check for builtin method calls (std.io.println, etc.)
+        if (self.tryResolveMethodBuiltin(mc.object, mc.method)) |builtin_name| {
+            var args = std.ArrayListUnmanaged(ValueRef){};
+            for (mc.arguments) |arg| {
+                args.append(alloc, try self.lowerExpression(arg)) catch return LowerError.OutOfMemory;
+            }
+            const ref = try self.emit(.{ .call_builtin = .{
+                .name = builtin_name,
+                .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            } });
+            // Mark string-returning builtins
+            if (std.mem.eql(u8, builtin_name, "int_to_string") or
+                std.mem.eql(u8, builtin_name, "float_to_string"))
+            {
+                try self.markString(ref);
+            }
+            return ref;
+        }
+
+        // General case: lower object and emit method_call instruction
         const obj = try self.lowerExpression(mc.object);
         var args = std.ArrayListUnmanaged(ValueRef){};
         for (mc.arguments) |arg| {
@@ -911,6 +1031,54 @@ pub const Lowerer = struct {
             .method = mc.method,
             .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
         } });
+    }
+
+    /// Check if a method call is a builtin like std.io.println.
+    /// object is the receiver expression, method is the method name.
+    /// Returns a canonical builtin name if matched.
+    fn tryResolveMethodBuiltin(_: *Lowerer, object: *const Expression, method: []const u8) ?[]const u8 {
+        // Match std.<module>.<method>
+        if (object.kind != .field_access) return null;
+        const fa = &object.kind.field_access;
+        const module_name = fa.field;
+
+        if (fa.object.kind != .identifier) return null;
+        if (!std.mem.eql(u8, fa.object.kind.identifier.name, "std")) return null;
+
+        // std.io builtins
+        if (std.mem.eql(u8, module_name, "io")) {
+            if (std.mem.eql(u8, method, "println") or
+                std.mem.eql(u8, method, "print") or
+                std.mem.eql(u8, method, "eprintln"))
+            {
+                return method;
+            }
+        }
+
+        // std.int builtins
+        if (std.mem.eql(u8, module_name, "int")) {
+            if (std.mem.eql(u8, method, "to_string")) return "int_to_string";
+        }
+
+        // std.float builtins
+        if (std.mem.eql(u8, module_name, "float")) {
+            if (std.mem.eql(u8, method, "to_string")) return "float_to_string";
+        }
+
+        // std.string builtins
+        if (std.mem.eql(u8, module_name, "string")) {
+            if (std.mem.eql(u8, method, "length")) return "string_length";
+            if (std.mem.eql(u8, method, "char_at")) return "string_char_at";
+            if (std.mem.eql(u8, method, "split")) return "string_split";
+            if (std.mem.eql(u8, method, "trim")) return "string_trim";
+        }
+
+        // std.char builtins
+        if (std.mem.eql(u8, module_name, "char")) {
+            if (std.mem.eql(u8, method, "to_i")) return "char_to_int";
+        }
+
+        return null;
     }
 
     fn lowerFieldAccess(self: *Lowerer, fa: *const Expression.FieldAccess) LowerError!ValueRef {
@@ -1014,10 +1182,12 @@ pub const Lowerer = struct {
             capture_is_float.append(self.allocator, self.float_refs.contains(outer_ref)) catch return LowerError.OutOfMemory;
         }
 
-        // Switch to closure function context with fresh float tracking.
+        // Switch to closure function context with fresh float/string tracking.
         // Use a nested block so errdefer cleanup is scoped to closure lowering only.
         const saved_float_refs = self.float_refs;
         self.float_refs = .{};
+        const saved_string_refs = self.string_refs;
+        self.string_refs = .{};
 
         self.current_func_idx = func_idx;
 
@@ -1025,6 +1195,8 @@ pub const Lowerer = struct {
             errdefer {
                 self.float_refs.deinit(self.allocator);
                 self.float_refs = saved_float_refs;
+                self.string_refs.deinit(self.allocator);
+                self.string_refs = saved_string_refs;
                 self.current_func_idx = saved_func_idx;
                 self.current_block = saved_block;
             }
@@ -1079,6 +1251,8 @@ pub const Lowerer = struct {
         self.popScope();
         self.float_refs.deinit(self.allocator);
         self.float_refs = saved_float_refs;
+        self.string_refs.deinit(self.allocator);
+        self.string_refs = saved_string_refs;
         self.current_func_idx = saved_func_idx;
         self.current_block = saved_block;
 
@@ -1312,9 +1486,11 @@ pub const Lowerer = struct {
             };
             parts.append(alloc, ref) catch return LowerError.OutOfMemory;
         }
-        return self.emit(.{ .str_concat = .{
+        const result = try self.emit(.{ .str_concat = .{
             .parts = parts.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
         } });
+        try self.markString(result);
+        return result;
     }
 
     fn lowerTryExpr(self: *Lowerer, inner: *const Expression) LowerError!ValueRef {
@@ -1623,6 +1799,14 @@ pub const Lowerer = struct {
     /// Register a ValueRef as float-typed (for params/captures with float types).
     fn markFloat(self: *Lowerer, ref: ValueRef) LowerError!void {
         self.float_refs.put(self.allocator, ref, {}) catch return LowerError.OutOfMemory;
+    }
+
+    fn isStringValue(self: *Lowerer, ref: ValueRef) bool {
+        return self.string_refs.contains(ref);
+    }
+
+    fn markString(self: *Lowerer, ref: ValueRef) LowerError!void {
+        self.string_refs.put(self.allocator, ref, {}) catch return LowerError.OutOfMemory;
     }
 
     /// Look up a variant's numeric tag from the module's type declarations (C6/L4 fix).

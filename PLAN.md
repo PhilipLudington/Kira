@@ -126,7 +126,7 @@ Before Phase 3, these must be true:
 - [x] Implement string representation and string interpolation in C output: to_string via snprintf, str_concat via malloc+strcat. (completed 2026-03-10)
 - [x] Implement pattern matching compilation to C (decision trees or backtracking). (completed 2026-03-11)
 - [x] Implement effect tracking in compiled code (ensure pure/effect boundary survives compilation). (completed 2026-03-11)
-- [ ] Test compiled output against interpreter output for all example programs.
+- [x] Test compiled output against interpreter output for all example programs. 8/8 testable examples pass (hello, factorial, fibonacci, fizzbuzz, temperature, binary_tree, memo_fibonacci, where_clause). Fixed: func_ref/call_direct/call_builtin IR ops, phi node codegen, string concat detection, C keyword sanitization, void return handling, string return casting, C main() entry point. (completed 2026-03-11)
 - [ ] Verify Klar interop: call Klar functions from Kira compiled code and vice versa.
 
 ### Testing Strategy

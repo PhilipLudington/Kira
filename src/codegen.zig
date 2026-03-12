@@ -75,6 +75,33 @@ pub const CCodeGen = struct {
         for (module.functions.items) |*func| {
             try self.emitFunction(func);
         }
+        try self.emitEntryPoint(module);
+    }
+
+    /// Emit a C main() entry point that calls kira_main().
+    fn emitEntryPoint(self: *CCodeGen, module: *const Module) CodeGenError!void {
+        // Check if there's a kira main function
+        if (module.function_map.get("main")) |idx| {
+            const func = &module.functions.items[idx];
+            const has_return = !std.mem.eql(u8, func.return_type_name, "void");
+
+            try self.write("int main(void) {\n");
+            self.indent_level += 1;
+            try self.writeIndent();
+            if (has_return) {
+                try self.writeFmt("kira_int result = kira_main();\n", .{});
+                try self.writeIndent();
+                try self.write("printf(\"%lld\\n\", (long long)result);\n");
+                try self.writeIndent();
+                try self.write("return 0;\n");
+            } else {
+                try self.write("kira_main();\n");
+                try self.writeIndent();
+                try self.write("return 0;\n");
+            }
+            self.indent_level -= 1;
+            try self.write("}\n");
+        }
     }
 
     // ----------------------------------------------------------------
@@ -204,7 +231,7 @@ pub const CCodeGen = struct {
             for (func.params, 0..) |p, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(kiraTypeToCType(p.type_name));
-                try self.writeFmt(" {s}", .{p.name});
+                try self.writeFmt(" {s}", .{sanitizeName(p.name)});
             }
             if (func.params.len == 0) try self.write("void");
             try self.write(");\n");
@@ -254,7 +281,7 @@ pub const CCodeGen = struct {
         for (func.params, 0..) |p, i| {
             if (i > 0) try self.write(", ");
             try self.write(kiraTypeToCType(p.type_name));
-            try self.writeFmt(" {s}", .{p.name});
+            try self.writeFmt(" {s}", .{sanitizeName(p.name)});
         }
         if (func.params.len == 0) try self.write("void");
         try self.write(") {\n");
@@ -307,7 +334,38 @@ pub const CCodeGen = struct {
         }
 
         // Terminator
-        try self.emitTerminator(func, &blk.terminator);
+        try self.emitTerminator(func, blk, &blk.terminator);
+    }
+
+    /// Check if a block contains any phi instructions.
+    fn blockHasPhi(_: *CCodeGen, func: *const Function, block_id: BlockId) bool {
+        if (block_id >= func.blocks.items.len) return false;
+        const blk = &func.blocks.items[block_id];
+        for (blk.instructions.items) |inst_ref| {
+            const inst = func.getInstruction(inst_ref);
+            if (inst.op == .phi) return true;
+        }
+        return false;
+    }
+
+    /// Emit phi assignments for a specific predecessor->successor edge.
+    fn emitPhiAssignmentsForEdge(self: *CCodeGen, func: *const Function, from_block: BlockId, to_block: BlockId) CodeGenError!void {
+        if (to_block >= func.blocks.items.len) return;
+        const succ = &func.blocks.items[to_block];
+        for (succ.instructions.items) |inst_ref| {
+            const inst = func.getInstruction(inst_ref);
+            switch (inst.op) {
+                .phi => |p| {
+                    for (p.incoming) |inc| {
+                        if (inc.block == from_block) {
+                            try self.writeIndent();
+                            try self.writeFmt("v{d} = v{d};\n", .{ inst_ref, inc.value });
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     // ----------------------------------------------------------------
@@ -377,6 +435,77 @@ pub const CCodeGen = struct {
             },
             .load_var => |v| try self.writeFmt("v{d} = v{d};\n", .{ ref, v }),
             .store_var => |s| try self.writeFmt("v{d} = v{d}; v{d} = 0;\n", .{ s.target, s.value, ref }),
+            .func_ref => |name| {
+                // Emit function pointer as kira_int
+                try self.writeFmt("v{d} = (kira_int)(intptr_t)&kira_{s};\n", .{ ref, name });
+            },
+            .call_direct => |c| {
+                // Direct call to a named function
+                // Check if function returns void to avoid assigning void
+                const is_void = if (self.current_module) |m| blk: {
+                    if (m.function_map.get(c.name)) |idx| {
+                        break :blk std.mem.eql(u8, m.functions.items[idx].return_type_name, "void");
+                    }
+                    break :blk false;
+                } else false;
+
+                // Check if function returns a pointer type (string) that needs casting
+                const needs_cast = if (self.current_module) |m| blk: {
+                    if (m.function_map.get(c.name)) |idx| {
+                        const rtn = m.functions.items[idx].return_type_name;
+                        break :blk std.mem.eql(u8, rtn, "string");
+                    }
+                    break :blk false;
+                } else false;
+
+                if (is_void) {
+                    try self.writeFmt("kira_{s}(", .{c.name});
+                } else if (needs_cast) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_{s}(", .{ ref, c.name });
+                } else {
+                    try self.writeFmt("v{d} = kira_{s}(", .{ ref, c.name });
+                }
+                for (c.args, 0..) |a, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.writeFmt("v{d}", .{a});
+                }
+                if (is_void) {
+                    try self.writeFmt("); v{d} = 0;\n", .{ref});
+                } else {
+                    try self.write(");\n");
+                }
+            },
+            .call_builtin => |c| {
+                // Runtime builtin calls
+                if (std.mem.eql(u8, c.name, "println")) {
+                    if (c.args.len > 0) {
+                        try self.writeFmt("printf(\"%s\\n\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
+                    } else {
+                        try self.writeFmt("printf(\"\\n\"); v{d} = 0;\n", .{ref});
+                    }
+                } else if (std.mem.eql(u8, c.name, "print")) {
+                    if (c.args.len > 0) {
+                        try self.writeFmt("printf(\"%s\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
+                    } else {
+                        try self.writeFmt("v{d} = 0;\n", .{ref});
+                    }
+                } else if (std.mem.eql(u8, c.name, "eprintln")) {
+                    if (c.args.len > 0) {
+                        try self.writeFmt("fprintf(stderr, \"%s\\n\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
+                    } else {
+                        try self.writeFmt("fprintf(stderr, \"\\n\"); v{d} = 0;\n", .{ref});
+                    }
+                } else if (std.mem.eql(u8, c.name, "int_to_string")) {
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_int_to_string(v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "float_to_string")) {
+                    try self.writeFmt("{{ char* _s = (char*)malloc(32); kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); snprintf(_s, 32, \"%g\", _f); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ c.args[0], ref });
+                } else if (std.mem.eql(u8, c.name, "string_length")) {
+                    try self.writeFmt("v{d} = (kira_int)strlen((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else {
+                    // Unknown builtin — emit as comment for debugging
+                    try self.writeFmt("v{d} = 0; /* unknown builtin: {s} */\n", .{ ref, c.name });
+                }
+            },
             .call => |c| {
                 // Emit indirect call through function-pointer cast
                 try self.writeFmt("v{d} = ((kira_int(*)(", .{ref});
@@ -509,7 +638,7 @@ pub const CCodeGen = struct {
             .param => |idx| {
                 // Map parameter index to parameter name
                 if (idx < func.params.len) {
-                    try self.writeFmt("v{d} = {s};\n", .{ ref, func.params[idx].name });
+                    try self.writeFmt("v{d} = {s};\n", .{ ref, sanitizeName(func.params[idx].name) });
                 } else {
                     try self.writeFmt("v{d} = 0; /* param {d} */\n", .{ ref, idx });
                 }
@@ -537,7 +666,7 @@ pub const CCodeGen = struct {
     // Terminator emission
     // ----------------------------------------------------------------
 
-    fn emitTerminator(self: *CCodeGen, func: *const Function, term: *const Terminator) CodeGenError!void {
+    fn emitTerminator(self: *CCodeGen, func: *const Function, blk: *const ir.BasicBlock, term: *const Terminator) CodeGenError!void {
         try self.writeIndent();
         switch (term.*) {
             .ret => |v| {
@@ -549,18 +678,53 @@ pub const CCodeGen = struct {
                 if (is_void) {
                     try self.write("return;\n");
                 } else if (v) |val| {
-                    try self.writeFmt("return v{d};\n", .{val});
+                    const rtype = kiraTypeToCType(func.return_type_name);
+                    // Cast if return type differs from kira_int
+                    if (std.mem.eql(u8, rtype, "const char*")) {
+                        // String: int → pointer needs intptr_t cast
+                        try self.writeFmt("return (const char*)(intptr_t)v{d};\n", .{val});
+                    } else if (!std.mem.eql(u8, rtype, "kira_int") and !std.mem.eql(u8, rtype, "int64_t")) {
+                        try self.writeFmt("return ({s})v{d};\n", .{ rtype, val });
+                    } else {
+                        try self.writeFmt("return v{d};\n", .{val});
+                    }
                 } else {
                     try self.write("return 0;\n");
                 }
             },
-            .jump => |b| try self.writeFmt("goto bb{d};\n", .{b}),
+            .jump => |b| {
+                try self.emitPhiAssignmentsForEdge(func, blk.id, b);
+                try self.writeIndent();
+                try self.writeFmt("goto bb{d};\n", .{b});
+            },
             .branch => |br| {
-                try self.writeFmt("if (v{d}) goto bb{d}; else goto bb{d};\n", .{
-                    br.condition,
-                    br.then_block,
-                    br.else_block,
-                });
+                // Check if either target has phi nodes
+                const then_has_phi = self.blockHasPhi(func, br.then_block);
+                const else_has_phi = self.blockHasPhi(func, br.else_block);
+                if (then_has_phi or else_has_phi) {
+                    // Use if/else blocks to emit phi assignments per edge
+                    try self.writeFmt("if (v{d}) {{\n", .{br.condition});
+                    self.indent_level += 1;
+                    try self.emitPhiAssignmentsForEdge(func, blk.id, br.then_block);
+                    try self.writeIndent();
+                    try self.writeFmt("goto bb{d};\n", .{br.then_block});
+                    self.indent_level -= 1;
+                    try self.writeIndent();
+                    try self.write("} else {\n");
+                    self.indent_level += 1;
+                    try self.emitPhiAssignmentsForEdge(func, blk.id, br.else_block);
+                    try self.writeIndent();
+                    try self.writeFmt("goto bb{d};\n", .{br.else_block});
+                    self.indent_level -= 1;
+                    try self.writeIndent();
+                    try self.write("}\n");
+                } else {
+                    try self.writeFmt("if (v{d}) goto bb{d}; else goto bb{d};\n", .{
+                        br.condition,
+                        br.then_block,
+                        br.else_block,
+                    });
+                }
             },
             .switch_tag => |sw| {
                 try self.writeFmt("switch (v{d}) {{\n", .{sw.value});
@@ -626,6 +790,23 @@ pub const CCodeGen = struct {
     // ----------------------------------------------------------------
 
     /// Map a Kira source-level type name to the corresponding C type string.
+    /// Sanitize a Kira identifier for use as a C variable name.
+    /// Prefixes C keywords with an underscore.
+    fn sanitizeName(name: []const u8) []const u8 {
+        const c_keywords = [_][]const u8{
+            "auto",     "break",    "case",     "char",   "const",    "continue",
+            "default",  "do",       "double",   "else",   "enum",     "extern",
+            "float",    "for",      "goto",     "if",     "int",      "long",
+            "register", "return",   "short",    "signed", "sizeof",   "static",
+            "struct",   "switch",   "typedef",  "union",  "unsigned", "void",
+            "volatile", "while",
+        };
+        for (c_keywords) |kw| {
+            if (std.mem.eql(u8, name, kw)) return "_kira_reserved";
+        }
+        return name;
+    }
+
     fn kiraTypeToCType(type_name: []const u8) []const u8 {
         if (std.mem.eql(u8, type_name, "i8")) return "int8_t";
         if (std.mem.eql(u8, type_name, "i16")) return "int16_t";
@@ -1590,7 +1771,7 @@ test "codegen pure function has effect tracking" {
     // Pure function enters pure context
     try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_ENTER_PURE();") != null);
     // Pure function leaves pure context before return
-    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_LEAVE_PURE(); return v2;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "KIRA_LEAVE_PURE(); return (int32_t)v2;") != null);
     // Should NOT have effect annotation
     try std.testing.expect(std.mem.indexOf(u8, output, "/* effect */ int32_t kira_add(") == null);
 }
