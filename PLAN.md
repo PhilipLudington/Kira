@@ -2,7 +2,7 @@
 
 ## Overview
 Mature Kira's C code generation backend from "basic programs work" to "correct, complete, and safe." Reference: DESIGN.md, src/codegen.zig.
-Current status: Phase 3 (partial) complete — string comparison, bounds checking, method_call cleanup done. Memoization deferred.
+Current status: Phase 2 Tier 5 builtins complete (fs, time, assert). Phase 3 (partial) — string comparison, bounds checking, method_call cleanup done. Memoization deferred. 610 total tests pass (12 E2E).
 
 ## Phase 0: E2E Test Harness
 
@@ -122,18 +122,18 @@ Run E2E tests normally — Boehm GC is a drop-in replacement. Optionally verify 
 
 **Tier 4 — IO/Effect builtins:**
 - [x] `eprint` — `fprintf(stderr, "%s", ...)`
-- [x] `read_line` — `fgets()` with GC_MALLOC buffer
+- [x] `read_line` — `fgets()` with GC_MALLOC buffer, returns Result[string, string]
 
-**Tier 5 — Filesystem & system (deferred):**
-- [ ] `fs_read_file` — `fopen`/`fread`/`fclose`
-- [ ] `fs_write_file` — `fopen`/`fwrite`/`fclose`
-- [ ] `fs_exists` — `access()` or `stat()`
-- [ ] `fs_remove` — `unlink()`
-- [ ] `fs_append_file` — `fopen` with "a" mode
-- [ ] `time_now` — `clock_gettime(CLOCK_REALTIME)` returning nanoseconds
-- [ ] `time_sleep` — `nanosleep()`
-- [ ] `env_args` — `argc`/`argv` passed through from `main()`
-- [ ] `assert_equal` / `assert_not_equal` / `assert_string_equal` — runtime checks with abort
+**Tier 5 — Filesystem & system:**
+- [x] `fs_read_file` — `fopen`/`fread`/`fclose`, returns Result[string, string]
+- [x] `fs_write_file` — `fopen`/`fwrite`/`fclose`, returns Result[void, string]
+- [x] `fs_exists` — `access(path, F_OK)`
+- [x] `fs_remove` — `unlink()`, returns Result[void, string]
+- [x] `fs_append_file` — `fopen` with "ab" mode, returns Result[void, string]
+- [x] `time_now` — `gettimeofday()` returning milliseconds
+- [x] `time_sleep` — `usleep()`
+- [ ] `env_args` — `argc`/`argv` passed through from `main()` (requires arch change)
+- [x] `assert_eq` / `assert_not_eq` / `assert_contains` — runtime checks with abort
 
 ### Implementation Pattern
 For each builtin:
@@ -149,9 +149,10 @@ Each builtin gets at least one E2E test. String builtins include empty-string ed
 ### Phase 2 Readiness Gate
 - [x] All Tier 1-3 builtins implemented (30+ new handlers)
 - [x] Tier 4 IO builtins implemented
-- [ ] `simple_parser.ki` and `word_count.ki` examples compile and run correctly
-- [ ] Tier 5 filesystem/system builtins
-- [ ] More E2E tests for new builtins
+- [x] Tier 5 filesystem/system builtins (8/9 — env_args deferred)
+- [x] E2E tests for Tier 5 builtins (6 new tests: fs_write+read, fs_exists, fs_read_error, fs_append, time_now, assert_eq)
+- [ ] `simple_parser.ki` and `word_count.ki` examples compile and run correctly (blocked by IR lowerer: closures/list ops/ADT codegen gaps)
+- [x] Built-in Option/Result type declarations auto-registered in IR lowerer
 
 ---
 

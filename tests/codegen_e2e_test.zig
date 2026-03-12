@@ -273,3 +273,106 @@ test "e2e: nested function calls" {
         \\}
     );
 }
+
+// --- Tier 5: Filesystem builtins ---
+
+test "e2e: fs_write_file and fs_read_file" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    match std.fs.write_file("/tmp/kira_e2e_fs_test.txt", "hello from kira") {
+        \\        Ok(_) => {
+        \\            match std.fs.read_file("/tmp/kira_e2e_fs_test.txt") {
+        \\                Ok(content) => {
+        \\                    std.io.println(content)
+        \\                }
+        \\                Err(e) => {
+        \\                    std.io.println("read error: " + e)
+        \\                }
+        \\            }
+        \\        }
+        \\        Err(e) => {
+        \\            std.io.println("write error: " + e)
+        \\        }
+        \\    }
+        \\    std.fs.remove("/tmp/kira_e2e_fs_test.txt")
+        \\}
+    );
+}
+
+test "e2e: fs_exists" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    std.fs.write_file("/tmp/kira_e2e_exists_test.txt", "test")
+        \\    if std.fs.exists("/tmp/kira_e2e_exists_test.txt") {
+        \\        std.io.println("exists")
+        \\    } else {
+        \\        std.io.println("not found")
+        \\    }
+        \\    std.fs.remove("/tmp/kira_e2e_exists_test.txt")
+        \\    if std.fs.exists("/tmp/kira_e2e_exists_test.txt") {
+        \\        std.io.println("still exists")
+        \\    } else {
+        \\        std.io.println("removed")
+        \\    }
+        \\}
+    );
+}
+
+test "e2e: fs_read_file error on missing file" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    match std.fs.read_file("/tmp/kira_e2e_nonexistent_file_12345.txt") {
+        \\        Ok(content) => {
+        \\            std.io.println("unexpected: " + content)
+        \\        }
+        \\        Err(e) => {
+        \\            std.io.println("error: " + e)
+        \\        }
+        \\    }
+        \\}
+    );
+}
+
+test "e2e: fs_append_file" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    std.fs.write_file("/tmp/kira_e2e_append_test.txt", "line1")
+        \\    std.fs.append_file("/tmp/kira_e2e_append_test.txt", "-line2")
+        \\    match std.fs.read_file("/tmp/kira_e2e_append_test.txt") {
+        \\        Ok(content) => {
+        \\            std.io.println(content)
+        \\        }
+        \\        Err(e) => {
+        \\            std.io.println("error: " + e)
+        \\        }
+        \\    }
+        \\    std.fs.remove("/tmp/kira_e2e_append_test.txt")
+        \\}
+    );
+}
+
+// --- Tier 5: Time builtins ---
+
+test "e2e: time_now returns positive value" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let t: i64 = std.time.now()
+        \\    if t > 0i64 {
+        \\        std.io.println("ok")
+        \\    } else {
+        \\        std.io.println("error: time is not positive")
+        \\    }
+        \\}
+    );
+}
+
+// --- Tier 5: Assert builtins ---
+
+test "e2e: assert_eq passes" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    std.assert.assert_eq(42, 42)
+        \\    std.io.println("passed")
+        \\}
+    );
+}

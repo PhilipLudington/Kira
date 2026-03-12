@@ -94,6 +94,10 @@ pub const Lowerer = struct {
 
     /// Lower an entire program. Returns the IR Module (caller owns it).
     pub fn lower(self: *Lowerer, program: *const Program) LowerError!Module {
+        // Register built-in type declarations so lookupVariantTag resolves correctly
+        // for Option[T] and Result[T, E] even when programs don't explicitly declare them.
+        try self.registerBuiltinTypes();
+
         for (program.declarations) |*decl| {
             try self.lowerDeclaration(decl);
         }
@@ -101,6 +105,40 @@ pub const Lowerer = struct {
         const result = self.module;
         self.module = Module.init(self.allocator);
         return result;
+    }
+
+    /// Register IR type declarations for built-in generic types (Option, Result).
+    /// These are registered first so that user-declared types with the same variant
+    /// names (e.g. a custom type with "Ok") will shadow the built-in via first-match.
+    /// User-declared Option/Result types will be added later and take precedence
+    /// when scoped by type_name.
+    fn registerBuiltinTypes(self: *Lowerer) LowerError!void {
+        const alloc = self.irAlloc();
+        // Option = | None | Some(T) — None=0, Some=1
+        _ = self.module.addTypeDecl(.{
+            .name = "Option",
+            .kind = .{ .sum_type = .{
+                .variants = blk: {
+                    var v = std.ArrayListUnmanaged(ir.VariantDecl){};
+                    v.append(alloc, .{ .name = "None", .tag = 0, .field_count = 0 }) catch return LowerError.OutOfMemory;
+                    v.append(alloc, .{ .name = "Some", .tag = 1, .field_count = 1 }) catch return LowerError.OutOfMemory;
+                    break :blk v.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+                },
+            } },
+        }) catch return LowerError.OutOfMemory;
+
+        // Result = | Ok(T) | Err(E) — Ok=0, Err=1
+        _ = self.module.addTypeDecl(.{
+            .name = "Result",
+            .kind = .{ .sum_type = .{
+                .variants = blk: {
+                    var v = std.ArrayListUnmanaged(ir.VariantDecl){};
+                    v.append(alloc, .{ .name = "Ok", .tag = 0, .field_count = 1 }) catch return LowerError.OutOfMemory;
+                    v.append(alloc, .{ .name = "Err", .tag = 1, .field_count = 1 }) catch return LowerError.OutOfMemory;
+                    break :blk v.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+                },
+            } },
+        }) catch return LowerError.OutOfMemory;
     }
 
     // ----------------------------------------------------------------
@@ -1118,6 +1156,28 @@ pub const Lowerer = struct {
         // std.math builtins
         if (std.mem.eql(u8, module_name, "math")) {
             if (std.mem.eql(u8, method, "trunc_to_i64")) return "math_trunc_to_i64";
+        }
+
+        // std.fs builtins (Tier 5)
+        if (std.mem.eql(u8, module_name, "fs")) {
+            if (std.mem.eql(u8, method, "read_file")) return "fs_read_file";
+            if (std.mem.eql(u8, method, "write_file")) return "fs_write_file";
+            if (std.mem.eql(u8, method, "exists")) return "fs_exists";
+            if (std.mem.eql(u8, method, "remove")) return "fs_remove";
+            if (std.mem.eql(u8, method, "append_file")) return "fs_append_file";
+        }
+
+        // std.time builtins (Tier 5)
+        if (std.mem.eql(u8, module_name, "time")) {
+            if (std.mem.eql(u8, method, "now")) return "time_now";
+            if (std.mem.eql(u8, method, "sleep")) return "time_sleep";
+        }
+
+        // std.assert builtins (Tier 5)
+        if (std.mem.eql(u8, module_name, "assert")) {
+            if (std.mem.eql(u8, method, "assert_eq")) return "assert_eq";
+            if (std.mem.eql(u8, method, "assert_not_eq")) return "assert_not_eq";
+            if (std.mem.eql(u8, method, "assert_contains")) return "assert_contains";
         }
 
         return null;

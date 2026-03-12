@@ -2,7 +2,7 @@
 // Demonstrates string processing, lists, and higher-order functions
 
 // Count words in a string (pure function)
-fn count_words(text: string) -> i32 {
+fn count_words(text: string) -> i64 {
     let words: List[string] = std.string.split(text, " ")
     let trimmed: List[string] = std.list.map[string, string](
         words,
@@ -16,21 +16,21 @@ fn count_words(text: string) -> i32 {
 }
 
 // Count lines in a string (pure function)
-fn count_lines(text: string) -> i32 {
+fn count_lines(text: string) -> i64 {
     let lines: List[string] = std.string.split(text, "\n")
     return std.list.length[string](lines)
 }
 
 // Count characters in a string (pure function)
-fn count_chars(text: string) -> i32 {
+fn count_chars(text: string) -> i64 {
     return std.string.length(text)
 }
 
 // Product type for statistics
 type TextStats = {
-    chars: i32,
-    words: i32,
-    lines: i32
+    chars: i64,
+    words: i64,
+    lines: i64
 }
 
 // Compute all statistics (pure function)

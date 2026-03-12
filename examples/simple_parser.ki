@@ -3,7 +3,7 @@
 
 // Abstract Syntax Tree for arithmetic expressions
 type Expr =
-    | Number(i32)
+    | Number(i64)
     | Add(Expr, Expr)
     | Sub(Expr, Expr)
     | Mul(Expr, Expr)
@@ -15,8 +15,8 @@ type ParseResult =
     | Failure(string)
 
 // Evaluate an expression (pure function)
-fn eval(expr: Expr) -> Result[i32, string] {
-    var result: Result[i32, string] = Ok(0)
+fn eval(expr: Expr) -> Result[i64, string] {
+    var result: Result[i64, string] = Ok(0i64)
     match expr {
         Number(n) => {
             result = Ok(n)
@@ -104,7 +104,7 @@ fn is_digit(c: char) -> bool {
 }
 
 // Convert digit character to integer
-fn digit_to_int(c: char) -> i32 {
+fn digit_to_int(c: char) -> i64 {
     // ASCII: '0' = 48
     return std.char.to_i32(c) - 48
 }
@@ -124,12 +124,12 @@ fn parse_number(input: string) -> ParseResult {
         match std.string.char_at(cleaned, 0) {
             Some(c) => {
                 if is_digit(c) {
-                    var num: i32 = 0
-                    var idx: i32 = 0
+                    var num: i64 = 0
+                    var idx: i64 = 0
                     var done: bool = false
 
                     // Parse all consecutive digits
-                    while idx < std.string.length(cleaned) and not done {
+                    while idx < std.string.length(cleaned) and (not done) {
                         match std.string.char_at(cleaned, idx) {
                             Some(ch) => {
                                 if is_digit(ch) {
@@ -145,8 +145,14 @@ fn parse_number(input: string) -> ParseResult {
                         }
                     }
 
-                    let remaining: string = std.string.substring(cleaned, idx, std.string.length(cleaned))
-                    result = Success(Number(num), remaining)
+                    match std.string.substring(cleaned, idx, std.string.length(cleaned)) {
+                        Some(remaining) => {
+                            result = Success(Number(num), remaining)
+                        }
+                        None => {
+                            result = Success(Number(num), "")
+                        }
+                    }
                 }
             }
             None => {
@@ -183,7 +189,7 @@ effect fn main() -> void {
     // (since full parsing is complex, we demonstrate the evaluation)
 
     // Expression: 2 + 3
-    let expr1: Expr = Add(Number(2), Number(3))
+    let expr1: Expr = Add(Number(2i64), Number(3i64))
     std.io.println("Expression: " + show_expr(expr1))
     match eval(expr1) {
         Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
@@ -192,7 +198,7 @@ effect fn main() -> void {
     std.io.println("")
 
     // Expression: (2 + 3) * 4
-    let expr2: Expr = Mul(Add(Number(2), Number(3)), Number(4))
+    let expr2: Expr = Mul(Add(Number(2i64), Number(3i64)), Number(4i64))
     std.io.println("Expression: " + show_expr(expr2))
     match eval(expr2) {
         Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
@@ -201,7 +207,7 @@ effect fn main() -> void {
     std.io.println("")
 
     // Expression: 10 / (5 - 3)
-    let expr3: Expr = Div(Number(10), Sub(Number(5), Number(3)))
+    let expr3: Expr = Div(Number(10i64), Sub(Number(5i64), Number(3i64)))
     std.io.println("Expression: " + show_expr(expr3))
     match eval(expr3) {
         Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
@@ -210,7 +216,7 @@ effect fn main() -> void {
     std.io.println("")
 
     // Expression: 10 / 0 (division by zero)
-    let expr4: Expr = Div(Number(10), Number(0))
+    let expr4: Expr = Div(Number(10i64), Number(0i64))
     std.io.println("Expression: " + show_expr(expr4))
     match eval(expr4) {
         Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
@@ -221,10 +227,10 @@ effect fn main() -> void {
     // Complex expression: ((1 + 2) * (3 + 4)) - 5
     let expr5: Expr = Sub(
         Mul(
-            Add(Number(1), Number(2)),
-            Add(Number(3), Number(4))
+            Add(Number(1i64), Number(2i64)),
+            Add(Number(3i64), Number(4i64))
         ),
-        Number(5)
+        Number(5i64)
     )
     std.io.println("Expression: " + show_expr(expr5))
     match eval(expr5) {

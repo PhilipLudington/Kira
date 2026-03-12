@@ -233,6 +233,91 @@ pub const CCodeGen = struct {
         try self.write("    *w = '\\0';\n");
         try self.write("    return r;\n");
         try self.write("}\n\n");
+
+        // --- Tier 5: Filesystem helpers ---
+        try self.write("#include <unistd.h>\n");
+        try self.write("#include <sys/time.h>\n\n");
+
+        // Result variant encoding: Ok=tag 0, Err=tag 1
+        // Layout: kira_int* [tag][payload]
+        try self.write("/* Make Ok(value) variant: tag=0, payload at [1] */\n");
+        try self.write("static kira_int kira_make_ok(kira_int value) {\n");
+        try self.write("    kira_int* v = (kira_int*)GC_MALLOC(2 * sizeof(kira_int));\n");
+        try self.write("    v[0] = 0; v[1] = value;\n");
+        try self.write("    return (kira_int)(intptr_t)v;\n");
+        try self.write("}\n");
+        try self.write("/* Make Err(msg) variant: tag=1, payload at [1] */\n");
+        try self.write("static kira_int kira_make_err(kira_string msg) {\n");
+        try self.write("    kira_int* v = (kira_int*)GC_MALLOC(2 * sizeof(kira_int));\n");
+        try self.write("    v[0] = 1; v[1] = (kira_int)(intptr_t)msg;\n");
+        try self.write("    return (kira_int)(intptr_t)v;\n");
+        try self.write("}\n\n");
+
+        // fs_read_file(path) -> Result[string, string]
+        try self.write("static kira_int kira_fs_read_file(kira_string path) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_read_file\");\n");
+        try self.write("    FILE* f = fopen(path, \"rb\");\n");
+        try self.write("    if (!f) return kira_make_err(\"FileNotFound\");\n");
+        try self.write("    fseek(f, 0, SEEK_END);\n");
+        try self.write("    long len = ftell(f);\n");
+        try self.write("    fseek(f, 0, SEEK_SET);\n");
+        try self.write("    char* buf = (char*)GC_MALLOC(len + 1);\n");
+        try self.write("    size_t read = fread(buf, 1, len, f);\n");
+        try self.write("    fclose(f);\n");
+        try self.write("    buf[read] = '\\0';\n");
+        try self.write("    return kira_make_ok((kira_int)(intptr_t)buf);\n");
+        try self.write("}\n\n");
+
+        // fs_write_file(path, contents) -> Result[void, string]
+        try self.write("static kira_int kira_fs_write_file(kira_string path, kira_string contents) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_write_file\");\n");
+        try self.write("    FILE* f = fopen(path, \"wb\");\n");
+        try self.write("    if (!f) return kira_make_err(\"FileNotFound\");\n");
+        try self.write("    size_t len = strlen(contents);\n");
+        try self.write("    size_t written = fwrite(contents, 1, len, f);\n");
+        try self.write("    fclose(f);\n");
+        try self.write("    if (written != len) return kira_make_err(\"WriteError\");\n");
+        try self.write("    return kira_make_ok(0);\n");
+        try self.write("}\n\n");
+
+        // fs_exists(path) -> bool
+        try self.write("static kira_int kira_fs_exists(kira_string path) {\n");
+        try self.write("    return access(path, F_OK) == 0 ? 1 : 0;\n");
+        try self.write("}\n\n");
+
+        // fs_remove(path) -> Result[void, string]
+        try self.write("static kira_int kira_fs_remove(kira_string path) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_remove\");\n");
+        try self.write("    if (unlink(path) == 0) return kira_make_ok(0);\n");
+        try self.write("    return kira_make_err(\"RemoveError\");\n");
+        try self.write("}\n\n");
+
+        // fs_append_file(path, contents) -> Result[void, string]
+        try self.write("static kira_int kira_fs_append_file(kira_string path, kira_string contents) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_append_file\");\n");
+        try self.write("    FILE* f = fopen(path, \"ab\");\n");
+        try self.write("    if (!f) return kira_make_err(\"FileNotFound\");\n");
+        try self.write("    size_t len = strlen(contents);\n");
+        try self.write("    size_t written = fwrite(contents, 1, len, f);\n");
+        try self.write("    fclose(f);\n");
+        try self.write("    if (written != len) return kira_make_err(\"WriteError\");\n");
+        try self.write("    return kira_make_ok(0);\n");
+        try self.write("}\n\n");
+
+        // --- Tier 5: Time helpers ---
+        // time_now() -> i64 (milliseconds since epoch)
+        try self.write("static kira_int kira_time_now(void) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"time_now\");\n");
+        try self.write("    struct timeval tv;\n");
+        try self.write("    gettimeofday(&tv, NULL);\n");
+        try self.write("    return (kira_int)(tv.tv_sec * 1000LL + tv.tv_usec / 1000);\n");
+        try self.write("}\n\n");
+
+        // time_sleep(ms) -> void
+        try self.write("static void kira_time_sleep(kira_int ms) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"time_sleep\");\n");
+        try self.write("    usleep((useconds_t)(ms * 1000));\n");
+        try self.write("}\n\n");
     }
 
     // ----------------------------------------------------------------
@@ -717,7 +802,34 @@ pub const CCodeGen = struct {
                         try self.writeFmt("v{d} = 0;\n", .{ref});
                     }
                 } else if (std.mem.eql(u8, c.name, "read_line")) {
-                    try self.writeFmt("{{ char* _buf = (char*)GC_MALLOC(4096); if (fgets(_buf, 4096, stdin)) {{ size_t _l = strlen(_buf); if (_l > 0 && _buf[_l-1] == '\\n') _buf[_l-1] = '\\0'; v{d} = (kira_int)(intptr_t)_buf; }} else {{ v{d} = (kira_int)(intptr_t)\"\"; }} }}\n", .{ ref, ref });
+                    // read_line returns Result[string, string]: Ok=tag 0, Err=tag 1
+                    try self.writeFmt("{{ char* _buf = (char*)GC_MALLOC(4096); if (fgets(_buf, 4096, stdin)) {{ size_t _l = strlen(_buf); if (_l > 0 && _buf[_l-1] == '\\n') _buf[_l-1] = '\\0'; v{d} = kira_make_ok((kira_int)(intptr_t)_buf); }} else {{ v{d} = kira_make_err(\"ReadError\"); }} }}\n", .{ ref, ref });
+
+                    // --- Tier 5: Filesystem builtins ---
+                } else if (std.mem.eql(u8, c.name, "fs_read_file")) {
+                    try self.writeFmt("v{d} = kira_fs_read_file((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "fs_write_file")) {
+                    try self.writeFmt("v{d} = kira_fs_write_file((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "fs_exists")) {
+                    try self.writeFmt("v{d} = kira_fs_exists((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "fs_remove")) {
+                    try self.writeFmt("v{d} = kira_fs_remove((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "fs_append_file")) {
+                    try self.writeFmt("v{d} = kira_fs_append_file((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1] });
+
+                    // --- Tier 5: Time builtins ---
+                } else if (std.mem.eql(u8, c.name, "time_now")) {
+                    try self.writeFmt("v{d} = kira_time_now();\n", .{ref});
+                } else if (std.mem.eql(u8, c.name, "time_sleep")) {
+                    try self.writeFmt("kira_time_sleep(v{d}); v{d} = 0;\n", .{ c.args[0], ref });
+
+                    // --- Tier 5: Assert builtins ---
+                } else if (std.mem.eql(u8, c.name, "assert_eq")) {
+                    try self.writeFmt("if (v{d} != v{d}) {{ fprintf(stderr, \"Assertion failed: assert_eq\\n\"); abort(); }} v{d} = 0;\n", .{ c.args[0], c.args[1], ref });
+                } else if (std.mem.eql(u8, c.name, "assert_not_eq")) {
+                    try self.writeFmt("if (v{d} == v{d}) {{ fprintf(stderr, \"Assertion failed: assert_not_eq\\n\"); abort(); }} v{d} = 0;\n", .{ c.args[0], c.args[1], ref });
+                } else if (std.mem.eql(u8, c.name, "assert_contains")) {
+                    try self.writeFmt("if (strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) == NULL) {{ fprintf(stderr, \"Assertion failed: assert_contains\\n\"); abort(); }} v{d} = 0;\n", .{ c.args[0], c.args[1], ref });
 
                 } else {
                     // Unknown builtin — emit as comment for debugging
