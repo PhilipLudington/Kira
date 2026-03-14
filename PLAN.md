@@ -2,7 +2,7 @@
 
 ## Overview
 Mature Kira's C code generation backend from "basic programs work" to "correct, complete, and safe." Reference: DESIGN.md, src/codegen.zig.
-Current status: Phases 0-3 functionally complete. 616 total tests pass (18 E2E). Remaining: docs/flags (Phase 1), example programs (blocked by closures/ADT gaps).
+Current status: Phases 0-3 complete. 616 total tests pass (18 E2E). Only remaining: example programs `simple_parser.ki`/`word_count.ki` (blocked by closures/list ops/ADT codegen gaps in IR lowerer).
 
 ## Phase 0: E2E Test Harness
 
@@ -60,8 +60,8 @@ Each test: Kira source as string literal → run through both paths → assert o
 - [x] Update E2E harness to pass `-lgc` (and `-I/opt/homebrew/include -L/opt/homebrew/lib` on macOS)
 - [x] Update unit tests that assert `malloc(` → assert `GC_MALLOC(`
 - [x] E2E test: heavy-allocation program (10k string concats in loop) doesn't crash or exhaust memory
-- [ ] Document: `brew install bdw-gc` (macOS) / `apt install libgc-dev` (Linux)
-- [ ] Consider `--no-gc` flag for environments without libgc (fallback to malloc)
+- [x] Document: GC install instructions added to docs/reference.md (brew, apt, dnf)
+- [x] `KIRA_NO_GC` compile flag: `GC_MALLOC` → `KIRA_ALLOC` macro, `GC_INIT()` → `KIRA_GC_INIT()` macro; compile with `-DKIRA_NO_GC` to fall back to plain malloc
 
 ### Testing Strategy
 Run E2E tests normally — Boehm GC is a drop-in replacement. Optionally verify with `leaks` tool on macOS. Key test: loop allocating many tuples/strings completes without memory growth.

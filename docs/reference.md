@@ -1109,6 +1109,45 @@ including string ownership, ADT types, and the `[exports]` configuration.
 
 ---
 
+## Compiling Generated C
+
+The generated C code requires the [Boehm GC](https://www.hboehm.info/gc/) library
+for garbage collection. Install it before compiling:
+
+```bash
+# macOS
+brew install bdw-gc
+
+# Linux (Debian/Ubuntu)
+apt install libgc-dev
+
+# Linux (Fedora/RHEL)
+dnf install gc-devel
+```
+
+Compile a standalone Kira program:
+
+```bash
+cc -o myapp myapp.c -lm -lgc
+```
+
+On macOS with Homebrew, you may need include/library paths:
+
+```bash
+cc -o myapp myapp.c -lm -I/opt/homebrew/include -L/opt/homebrew/lib -lgc
+```
+
+### Without GC
+
+If libgc is unavailable, compile with `-DKIRA_NO_GC` to fall back to plain
+`malloc` (no automatic garbage collection — long-running programs may leak):
+
+```bash
+cc -o myapp myapp.c -lm -DKIRA_NO_GC
+```
+
+---
+
 ## Grammar Summary (EBNF)
 
 ```ebnf
