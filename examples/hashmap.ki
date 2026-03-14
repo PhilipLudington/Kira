@@ -1,0 +1,90 @@
+// HashMap Example
+// Demonstrates key-value storage with std.map
+
+// Count word frequencies in a sentence
+fn word_frequencies(s: string) -> HashMap[string, i32] {
+    var freq: HashMap[string, i32] = std.map.new()
+    let words: List[string] = std.string.split(s, " ")
+    std.list.foreach(words, fn(w: string) -> void {
+        match std.map.get(freq, w) {
+            Some(count) => { freq = std.map.put(freq, w, count + 1) }
+            None => { freq = std.map.put(freq, w, 1) }
+        }
+    })
+    return freq
+}
+
+// Build a simple phone book
+fn make_phone_book() -> HashMap[string, string] {
+    var book: HashMap[string, string] = std.map.new()
+    book = std.map.put(book, "Alice", "555-0101")
+    book = std.map.put(book, "Bob", "555-0102")
+    book = std.map.put(book, "Charlie", "555-0103")
+    book = std.map.put(book, "Diana", "555-0104")
+    return book
+}
+
+// Look up a name and format the result
+fn lookup(book: HashMap[string, string], name: string) -> string {
+    match std.map.get(book, name) {
+        Some(number) => { return "${name}: ${number}" }
+        None => { return "${name}: not found" }
+    }
+}
+
+effect fn main() -> void {
+    std.io.println("HashMap Example")
+    std.io.println("===============")
+
+    // Basic operations
+    std.io.println("")
+    std.io.println("Phone Book:")
+    let book: HashMap[string, string] = make_phone_book()
+    let r1: string = lookup(book, "Alice")
+    let r2: string = lookup(book, "Bob")
+    let r3: string = lookup(book, "Eve")
+    std.io.println("  ${r1}")
+    std.io.println("  ${r2}")
+    std.io.println("  ${r3}")
+    let size: i64 = std.map.size(book)
+    std.io.println("  Size: ${std.int.to_string(size)}")
+
+    // Contains check
+    std.io.println("")
+    std.io.println("Contains checks:")
+    if std.map.contains(book, "Charlie") {
+        std.io.println("  Charlie is in the book")
+    }
+    if std.map.contains(book, "Eve") == false {
+        std.io.println("  Eve is NOT in the book")
+    }
+
+    // Remove an entry
+    let smaller: HashMap[string, string] = std.map.remove(book, "Bob")
+    std.io.println("")
+    std.io.println("After removing Bob:")
+    let size2: i64 = std.map.size(smaller)
+    std.io.println("  Size: ${std.int.to_string(size2)}")
+    let r4: string = lookup(smaller, "Bob")
+    std.io.println("  ${r4}")
+
+    // Keys and values
+    std.io.println("")
+    std.io.println("All keys:")
+    let keys: List[string] = std.map.keys(book)
+    std.list.foreach(keys, fn(k: string) -> void {
+        std.io.println("  - ${k}")
+    })
+
+    // Character frequency counting
+    std.io.println("")
+    std.io.println("Word frequencies in 'the cat sat on the mat the cat':")
+    let freq: HashMap[string, i32] = word_frequencies("the cat sat on the mat the cat")
+    let freq_keys: List[string] = std.map.keys(freq)
+    std.list.foreach(freq_keys, fn(w: string) -> void {
+        match std.map.get(freq, w) {
+            Some(count) => { std.io.println("  '${w}' -> ${std.int.to_string(count)}") }
+            None => {}
+        }
+    })
+}

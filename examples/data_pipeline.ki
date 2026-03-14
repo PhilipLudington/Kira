@@ -1,0 +1,145 @@
+// Data Pipeline
+// Demonstrates functional list processing with map, filter, and fold
+
+// --- Data types ---
+
+type Person = {
+    name: string,
+    age: i32,
+    city: string
+}
+
+// --- Helper functions ---
+
+fn make_person(name: string, age: i32, city: string) -> Person {
+    return Person { name: name, age: age, city: city }
+}
+
+fn person_to_string(p: Person) -> string {
+    return "${p.name} (age ${std.int.to_string(p.age)}, ${p.city})"
+}
+
+// --- Pipeline operations ---
+
+// Get names of all adults (age >= 18)
+fn adult_names(people: List[Person]) -> List[string] {
+    let adults: List[Person] = std.list.filter(people, fn(p: Person) -> bool {
+        return p.age >= 18
+    })
+    return std.list.map(adults, fn(p: Person) -> string {
+        return p.name
+    })
+}
+
+// Calculate average age
+fn average_age(people: List[Person]) -> i32 {
+    // Count and sum in one fold using a record
+    let count: i64 = std.list.length(people)
+    if count == 0i64 { return 0 }
+    let total: i32 = std.list.fold(people, 0, fn(sum: i32, p: Person) -> i32 {
+        return sum + p.age
+    })
+    // Integer division: total / count (both are small enough)
+    var n: i64 = count
+    var result: i32 = total
+    // Repeated subtraction division since we can't mix i32/i64 directly
+    // But total/count for small values - just divide total by the numeric count
+    var divisor: i32 = 0
+    var remaining: i64 = count
+    while remaining > 0i64 {
+        divisor = divisor + 1
+        remaining = remaining - 1i64
+    }
+    return total / divisor
+}
+
+// Find oldest person
+fn oldest(people: List[Person]) -> Option[Person] {
+    return std.list.fold(people, None, fn(best: Option[Person], p: Person) -> Option[Person] {
+        match best {
+            None => { return Some(p) }
+            Some(b) => {
+                if p.age > b.age { return Some(p) }
+                return best
+            }
+        }
+    })
+}
+
+// Group by city: count people per city
+fn count_by_city(people: List[Person]) -> HashMap[string, i32] {
+    return std.list.fold(people, std.map.new(), fn(counts: HashMap[string, i32], p: Person) -> HashMap[string, i32] {
+        match std.map.get(counts, p.city) {
+            Some(n) => { return std.map.put(counts, p.city, n + 1) }
+            None => { return std.map.put(counts, p.city, 1) }
+        }
+    })
+}
+
+effect fn main() -> void {
+    std.io.println("Data Pipeline")
+    std.io.println("=============")
+
+    // Build dataset
+    let people: List[Person] = Cons(
+        make_person("Alice", 30, "NYC"), Cons(
+        make_person("Bob", 17, "LA"), Cons(
+        make_person("Charlie", 25, "NYC"), Cons(
+        make_person("Diana", 15, "Chicago"), Cons(
+        make_person("Eve", 35, "LA"), Cons(
+        make_person("Frank", 28, "NYC"), Cons(
+        make_person("Grace", 22, "Chicago"),
+    Nil)))))))
+
+    // Show everyone
+    std.io.println("")
+    std.io.println("All people:")
+    std.list.foreach(people, fn(p: Person) -> void {
+        std.io.println("  ${person_to_string(p)}")
+    })
+
+    // Filter: adults only
+    std.io.println("")
+    std.io.println("Adults (18+):")
+    let adults: List[string] = adult_names(people)
+    std.list.foreach(adults, fn(name: string) -> void {
+        std.io.println("  - ${name}")
+    })
+
+    // Aggregate: average age
+    std.io.println("")
+    std.io.println("Average age: ${std.int.to_string(average_age(people))}")
+
+    // Find: oldest person
+    match oldest(people) {
+        Some(p) => { std.io.println("Oldest: ${person_to_string(p)}") }
+        None => { std.io.println("No people!") }
+    }
+
+    // Group: count by city
+    std.io.println("")
+    std.io.println("People per city:")
+    let city_counts: HashMap[string, i32] = count_by_city(people)
+    let cities: List[string] = std.map.keys(city_counts)
+    std.list.foreach(cities, fn(city: string) -> void {
+        match std.map.get(city_counts, city) {
+            Some(count) => { std.io.println("  ${city}: ${std.int.to_string(count)}") }
+            None => {}
+        }
+    })
+
+    // Chained transform: uppercase names of adults in NYC
+    std.io.println("")
+    std.io.println("Adults in NYC (uppercase):")
+    let nyc_adults: List[string] = std.list.map(
+        std.list.filter(people, fn(p: Person) -> bool {
+            return p.age >= 18 and p.city == "NYC"
+        }),
+        fn(p: Person) -> string {
+            return std.string.to_upper(p.name)
+        }
+    )
+    std.list.foreach(nyc_adults, fn(name: string) -> void {
+        std.io.println("  - ${name}")
+    })
+}

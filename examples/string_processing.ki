@@ -1,0 +1,145 @@
+// String Processing
+// Demonstrates std.string operations and interpolation
+
+// Check if a string is a palindrome
+fn is_palindrome(s: string) -> bool {
+    let chars: List[char] = std.string.chars(s)
+    let reversed: List[char] = std.list.reverse(chars)
+    // Build strings from char lists using interpolation
+    let original: string = std.list.fold(chars, "", fn(acc: string, c: char) -> string {
+        return "${acc}${c}"
+    })
+    let rev_str: string = std.list.fold(reversed, "", fn(acc: string, c: char) -> string {
+        return "${acc}${c}"
+    })
+    return original == rev_str
+}
+
+// Simple Caesar cipher (shift letters by n)
+fn caesar_encrypt(text: string, shift: i64) -> string {
+    let upper: string = std.string.to_upper(text)
+    let chars: List[char] = std.string.chars(upper)
+    let shifted: List[string] = std.list.map(chars, fn(c: char) -> string {
+        let code: i64 = std.char.to_i32(c)
+        let shift64: i64 = shift
+        // Only shift A-Z (65-90)
+        if code >= 65i64 and code <= 90i64 {
+            let new_code: i64 = ((code - 65i64 + shift64) % 26i64) + 65i64
+            match std.char.from_i32(new_code) {
+                Some(new_char) => { return "${new_char}" }
+                None => { return "${c}" }
+            }
+        }
+        return "${c}"
+    })
+    return std.list.fold(shifted, "", fn(acc: string, c: string) -> string {
+        return "${acc}${c}"
+    })
+}
+
+// Count occurrences of a substring
+fn count_occurrences(haystack: string, needle: string) -> i64 {
+    let parts: List[string] = std.string.split(haystack, needle)
+    let num_parts: i64 = std.list.length(parts)
+    if num_parts > 1i64 {
+        return num_parts - 1i64
+    }
+    return 0i64
+}
+
+effect fn main() -> void {
+    std.io.println("String Processing")
+    std.io.println("==================")
+
+    // String interpolation
+    let name: string = "Kira"
+    let version: i32 = 1
+    std.io.println("Welcome to ${name} v${std.int.to_string(version)}!")
+
+    // Case conversion
+    std.io.println("")
+    std.io.println("Case conversion:")
+    let upper: string = std.string.to_upper("hello")
+    let lower: string = std.string.to_lower("HELLO")
+    std.io.println("  to_upper('hello') = ${upper}")
+    std.io.println("  to_lower('HELLO') = ${lower}")
+
+    // Trimming
+    std.io.println("")
+    std.io.println("Trimming:")
+    let padded: string = "   spaces around   "
+    let trimmed: string = std.string.trim(padded)
+    std.io.println("  before: '${padded}'")
+    std.io.println("  after:  '${trimmed}'")
+
+    // Searching
+    std.io.println("")
+    std.io.println("Searching:")
+    let text: string = "the quick brown fox jumps over the lazy dog"
+    if std.string.contains(text, "fox") {
+        std.io.println("  contains 'fox': true")
+    }
+    if std.string.contains(text, "cat") == false {
+        std.io.println("  contains 'cat': false")
+    }
+    if std.string.starts_with(text, "the") {
+        std.io.println("  starts with 'the': true")
+    }
+    if std.string.ends_with(text, "dog") {
+        std.io.println("  ends with 'dog': true")
+    }
+
+    // Replace
+    std.io.println("")
+    std.io.println("Replace:")
+    let replaced: string = std.string.replace(text, "fox", "cat")
+    std.io.println("  ${replaced}")
+
+    // Split
+    std.io.println("")
+    std.io.println("Split:")
+    let csv: string = "apple,banana,cherry,date"
+    let parts: List[string] = std.string.split(csv, ",")
+    std.io.println("  CSV: ${csv}")
+    std.io.println("  Parts: ${std.int.to_string(std.list.length(parts))} items")
+    std.list.foreach(parts, fn(part: string) -> void {
+        std.io.println("    - ${part}")
+    })
+
+    // Substring
+    std.io.println("")
+    std.io.println("Substring:")
+    let sub: Option[string] = std.string.substring("hello world", 0i64, 5i64)
+    match sub {
+        Some(s) => { std.io.println("  'hello world'[0:5] = '${s}'") }
+        None => { std.io.println("  out of bounds") }
+    }
+
+    // Count occurrences
+    std.io.println("")
+    let sentence: string = "the cat sat on the mat with the bat"
+    let count: i64 = count_occurrences(sentence, "the")
+    std.io.println("Occurrences of 'the' in '${sentence}': ${std.int.to_string(count)}")
+
+    // Palindrome check
+    std.io.println("")
+    std.io.println("Palindromes:")
+    let words: List[string] = Cons("racecar", Cons("hello", Cons("madam", Cons("world", Cons("level", Nil)))))
+    std.list.foreach(words, fn(w: string) -> void {
+        if is_palindrome(w) {
+            std.io.println("  '${w}' is a palindrome")
+        } else {
+            std.io.println("  '${w}' is not a palindrome")
+        }
+    })
+
+    // Caesar cipher
+    std.io.println("")
+    std.io.println("Caesar cipher (shift 3):")
+    let message: string = "HELLO WORLD"
+    let encrypted: string = caesar_encrypt(message, 3i64)
+    std.io.println("  plaintext:  ${message}")
+    std.io.println("  encrypted:  ${encrypted}")
+    let decrypted: string = caesar_encrypt(encrypted, 23i64)
+    std.io.println("  decrypted:  ${decrypted}")
+}

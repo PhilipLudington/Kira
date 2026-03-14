@@ -1,0 +1,68 @@
+// Closures and Higher-Order Functions
+// Demonstrates lambdas, closures, and function composition
+
+// A function that returns a function (closure over `factor`)
+fn multiplier(factor: i32) -> fn(i32) -> i32 {
+    return fn(x: i32) -> i32 { return x * factor }
+}
+
+// Apply a function twice
+fn apply_twice(f: fn(i32) -> i32, x: i32) -> i32 {
+    return f(f(x))
+}
+
+// Compose two functions: compose(f, g)(x) = f(g(x))
+fn compose(f: fn(i32) -> i32, g: fn(i32) -> i32) -> fn(i32) -> i32 {
+    return fn(x: i32) -> i32 { return f(g(x)) }
+}
+
+// A pipeline: apply a list of transformations
+fn pipeline(value: i32, transforms: List[fn(i32) -> i32]) -> i32 {
+    return std.list.fold(transforms, value, fn(acc: i32, f: fn(i32) -> i32) -> i32 {
+        return f(acc)
+    })
+}
+
+effect fn main() -> void {
+    std.io.println("Closures and Higher-Order Functions")
+    std.io.println("====================================")
+
+    // Basic lambda
+    let double: fn(i32) -> i32 = fn(x: i32) -> i32 { return x * 2 }
+    std.io.println("double(5) = ${double(5)}")
+
+    // Closure: captures `factor` from enclosing scope
+    let triple: fn(i32) -> i32 = multiplier(3)
+    let times_five: fn(i32) -> i32 = multiplier(5)
+    std.io.println("triple(4) = ${triple(4)}")
+    std.io.println("times_five(4) = ${times_five(4)}")
+
+    // Apply a function twice
+    std.io.println("")
+    std.io.println("Applying twice:")
+    let add_one: fn(i32) -> i32 = fn(x: i32) -> i32 { return x + 1 }
+    std.io.println("  apply_twice(add_one, 5) = ${apply_twice(add_one, 5)}")
+    std.io.println("  apply_twice(double, 3) = ${apply_twice(double, 3)}")
+
+    // Function composition
+    std.io.println("")
+    std.io.println("Composition:")
+    let double_then_add_one: fn(i32) -> i32 = compose(add_one, double)
+    let add_one_then_double: fn(i32) -> i32 = compose(double, add_one)
+    std.io.println("  (double then add_one)(5) = ${double_then_add_one(5)}")
+    std.io.println("  (add_one then double)(5) = ${add_one_then_double(5)}")
+
+    // Closure capturing mutable state
+    std.io.println("")
+    std.io.println("Closures with captured values:")
+    let offset: i32 = 100
+    let add_offset: fn(i32) -> i32 = fn(x: i32) -> i32 { return x + offset }
+    std.io.println("  add_offset(42) = ${add_offset(42)}")
+
+    // Pipeline: chain transformations
+    std.io.println("")
+    std.io.println("Pipeline (add 1, then double, then triple):")
+    let steps: List[fn(i32) -> i32] = Cons(add_one, Cons(double, Cons(triple, Nil)))
+    let result: i32 = pipeline(5, steps)
+    std.io.println("  pipeline(5) = ${result}")
+}

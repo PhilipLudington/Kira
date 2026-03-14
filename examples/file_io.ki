@@ -1,0 +1,121 @@
+// File I/O Example
+// Demonstrates reading, writing, and managing files with std.fs
+
+// Write a simple config file and read it back
+effect fn write_config(path: string) -> Result[string, string] {
+    std.fs.write_file(path, "host=localhost\nport=8080\nlog_level=info\n")
+    return std.fs.read_file(path)
+}
+
+// Parse a simple key=value config format
+fn parse_config(content: string) -> HashMap[string, string] {
+    let lines: List[string] = std.string.split(content, "\n")
+    return std.list.fold(lines, std.map.new(), fn(config: HashMap[string, string], line: string) -> HashMap[string, string] {
+        let trimmed: string = std.string.trim(line)
+        if std.string.length(trimmed) == 0i64 {
+            return config
+        }
+        let parts: List[string] = std.string.split(trimmed, "=")
+        match std.list.head(parts) {
+            Some(key) => {
+                match std.list.tail(parts) {
+                    Some(rest) => {
+                        match std.list.head(rest) {
+                            Some(value) => {
+                                return std.map.put(config, key, value)
+                            }
+                            None => { return config }
+                        }
+                    }
+                    None => { return config }
+                }
+            }
+            None => { return config }
+        }
+    })
+}
+
+// Look up a config value with a default
+fn config_get(config: HashMap[string, string], key: string, default: string) -> string {
+    match std.map.get(config, key) {
+        Some(value) => { return value }
+        None => { return default }
+    }
+}
+
+effect fn main() -> void {
+    std.io.println("File I/O Example")
+    std.io.println("================")
+
+    let path: string = "/tmp/kira_config.txt"
+
+    // Write a config file
+    std.io.println("")
+    std.io.println("Writing config to ${path}...")
+    match write_config(path) {
+        Ok(content) => {
+            std.io.println("Config written and read back:")
+            std.io.println(content)
+        }
+        Err(e) => {
+            std.io.println("Error: ${e}")
+        }
+    }
+
+    // Check existence
+    if std.fs.exists(path) {
+        std.io.println("File exists: true")
+    }
+
+    // Read and parse
+    std.io.println("")
+    std.io.println("Parsing config:")
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            let config: HashMap[string, string] = parse_config(content)
+            let host: string = config_get(config, "host", "unknown")
+            let port: string = config_get(config, "port", "unknown")
+            let log_level: string = config_get(config, "log_level", "unknown")
+            let timeout: string = config_get(config, "timeout", "30")
+            std.io.println("  host = ${host}")
+            std.io.println("  port = ${port}")
+            std.io.println("  log_level = ${log_level}")
+            std.io.println("  timeout = ${timeout} (default)")
+        }
+        Err(e) => {
+            std.io.println("  Read error: ${e}")
+        }
+    }
+
+    // Append to file
+    std.io.println("")
+    std.io.println("Appending timeout=60...")
+    std.fs.append_file(path, "timeout=60\n")
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            let config: HashMap[string, string] = parse_config(content)
+            let timeout: string = config_get(config, "timeout", "unknown")
+            std.io.println("  timeout = ${timeout}")
+        }
+        Err(e) => {
+            std.io.println("  Error: ${e}")
+        }
+    }
+
+    // Handle missing files gracefully
+    std.io.println("")
+    std.io.println("Reading non-existent file:")
+    match std.fs.read_file("/tmp/does_not_exist_kira.txt") {
+        Ok(content) => { std.io.println("  Unexpected success") }
+        Err(e) => { std.io.println("  Expected error: ${e}") }
+    }
+
+    // Cleanup
+    std.fs.remove(path)
+    std.io.println("")
+    if std.fs.exists(path) {
+        std.io.println("Cleanup failed")
+    } else {
+        std.io.println("Cleanup: file removed")
+    }
+}
