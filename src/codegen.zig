@@ -886,9 +886,28 @@ pub const CCodeGen = struct {
                 } else {
                     try self.writeFmt("v{d} = kira_{s}(", .{ ref, c.name });
                 }
+                // Look up target function params for type-aware argument casting
+                const target_params: ?[]const Function.Param = if (self.current_module) |m| blk: {
+                    if (m.function_map.get(c.name)) |idx| {
+                        break :blk m.functions.items[idx].params;
+                    }
+                    break :blk null;
+                } else null;
+
                 for (c.args, 0..) |a, i| {
                     if (i > 0) try self.write(", ");
-                    try self.writeFmt("v{d}", .{a});
+                    // Cast kira_int to proper C type for string/float params
+                    if (target_params) |params| {
+                        if (i < params.len and std.mem.eql(u8, params[i].type_name, "string")) {
+                            try self.writeFmt("(const char*)(intptr_t)v{d}", .{a});
+                        } else if (i < params.len and (std.mem.eql(u8, params[i].type_name, "f32") or std.mem.eql(u8, params[i].type_name, "f64"))) {
+                            try self.writeFmt("({s})v{d}", .{ kiraTypeToCType(params[i].type_name), a });
+                        } else {
+                            try self.writeFmt("v{d}", .{a});
+                        }
+                    } else {
+                        try self.writeFmt("v{d}", .{a});
+                    }
                 }
                 if (is_void) {
                     try self.writeFmt("); v{d} = 0;\n", .{ref});
@@ -1193,7 +1212,16 @@ pub const CCodeGen = struct {
             .param => |idx| {
                 // Map parameter index to parameter name
                 if (idx < func.params.len) {
-                    try self.writeFmt("v{d} = {s};\n", .{ ref, sanitizeName(func.params[idx].name) });
+                    const p = func.params[idx];
+                    if (std.mem.eql(u8, p.type_name, "string")) {
+                        // String params are const char* but SSA vars are kira_int
+                        try self.writeFmt("v{d} = (kira_int)(intptr_t){s};\n", .{ ref, sanitizeName(p.name) });
+                    } else if (std.mem.eql(u8, p.type_name, "f32") or std.mem.eql(u8, p.type_name, "f64")) {
+                        // Float params need memcpy into kira_int
+                        try self.writeFmt("memcpy(&v{d}, &{s}, sizeof({s}));\n", .{ ref, sanitizeName(p.name), kiraTypeToCType(p.type_name) });
+                    } else {
+                        try self.writeFmt("v{d} = {s};\n", .{ ref, sanitizeName(p.name) });
+                    }
                 } else {
                     try self.writeFmt("v{d} = 0; /* param {d} */\n", .{ ref, idx });
                 }

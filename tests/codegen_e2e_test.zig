@@ -522,3 +522,101 @@ test "e2e: env_args returns array with program name" {
 
     try std.testing.expectEqualStrings("done", std.mem.trimRight(u8, output, "\n\r \t"));
 }
+
+// --- Example programs ---
+
+test "e2e: simple_parser example" {
+    try assertE2E(
+        \\type Expr =
+        \\    | Number(i64)
+        \\    | Add(Expr, Expr)
+        \\    | Sub(Expr, Expr)
+        \\    | Mul(Expr, Expr)
+        \\    | Div(Expr, Expr)
+        \\
+        \\fn eval(expr: Expr) -> Result[i64, string] {
+        \\    var result: Result[i64, string] = Ok(0i64)
+        \\    match expr {
+        \\        Number(n) => { result = Ok(n) }
+        \\        Add(left, right) => {
+        \\            match eval(left) {
+        \\                Ok(l) => {
+        \\                    match eval(right) {
+        \\                        Ok(r) => { result = Ok(l + r) }
+        \\                        Err(e) => { result = Err(e) }
+        \\                    }
+        \\                }
+        \\                Err(e) => { result = Err(e) }
+        \\            }
+        \\        }
+        \\        Sub(left, right) => {
+        \\            match eval(left) {
+        \\                Ok(l) => {
+        \\                    match eval(right) {
+        \\                        Ok(r) => { result = Ok(l - r) }
+        \\                        Err(e) => { result = Err(e) }
+        \\                    }
+        \\                }
+        \\                Err(e) => { result = Err(e) }
+        \\            }
+        \\        }
+        \\        Mul(left, right) => {
+        \\            match eval(left) {
+        \\                Ok(l) => {
+        \\                    match eval(right) {
+        \\                        Ok(r) => { result = Ok(l * r) }
+        \\                        Err(e) => { result = Err(e) }
+        \\                    }
+        \\                }
+        \\                Err(e) => { result = Err(e) }
+        \\            }
+        \\        }
+        \\        Div(left, right) => {
+        \\            match eval(left) {
+        \\                Ok(l) => {
+        \\                    match eval(right) {
+        \\                        Ok(r) => {
+        \\                            if r == 0 {
+        \\                                result = Err("Division by zero")
+        \\                            } else {
+        \\                                result = Ok(l / r)
+        \\                            }
+        \\                        }
+        \\                        Err(e) => { result = Err(e) }
+        \\                    }
+        \\                }
+        \\                Err(e) => { result = Err(e) }
+        \\            }
+        \\        }
+        \\    }
+        \\    return result
+        \\}
+        \\
+        \\fn show_expr(expr: Expr) -> string {
+        \\    var result: string = ""
+        \\    match expr {
+        \\        Number(n) => { result = std.int.to_string(n) }
+        \\        Add(left, right) => { result = "(" + show_expr(left) + " + " + show_expr(right) + ")" }
+        \\        Sub(left, right) => { result = "(" + show_expr(left) + " - " + show_expr(right) + ")" }
+        \\        Mul(left, right) => { result = "(" + show_expr(left) + " * " + show_expr(right) + ")" }
+        \\        Div(left, right) => { result = "(" + show_expr(left) + " / " + show_expr(right) + ")" }
+        \\    }
+        \\    return result
+        \\}
+        \\
+        \\effect fn main() -> void {
+        \\    let expr1: Expr = Add(Number(2i64), Number(3i64))
+        \\    std.io.println("Expression: " + show_expr(expr1))
+        \\    match eval(expr1) {
+        \\        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
+        \\        Err(e) => { std.io.println("Error: " + e) }
+        \\    }
+        \\    let expr2: Expr = Div(Number(10i64), Number(0i64))
+        \\    std.io.println("Expression: " + show_expr(expr2))
+        \\    match eval(expr2) {
+        \\        Ok(r) => { std.io.println("Result: " + std.int.to_string(r)) }
+        \\        Err(e) => { std.io.println("Error: " + e) }
+        \\    }
+        \\}
+    );
+}

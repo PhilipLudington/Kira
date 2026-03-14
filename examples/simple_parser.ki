@@ -124,8 +124,8 @@ fn parse_number(input: string) -> ParseResult {
         match std.string.char_at(cleaned, 0) {
             Some(c) => {
                 if is_digit(c) {
-                    var num: i64 = 0
-                    var idx: i64 = 0
+                    var num: i64 = 0i64
+                    var idx: i64 = 0i64
                     var done: bool = false
 
                     // Parse all consecutive digits
