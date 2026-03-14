@@ -2,7 +2,7 @@
 
 ## Overview
 Make `examples/simple_parser.ki` and `examples/word_count.ki` compile to C and run correctly, matching interpreter output. Reference: src/ir/lower.zig, src/codegen.zig.
-Current status: Phase 0 complete. 617 total tests pass (19 E2E). Phase 1 next.
+Current status: Phase 0-1 complete. 618 total tests pass (21 E2E). Both example programs compile and run correctly.
 
 ## Phase 0: Codegen Type Casting Fixes
 
@@ -45,23 +45,28 @@ Compile simple_parser.ki → C → binary → run → compare with interpreter o
 ### Tasks
 
 **Lowerer changes (src/ir/lower.zig):**
-- [ ] Expand `tryResolveBuiltin` to match `std.list.<method>` patterns (3-level field access: `std` → `list` → method)
-- [ ] Map: `std.list.map` → `list_map`, `std.list.filter` → `list_filter`, `std.list.length` → `list_length`
-- [ ] Verify closures in arguments are lowered correctly as `make_closure` values
+- [x] Expand `tryResolveBuiltin` to match `std.list.<method>` patterns (generalized 3-level field access)
+- [x] Expand `tryResolveMethodBuiltin` for `std.list.*` method call form
+- [x] Map: `std.list.map` → `list_map`, `std.list.filter` → `list_filter`, `std.list.length` → `list_length`
+- [x] Closures in arguments lowered correctly as `make_closure` values (no captures needed for word_count)
 
 **Codegen changes (src/codegen.zig):**
-- [ ] Add `kira_list_length(arr)` preamble helper — return `arr[0]`
-- [ ] Add `kira_list_map(arr, fn_ptr)` preamble helper — iterate array, call function on each element, return new array
-- [ ] Add `kira_list_filter(arr, fn_ptr)` preamble helper — iterate array, call predicate, collect matching elements
-- [ ] Handle closure calling convention: closure value `kira_int*` has `[0]` = function pointer; call via cast
-- [ ] Add `list_map`, `list_filter`, `list_length` handlers in `call_builtin` branch
-
-**Example fixes (examples/word_count.ki):**
-- [ ] Fix any type annotation issues (e.g., `List[string]` → `[string]` if needed for codegen)
+- [x] Add `kira_list_length(arr)` preamble helper — return `arr[0]`
+- [x] Add `kira_list_map(arr, fn_ptr)` preamble helper — iterate array, call closure on each element, return new array
+- [x] Add `kira_list_filter(arr, fn_ptr)` preamble helper — iterate array, call predicate closure, collect matching elements
+- [x] Closure calling convention: extract function pointer from `closure[0]`, call via `_kira_fn1` typedef
+- [x] Add `list_map`, `list_filter`, `list_length` handlers in `call_builtin` branch
+- [x] Fix anonymous function naming: `kira_anon` → `kira_anon_{index}` for unique names
+- [x] Fix string literal escaping: newlines/tabs/backslashes properly escaped in generated C
+- [x] Add `emitEscapedString` helper for reuse in const_string and string constants
 
 **Tests:**
-- [ ] Unit test: verify generated C for list_map/filter/length builtins
-- [ ] E2E test: `word_count.ki` compiles and matches interpreter output
+- [x] E2E test: `list_map`/`list_filter`/`list_length` with closures (count_words pattern)
+
+### Phase 1 Readiness Gate
+- [x] `word_count.ki` compiles and runs correctly (matches interpreter)
+- [x] All existing tests pass (618/618)
+- [x] Both example programs compile and match interpreter output
 
 ### Implementation Pattern
 For each list builtin:

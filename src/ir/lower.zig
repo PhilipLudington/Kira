@@ -997,31 +997,41 @@ pub const Lowerer = struct {
         } });
     }
 
-    /// Check if an expression is a known builtin like std.io.println.
+    /// Check if an expression is a known builtin like std.io.println or std.list.map.
     /// Returns the builtin name if matched.
+    /// Matches 3-level field access: std.<module>.<method>
     fn tryResolveBuiltin(self: *Lowerer, expr: *const Expression) ?[]const u8 {
         _ = self;
-        // Match std.io.println, std.io.print, std.io.eprintln
         if (expr.kind != .field_access) return null;
         const fa = &expr.kind.field_access;
         const method = fa.field;
 
-        // Check if object is std.io (another field_access)
+        // Check if object is std.<module> (another field_access)
         if (fa.object.kind != .field_access) return null;
         const fa2 = &fa.object.kind.field_access;
-        if (!std.mem.eql(u8, fa2.field, "io")) return null;
+        const module_name = fa2.field;
 
-        // Check if object is "std" identifier
+        // Check if root is "std" identifier
         if (fa2.object.kind != .identifier) return null;
         if (!std.mem.eql(u8, fa2.object.kind.identifier.name, "std")) return null;
 
-        // Recognized std.io.* builtins
-        if (std.mem.eql(u8, method, "println") or
-            std.mem.eql(u8, method, "print") or
-            std.mem.eql(u8, method, "eprintln"))
-        {
-            return method;
+        // std.io.* builtins (function call form)
+        if (std.mem.eql(u8, module_name, "io")) {
+            if (std.mem.eql(u8, method, "println") or
+                std.mem.eql(u8, method, "print") or
+                std.mem.eql(u8, method, "eprintln"))
+            {
+                return method;
+            }
         }
+
+        // std.list.* builtins
+        if (std.mem.eql(u8, module_name, "list")) {
+            if (std.mem.eql(u8, method, "map")) return "list_map";
+            if (std.mem.eql(u8, method, "filter")) return "list_filter";
+            if (std.mem.eql(u8, method, "length")) return "list_length";
+        }
+
         return null;
     }
 
@@ -1171,6 +1181,13 @@ pub const Lowerer = struct {
         if (std.mem.eql(u8, module_name, "time")) {
             if (std.mem.eql(u8, method, "now")) return "time_now";
             if (std.mem.eql(u8, method, "sleep")) return "time_sleep";
+        }
+
+        // std.list builtins
+        if (std.mem.eql(u8, module_name, "list")) {
+            if (std.mem.eql(u8, method, "map")) return "list_map";
+            if (std.mem.eql(u8, method, "filter")) return "list_filter";
+            if (std.mem.eql(u8, method, "length")) return "list_length";
         }
 
         // std.env builtins (Tier 5)

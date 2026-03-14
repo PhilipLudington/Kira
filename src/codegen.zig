@@ -345,6 +345,42 @@ pub const CCodeGen = struct {
         try self.write("    return (kira_int)(intptr_t)arr;\n");
         try self.write("}\n\n");
 
+        // List operations (operate on Kira arrays: [length, elem0, elem1, ...])
+        try self.write("/* List operations */\n");
+        try self.write("typedef kira_int (*_kira_fn1)(kira_int);\n");
+        // list_length: return the length field of a Kira array
+        try self.write("static kira_int kira_list_length(kira_int arr_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)arr_val;\n");
+        try self.write("    return arr[0];\n");
+        try self.write("}\n");
+        // list_map: apply a closure to each element, return new array
+        try self.write("static kira_int kira_list_map(kira_int arr_val, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)arr_val;\n");
+        try self.write("    kira_int len = arr[0];\n");
+        try self.write("    kira_int* result = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    result[0] = len;\n");
+        try self.write("    kira_int* closure = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn_ptr = (_kira_fn1)(intptr_t)closure[0];\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) {\n");
+        try self.write("        result[i + 1] = fn_ptr(arr[i + 1]);\n");
+        try self.write("    }\n");
+        try self.write("    return (kira_int)(intptr_t)result;\n");
+        try self.write("}\n");
+        // list_filter: keep elements where predicate closure returns true
+        try self.write("static kira_int kira_list_filter(kira_int arr_val, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)arr_val;\n");
+        try self.write("    kira_int len = arr[0];\n");
+        try self.write("    kira_int* tmp = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    kira_int count = 0;\n");
+        try self.write("    kira_int* closure = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn_ptr = (_kira_fn1)(intptr_t)closure[0];\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) {\n");
+        try self.write("        if (fn_ptr(arr[i + 1])) { tmp[count + 1] = arr[i + 1]; count++; }\n");
+        try self.write("    }\n");
+        try self.write("    tmp[0] = count;\n");
+        try self.write("    return (kira_int)(intptr_t)tmp;\n");
+        try self.write("}\n\n");
+
         // Memoization cache support (general case: linked-list cache)
         try self.write("/* Memoization cache */\n");
         try self.write("#define KIRA_MEMO_ARRAY_SIZE 4096\n");
@@ -500,7 +536,7 @@ pub const CCodeGen = struct {
                 .boolean => |b| try self.writeFmt("static const bool kira_const_{s} = {s};\n", .{ c.name, if (b) "true" else "false" }),
                 .string => |s| {
                     try self.writeFmt("static const char* kira_const_{s} = \"", .{c.name});
-                    try self.write(s);
+                    try self.emitEscapedString(s);
                     try self.write("\";\n");
                 },
                 .char => |c_val| try self.writeFmt("static const uint32_t kira_const_{s} = {d};\n", .{ c.name, c_val }),
@@ -726,7 +762,17 @@ pub const CCodeGen = struct {
             try self.write("kira_");
             try self.write(name);
         } else {
-            try self.write("kira_anon");
+            // Unique name for anonymous closures using function index
+            try self.write("kira_anon_");
+            if (self.current_module) |m| {
+                for (m.functions.items, 0..) |*f, i| {
+                    if (f == func) {
+                        try self.writeFmt("{d}", .{i});
+                        return;
+                    }
+                }
+            }
+            try self.write("0");
         }
     }
 
@@ -788,7 +834,11 @@ pub const CCodeGen = struct {
             .const_bool => |b| try self.writeFmt("v{d} = {d};\n", .{ ref, @as(u1, if (b) 1 else 0) }),
             .const_char => |c| try self.writeFmt("v{d} = {d};\n", .{ ref, c }),
             .const_void => try self.writeFmt("v{d} = 0;\n", .{ref}),
-            .const_string => |s| try self.writeFmt("v{d} = (kira_int)(intptr_t)\"{s}\";\n", .{ ref, s }),
+            .const_string => |s| {
+                try self.writeFmt("v{d} = (kira_int)(intptr_t)\"", .{ref});
+                try self.emitEscapedString(s);
+                try self.write("\";\n");
+            },
             .int_binop => |b| {
                 const op_str: []const u8 = switch (b.op) {
                     .add => "+",
@@ -1052,6 +1102,12 @@ pub const CCodeGen = struct {
                     try self.writeFmt("v{d} = kira_time_now();\n", .{ref});
                 } else if (std.mem.eql(u8, c.name, "env_args")) {
                     try self.writeFmt("v{d} = kira_env_args();\n", .{ref});
+                } else if (std.mem.eql(u8, c.name, "list_length")) {
+                    try self.writeFmt("v{d} = kira_list_length(v{d});\n", .{ ref, c.args[0] });
+                } else if (std.mem.eql(u8, c.name, "list_map")) {
+                    try self.writeFmt("v{d} = kira_list_map(v{d}, v{d});\n", .{ ref, c.args[0], c.args[1] });
+                } else if (std.mem.eql(u8, c.name, "list_filter")) {
+                    try self.writeFmt("v{d} = kira_list_filter(v{d}, v{d});\n", .{ ref, c.args[0], c.args[1] });
                 } else if (std.mem.eql(u8, c.name, "time_sleep")) {
                     try self.writeFmt("kira_time_sleep(v{d}); v{d} = 0;\n", .{ c.args[0], ref });
 
@@ -1423,6 +1479,23 @@ pub const CCodeGen = struct {
 
     fn writeFmt(self: *CCodeGen, comptime fmt: []const u8, args: anytype) CodeGenError!void {
         std.fmt.format(self.output.writer(self.allocator), fmt, args) catch return CodeGenError.OutOfMemory;
+    }
+
+    /// Emit a string with C escape sequences for special characters.
+    fn emitEscapedString(self: *CCodeGen, s: []const u8) CodeGenError!void {
+        for (s) |ch| {
+            switch (ch) {
+                '\n' => try self.write("\\n"),
+                '\r' => try self.write("\\r"),
+                '\t' => try self.write("\\t"),
+                '\\' => try self.write("\\\\"),
+                '"' => try self.write("\\\""),
+                else => {
+                    var buf: [1]u8 = .{ch};
+                    try self.write(&buf);
+                },
+            }
+        }
     }
 
     fn writeIndent(self: *CCodeGen) CodeGenError!void {

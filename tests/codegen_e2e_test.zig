@@ -620,3 +620,26 @@ test "e2e: simple_parser example" {
         \\}
     );
 }
+
+test "e2e: list_map, list_filter, list_length with closures" {
+    try assertE2E(
+        \\fn count_words(text: string) -> i64 {
+        \\    let words: List[string] = std.string.split(text, " ")
+        \\    let trimmed: List[string] = std.list.map[string, string](
+        \\        words,
+        \\        fn(w: string) -> string { return std.string.trim(w) }
+        \\    )
+        \\    let non_empty: List[string] = std.list.filter[string](
+        \\        trimmed,
+        \\        fn(w: string) -> bool { return std.string.length(w) > 0 }
+        \\    )
+        \\    return std.list.length[string](non_empty)
+        \\}
+        \\
+        \\effect fn main() -> void {
+        \\    std.io.println(std.int.to_string(count_words("hello world")))
+        \\    std.io.println(std.int.to_string(count_words("  one  two  three  ")))
+        \\    std.io.println(std.int.to_string(count_words("")))
+        \\}
+    );
+}
