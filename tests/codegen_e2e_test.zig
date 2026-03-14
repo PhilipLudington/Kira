@@ -149,6 +149,59 @@ fn interpretAndCapture(allocator: Allocator, source: []const u8) ![]const u8 {
     return allocator.dupe(u8, capture.items);
 }
 
+/// Compile C source with extra flags, run, and return stderr + exit code.
+/// Used for testing abort/error paths (e.g. bounds checking).
+fn compileCAndRunExpectAbort(allocator: Allocator, c_source: []const u8, extra_flags: []const []const u8) ![]const u8 {
+    const c_path = "/tmp/kira_e2e_abort_test.c";
+    const bin_path = "/tmp/kira_e2e_abort_test";
+
+    // Write C source
+    {
+        const c_file = std.fs.cwd().createFile(c_path, .{}) catch return error.TempFileError;
+        defer c_file.close();
+        c_file.writeAll(c_source) catch return error.TempFileError;
+    }
+    defer std.fs.cwd().deleteFile(c_path) catch {};
+
+    // Build argv: cc -o bin src -lm -I... -L... -lgc [extra_flags...]
+    var argv_list = std.ArrayListUnmanaged([]const u8){};
+    defer argv_list.deinit(allocator);
+    const base_args = [_][]const u8{
+        "cc", "-o", bin_path, c_path, "-lm",
+        "-I/opt/homebrew/include", "-L/opt/homebrew/lib", "-lgc",
+    };
+    for (base_args) |a| argv_list.append(allocator, a) catch return error.OutOfMemory;
+    for (extra_flags) |f| argv_list.append(allocator, f) catch return error.OutOfMemory;
+
+    const cc_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv_list.items,
+    }) catch return error.CompilerNotFound;
+    defer allocator.free(cc_result.stdout);
+    defer allocator.free(cc_result.stderr);
+
+    if (cc_result.term != .Exited or cc_result.term.Exited != 0) {
+        return error.CompileFailed;
+    }
+    defer std.fs.cwd().deleteFile(bin_path) catch {};
+
+    // Run binary — expect non-zero exit (abort)
+    const run_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{bin_path},
+    }) catch return error.RunFailed;
+    defer allocator.free(run_result.stdout);
+
+    // Should NOT have exited cleanly
+    const exited_ok = (run_result.term == .Exited and run_result.term.Exited == 0);
+    if (exited_ok) {
+        allocator.free(run_result.stderr);
+        return error.RunFailed; // Expected abort but got clean exit
+    }
+
+    return run_result.stderr;
+}
+
 /// Run a Kira program through both compiled-C and interpreter paths,
 /// asserting the outputs match. Skips if cc is not available.
 fn assertE2E(source: []const u8) !void {
@@ -366,6 +419,21 @@ test "e2e: time_now returns positive value" {
     );
 }
 
+// --- GC stress test ---
+
+test "e2e: heavy allocation with GC" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    var i: i32 = 0
+        \\    while i < 10000 {
+        \\        let s: string = "item_" + std.int.to_string(i)
+        \\        i = i + 1
+        \\    }
+        \\    std.io.println("done: " + std.int.to_string(i))
+        \\}
+    );
+}
+
 // --- Tier 5: Assert builtins ---
 
 test "e2e: assert_eq passes" {
@@ -399,4 +467,32 @@ test "e2e: memo fibonacci" {
         \\    std.io.println(std.int.to_string(fibonacci(20)))
         \\}
     );
+}
+
+// --- Bounds checking ---
+
+test "e2e: out-of-bounds access aborts with KIRA_BOUNDS_CHECK" {
+    const allocator = std.testing.allocator;
+
+    // Program that accesses index 5 of a 3-element array
+    const source =
+        \\effect fn main() -> void {
+        \\    let arr: [i32] = [10, 20, 30]
+        \\    let x: i32 = arr[5]
+        \\    std.io.println(std.int.to_string(x))
+        \\}
+    ;
+
+    const c_code = compileToC(allocator, source) catch return;
+    defer allocator.free(c_code);
+
+    const extra_flags = [_][]const u8{"-DKIRA_BOUNDS_CHECK"};
+    const stderr_output = compileCAndRunExpectAbort(allocator, c_code, &extra_flags) catch |err| {
+        if (err == error.CompilerNotFound) return error.SkipZigTest;
+        return err;
+    };
+    defer allocator.free(stderr_output);
+
+    // Verify the error message mentions bounds
+    try std.testing.expect(std.mem.indexOf(u8, stderr_output, "bounds error") != null);
 }

@@ -2,7 +2,7 @@
 
 ## Overview
 Mature Kira's C code generation backend from "basic programs work" to "correct, complete, and safe." Reference: DESIGN.md, src/codegen.zig.
-Current status: Phase 3 nearly complete — memoization, string comparison, bounds checking, method_call cleanup done. 612 total tests pass (13 E2E).
+Current status: Phase 3 complete — memoization, string comparison, bounds checking, method_call audit done. 614 total tests pass (16 E2E). Remaining: docs/flags (Phase 1), env_args (Phase 2), example programs (blocked).
 
 ## Phase 0: E2E Test Harness
 
@@ -59,7 +59,7 @@ Each test: Kira source as string literal → run through both paths → assert o
 - [x] Replace `malloc(` → `GC_MALLOC(` at all 9 sites in `codegen.zig`
 - [x] Update E2E harness to pass `-lgc` (and `-I/opt/homebrew/include -L/opt/homebrew/lib` on macOS)
 - [x] Update unit tests that assert `malloc(` → assert `GC_MALLOC(`
-- [ ] E2E test: heavy-allocation program doesn't crash or exhaust memory
+- [x] E2E test: heavy-allocation program (10k string concats in loop) doesn't crash or exhaust memory
 - [ ] Document: `brew install bdw-gc` (macOS) / `apt install libgc-dev` (Linux)
 - [ ] Consider `--no-gc` flag for environments without libgc (fallback to malloc)
 
@@ -103,7 +103,7 @@ Run E2E tests normally — Boehm GC is a drop-in replacement. Optionally verify 
 - [x] `string_replace` — C preamble helper
 - [x] `string_parse_int` — `strtoll()`, returns Option-encoded variant
 - [x] `string_parse_float` — `strtod()`, returns Option-encoded variant
-- [ ] `string_concat` — already handled by `str_concat` IR instruction (verify)
+- [x] `string_concat` — verified: `+` on strings lowers to `str_concat` IR, codegen emits strlen+GC_MALLOC+strcpy/strcat
 
 **Tier 3 — Numeric builtins:**
 - [x] `int_abs` — ternary
@@ -177,7 +177,7 @@ Each builtin gets at least one E2E test. String builtins include empty-string ed
 **Bounds checking:**
 - [x] Wrap `index_get` / `index_set` with bounds check + abort
 - [x] Gate behind `#ifdef KIRA_BOUNDS_CHECK` (like existing `KIRA_DEBUG_EFFECTS`)
-- [ ] E2E test: out-of-bounds access produces clear error message
+- [x] E2E test: out-of-bounds access produces clear error message (compiled with `-DKIRA_BOUNDS_CHECK`, verifies abort + stderr)
 
 **String comparison:**
 - [x] `cmp` instruction on string operands: emit `strcmp()` instead of `==`
@@ -186,7 +186,7 @@ Each builtin gets at least one E2E test. String builtins include empty-string ed
 
 **method_call cleanup:**
 - [x] Changed abort message to include function name and SSA value ref
-- [ ] Audit if any examples or real programs produce `method_call` IR (beyond what gets resolved to `call_builtin`)
+- [x] Audit: trait/impl method calls (e.g. `.eq()`, `.show()`) produce unresolved `method_call` IR — by design, C codegen aborts at runtime since dynamic dispatch requires interpreter. All `std.*` builtins resolve to `call_builtin`.
 
 ### Testing Strategy
 Memoization: verify `memo_fibonacci(35)` completes quickly (< 1s) — without cache it would take minutes. Bounds checking: verify out-of-bounds produces descriptive abort. String comparison: verify string equality works by value.
