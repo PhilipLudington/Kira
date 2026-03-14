@@ -2,7 +2,7 @@
 
 ## Overview
 Mature Kira's C code generation backend from "basic programs work" to "correct, complete, and safe." Reference: DESIGN.md, src/codegen.zig.
-Current status: Phase 2 Tier 5 builtins complete (fs, time, assert). Phase 3 (partial) — string comparison, bounds checking, method_call cleanup done. Memoization deferred. 610 total tests pass (12 E2E).
+Current status: Phase 3 nearly complete — memoization, string comparison, bounds checking, method_call cleanup done. 612 total tests pass (13 E2E).
 
 ## Phase 0: E2E Test Harness
 
@@ -169,10 +169,10 @@ Each builtin gets at least one E2E test. String builtins include empty-string ed
 
 ### Tasks
 
-**Memoization (deferred):**
-- [ ] For `memo fn` with single int arg: emit static cache array `static kira_int _memo_cache[N]; static bool _memo_set[N];`
-- [ ] For general case: emit minimal hash table or defer to a linked-list cache
-- [ ] E2E test: `memo_fibonacci.ki` compiles and produces correct output
+**Memoization:**
+- [x] For `memo fn` with single int arg: emit static array cache (wrapper function pattern with `_memo_impl` + caching `kira_<name>` wrapper)
+- [x] For general case: emit linked-list cache (`_KiraMemoCache` with `_kira_memo_lookup`/`_kira_memo_store` in preamble)
+- [x] E2E test: `memo_fibonacci.ki` compiles and produces correct output (fib 0,1,5,10,20 match interpreter)
 
 **Bounds checking:**
 - [x] Wrap `index_get` / `index_set` with bounds check + abort

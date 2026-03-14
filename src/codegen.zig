@@ -318,6 +318,42 @@ pub const CCodeGen = struct {
         try self.write("    KIRA_ASSERT_EFFECT(\"time_sleep\");\n");
         try self.write("    usleep((useconds_t)(ms * 1000));\n");
         try self.write("}\n\n");
+
+        // Memoization cache support (general case: linked-list cache)
+        try self.write("/* Memoization cache */\n");
+        try self.write("#define KIRA_MEMO_ARRAY_SIZE 4096\n");
+        try self.write("#define KIRA_MEMO_LIST_MAX 4096\n");
+        try self.write("typedef struct _KiraMemoEntry {\n");
+        try self.write("    kira_int* args;\n");
+        try self.write("    int arg_count;\n");
+        try self.write("    kira_int result;\n");
+        try self.write("    struct _KiraMemoEntry* next;\n");
+        try self.write("} _KiraMemoEntry;\n");
+        try self.write("typedef struct {\n");
+        try self.write("    _KiraMemoEntry* head;\n");
+        try self.write("    int count;\n");
+        try self.write("} _KiraMemoCache;\n");
+        try self.write("static kira_int _kira_memo_lookup(_KiraMemoCache* cache, kira_int* args, int arg_count, bool* found) {\n");
+        try self.write("    for (_KiraMemoEntry* e = cache->head; e; e = e->next) {\n");
+        try self.write("        if (e->arg_count == arg_count && memcmp(e->args, args, arg_count * sizeof(kira_int)) == 0) {\n");
+        try self.write("            *found = true;\n");
+        try self.write("            return e->result;\n");
+        try self.write("        }\n");
+        try self.write("    }\n");
+        try self.write("    *found = false;\n");
+        try self.write("    return 0;\n");
+        try self.write("}\n");
+        try self.write("static void _kira_memo_store(_KiraMemoCache* cache, kira_int* args, int arg_count, kira_int result) {\n");
+        try self.write("    if (cache->count >= KIRA_MEMO_LIST_MAX) return;\n");
+        try self.write("    _KiraMemoEntry* e = (_KiraMemoEntry*)GC_MALLOC(sizeof(_KiraMemoEntry));\n");
+        try self.write("    e->args = (kira_int*)GC_MALLOC(arg_count * sizeof(kira_int));\n");
+        try self.write("    memcpy(e->args, args, arg_count * sizeof(kira_int));\n");
+        try self.write("    e->arg_count = arg_count;\n");
+        try self.write("    e->result = result;\n");
+        try self.write("    e->next = cache->head;\n");
+        try self.write("    cache->head = e;\n");
+        try self.write("    cache->count++;\n");
+        try self.write("}\n\n");
     }
 
     // ----------------------------------------------------------------
@@ -390,6 +426,9 @@ pub const CCodeGen = struct {
             } else {
                 try self.write("/* pure */ ");
             }
+            if (func.is_memoized) {
+                try self.write("/* memo */ ");
+            }
             try self.write(kiraTypeToCType(func.return_type_name));
             try self.write(" ");
             try self.emitFunctionName(func);
@@ -401,6 +440,22 @@ pub const CCodeGen = struct {
             }
             if (func.params.len == 0) try self.write("void");
             try self.write(");\n");
+
+            // For memoized functions, also forward-declare the _memo_impl version
+            if (func.is_memoized) {
+                try self.write("static ");
+                try self.write(kiraTypeToCType(func.return_type_name));
+                try self.write(" ");
+                try self.emitFunctionName(func);
+                try self.write("_memo_impl(");
+                for (func.params, 0..) |p, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.write(kiraTypeToCType(p.type_name));
+                    try self.writeFmt(" {s}", .{sanitizeName(p.name)});
+                }
+                if (func.params.len == 0) try self.write("void");
+                try self.write(");\n");
+            }
         }
         try self.write("\n");
     }
@@ -471,9 +526,13 @@ pub const CCodeGen = struct {
         } else {
             try self.write("/* pure */ ");
         }
+        if (func.is_memoized) {
+            try self.write("/* memo impl */ ");
+        }
         try self.write(kiraTypeToCType(func.return_type_name));
         try self.write(" ");
         try self.emitFunctionName(func);
+        if (func.is_memoized) try self.write("_memo_impl");
         try self.write("(");
         for (func.params, 0..) |p, i| {
             if (i > 0) try self.write(", ");
@@ -508,6 +567,132 @@ pub const CCodeGen = struct {
 
         self.indent_level -= 1;
         try self.write("}\n\n");
+
+        // For memoized functions, emit the caching wrapper
+        if (func.is_memoized) {
+            try self.emitMemoWrapper(func);
+        }
+    }
+
+    /// Emit a memoization caching wrapper for a memoized function.
+    /// The wrapper checks a cache before delegating to the _memo_impl function.
+    fn emitMemoWrapper(self: *CCodeGen, func: *const Function) CodeGenError!void {
+        const ret_type = kiraTypeToCType(func.return_type_name);
+
+        // Determine if we can use the fast array cache (single int-like param)
+        const use_array_cache = func.params.len == 1 and isIntLikeType(func.params[0].type_name);
+
+        try self.write("/* memo wrapper */ ");
+        try self.write(ret_type);
+        try self.write(" ");
+        try self.emitFunctionName(func);
+        try self.write("(");
+        for (func.params, 0..) |p, i| {
+            if (i > 0) try self.write(", ");
+            try self.write(kiraTypeToCType(p.type_name));
+            try self.writeFmt(" {s}", .{sanitizeName(p.name)});
+        }
+        if (func.params.len == 0) try self.write("void");
+        try self.write(") {\n");
+        self.indent_level += 1;
+
+        if (use_array_cache) {
+            // Fast path: single int param → static array cache
+            try self.writeIndent();
+            try self.writeFmt("static {s} _cache[KIRA_MEMO_ARRAY_SIZE];\n", .{ret_type});
+            try self.writeIndent();
+            try self.write("static bool _set[KIRA_MEMO_ARRAY_SIZE] = {0};\n");
+
+            const param_name = sanitizeName(func.params[0].name);
+            // Cache lookup
+            try self.writeIndent();
+            try self.writeFmt("if ({s} >= 0 && {s} < KIRA_MEMO_ARRAY_SIZE && _set[{s}]) return _cache[{s}];\n", .{ param_name, param_name, param_name, param_name });
+
+            // Call impl
+            try self.writeIndent();
+            try self.writeFmt("{s} _result = ", .{ret_type});
+            try self.emitFunctionName(func);
+            try self.writeFmt("_memo_impl({s});\n", .{param_name});
+
+            // Store in cache
+            try self.writeIndent();
+            try self.writeFmt("if ({s} >= 0 && {s} < KIRA_MEMO_ARRAY_SIZE) {{ _cache[{s}] = _result; _set[{s}] = true; }}\n", .{ param_name, param_name, param_name, param_name });
+        } else {
+            // General path: linked-list cache
+            try self.writeIndent();
+            try self.write("static _KiraMemoCache _cache = {0};\n");
+            try self.writeIndent();
+            try self.writeFmt("kira_int _args[{d}]", .{@max(func.params.len, 1)});
+            if (func.params.len == 0) {
+                try self.write(" = {0};\n");
+            } else {
+                try self.write(";\n");
+                for (func.params, 0..) |p, i| {
+                    try self.writeIndent();
+                    try self.writeFmt("_args[{d}] = (kira_int){s};\n", .{ i, sanitizeName(p.name) });
+                }
+            }
+
+            // Cache lookup
+            try self.writeIndent();
+            try self.write("bool _found = false;\n");
+            try self.writeIndent();
+            try self.writeFmt("kira_int _cached = _kira_memo_lookup(&_cache, _args, {d}, &_found);\n", .{func.params.len});
+            try self.writeIndent();
+            if (std.mem.eql(u8, ret_type, "const char*")) {
+                try self.write("if (_found) return (const char*)(intptr_t)_cached;\n");
+            } else if (std.mem.eql(u8, ret_type, "void")) {
+                try self.write("if (_found) return;\n");
+            } else {
+                try self.writeFmt("if (_found) return ({s})_cached;\n", .{ret_type});
+            }
+
+            // Call impl
+            try self.writeIndent();
+            if (std.mem.eql(u8, ret_type, "void")) {
+                try self.emitFunctionName(func);
+                try self.write("_memo_impl(");
+            } else {
+                try self.writeFmt("{s} _result = ", .{ret_type});
+                try self.emitFunctionName(func);
+                try self.write("_memo_impl(");
+            }
+            for (func.params, 0..) |p, i| {
+                if (i > 0) try self.write(", ");
+                try self.write(sanitizeName(p.name));
+            }
+            try self.write(");\n");
+
+            // Store in cache
+            try self.writeIndent();
+            if (std.mem.eql(u8, ret_type, "void")) {
+                try self.writeFmt("_kira_memo_store(&_cache, _args, {d}, 0);\n", .{func.params.len});
+            } else if (std.mem.eql(u8, ret_type, "const char*")) {
+                try self.writeFmt("_kira_memo_store(&_cache, _args, {d}, (kira_int)(intptr_t)_result);\n", .{func.params.len});
+            } else {
+                try self.writeFmt("_kira_memo_store(&_cache, _args, {d}, (kira_int)_result);\n", .{func.params.len});
+            }
+        }
+
+        // Return result
+        try self.writeIndent();
+        if (std.mem.eql(u8, ret_type, "void")) {
+            // void functions don't return a value (already called impl above)
+        } else {
+            try self.write("return _result;\n");
+        }
+
+        self.indent_level -= 1;
+        try self.write("}\n\n");
+    }
+
+    /// Check if a Kira type name is an integer-like type suitable for array-indexed caching.
+    fn isIntLikeType(type_name: []const u8) bool {
+        const int_types = [_][]const u8{ "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "char" };
+        for (int_types) |t| {
+            if (std.mem.eql(u8, type_name, t)) return true;
+        }
+        return false;
     }
 
     fn emitFunctionName(self: *CCodeGen, func: *const Function) CodeGenError!void {
@@ -2207,4 +2392,49 @@ test "codegen mixed pure and effect functions" {
     try std.testing.expect(pure_def != null);
     const effect_def = std.mem.indexOf(u8, output, "/* effect */ void kira_main(void) {");
     try std.testing.expect(effect_def != null);
+}
+
+test "codegen memoized function emits cache wrapper" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // memo fn fib(n: i32) -> i32 { return n; }
+    const params = [_]Function.Param{
+        .{ .name = "n", .value_ref = 0, .type_name = "i32" },
+    };
+    var func = Function.init(alloc);
+    func.name = "fib";
+    func.params = &params;
+    func.return_type_name = "i32";
+    func.is_memoized = true;
+    const blk = try func.addBlock(alloc);
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .param = 0 } });
+    func.setTerminator(blk, .{ .ret = 0 });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+
+    // Forward declaration for wrapper
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo */ int32_t kira_fib(") != null);
+    // Forward declaration for impl
+    try std.testing.expect(std.mem.indexOf(u8, output, "static int32_t kira_fib_memo_impl(") != null);
+    // Impl function body
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo impl */ int32_t kira_fib_memo_impl(int32_t n) {") != null);
+    // Wrapper function with cache
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo wrapper */ int32_t kira_fib(int32_t n) {") != null);
+    // Uses array cache (single int param)
+    try std.testing.expect(std.mem.indexOf(u8, output, "static int32_t _cache[KIRA_MEMO_ARRAY_SIZE]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "static bool _set[KIRA_MEMO_ARRAY_SIZE]") != null);
+    // Cache lookup
+    try std.testing.expect(std.mem.indexOf(u8, output, "if (n >= 0 && n < KIRA_MEMO_ARRAY_SIZE && _set[n]) return _cache[n]") != null);
+    // Calls impl
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_fib_memo_impl(n)") != null);
+    // Preamble has memo infrastructure
+    try std.testing.expect(std.mem.indexOf(u8, output, "#define KIRA_MEMO_ARRAY_SIZE 4096") != null);
 }

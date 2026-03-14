@@ -376,3 +376,27 @@ test "e2e: assert_eq passes" {
         \\}
     );
 }
+
+// --- Memoization ---
+
+test "e2e: memo fibonacci" {
+    try assertE2E(
+        \\memo fn fibonacci(n: i32) -> i32 {
+        \\    if n <= 0 {
+        \\        return 0
+        \\    }
+        \\    if n == 1 {
+        \\        return 1
+        \\    }
+        \\    return fibonacci(n - 1) + fibonacci(n - 2)
+        \\}
+        \\
+        \\effect fn main() -> void {
+        \\    std.io.println(std.int.to_string(fibonacci(0)))
+        \\    std.io.println(std.int.to_string(fibonacci(1)))
+        \\    std.io.println(std.int.to_string(fibonacci(5)))
+        \\    std.io.println(std.int.to_string(fibonacci(10)))
+        \\    std.io.println(std.int.to_string(fibonacci(20)))
+        \\}
+    );
+}
