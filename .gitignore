@@ -5,6 +5,9 @@ zig-out/
 # macOS
 .DS_Store
 
+# Generated C files from kira build
+examples/*.c
+
 # GitStat results
 .test-results.json
 .build-results.json
