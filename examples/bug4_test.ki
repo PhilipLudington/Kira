@@ -16,7 +16,7 @@ fn area(s: Shape) -> f64 {
 }
 
 // Test 2: List[T] in type annotations
-fn list_len(lst: List[i32]) -> i32 {
+fn list_len(lst: List[i32]) -> i64 {
     return std.list.length(lst)
 }
 

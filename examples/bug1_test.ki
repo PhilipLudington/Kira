@@ -7,8 +7,8 @@
 
 // Define a recursive fold function
 fn my_fold(list: List[i32], init: i32, f: fn(i32, i32) -> i32) -> i32 {
-    let len: i32 = std.list.length(list)
-    if len == 0 {
+    let len: i64 = std.list.length(list)
+    if len == 0i64 {
         return init
     }
     match std.list.head(list) {

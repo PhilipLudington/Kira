@@ -19,16 +19,16 @@ pub fn make_pair(key: string, value: i64) -> Pair {
 
 /// Return the length of a list.
 pub fn length(xs: [i64]) -> i64 {
-    let n: i64 = 0
+    var n: i64 = 0i64
     for _ in xs {
-        n = n + 1
+        n = n + 1i64
     }
     return n
 }
 
 /// Sum all elements in a list.
 pub fn sum(xs: [i64]) -> i64 {
-    let total: i64 = 0
+    var total: i64 = 0i64
     for x in xs {
         total = total + x
     }

@@ -2,10 +2,10 @@
 // Demonstrates recursive list functions
 
 // Sum a list recursively
-fn sum_list(list: List[i32]) -> i32 {
-    let len: i32 = std.list.length(list)
-    if len == 0 {
-        return 0
+fn sum_list(list: List[i32]) -> i64 {
+    let len: i64 = std.list.length(list)
+    if len == 0i64 {
+        return 0i64
     }
     // Lists are cons cells, can't easily get head/tail without stdlib support
     // This example shows basic list operations

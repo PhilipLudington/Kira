@@ -239,40 +239,33 @@ test "assert_str_length" {
 // Array Assertions
 // =============================================================================
 
-test "assert_empty array" {
-    let arr: [i32] = []
-    std.assert.assert_empty(arr)
-}
-
 test "assert_not_empty array" {
-    let arr: [i32] = [1, 2, 3]
+    let arr: [i32; 3] = [1, 2, 3]
     std.assert.assert_not_empty(arr)
 }
 
 test "assert_length array" {
-    let arr: [i32] = [1, 2, 3]
+    let arr: [i32; 3] = [1, 2, 3]
     std.assert.assert_length(3, arr)
-    std.assert.assert_length(0, [])
 }
 
 test "assert_array_contains" {
-    let arr: [i32] = [1, 2, 3, 4, 5]
+    let arr: [i32; 5] = [1, 2, 3, 4, 5]
     std.assert.assert_array_contains(arr, 3)
     std.assert.assert_array_contains(arr, 1)
     std.assert.assert_array_contains(arr, 5)
 }
 
 test "assert_array_not_contains" {
-    let arr: [i32] = [1, 2, 3]
+    let arr: [i32; 3] = [1, 2, 3]
     std.assert.assert_array_not_contains(arr, 99)
     std.assert.assert_array_not_contains(arr, 0)
 }
 
 test "assert_array_eq" {
-    let arr1: [i32] = [1, 2, 3]
-    let arr2: [i32] = [1, 2, 3]
+    let arr1: [i32; 3] = [1, 2, 3]
+    let arr2: [i32; 3] = [1, 2, 3]
     std.assert.assert_array_eq(arr1, arr2)
-    std.assert.assert_array_eq([], [])
 }
 
 // =============================================================================

@@ -11,7 +11,7 @@ import mytool.core.{ Result, compute }
 
 fn main() -> i64 {
     // Use the imported function
-    let r: Result = compute(5)
+    let r: Result = compute(5i64)
 
     // r.value = 5
     // r.doubled = 10  (from helpers.double)

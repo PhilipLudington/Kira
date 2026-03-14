@@ -25,7 +25,7 @@ pub fn compute(x: i64) -> Result {
 
 // Another public function
 pub fn process_all(values: [i64]) -> i64 {
-    let sum: i64 = 0
+    var sum: i64 = 0
     for v in values {
         let r: Result = compute(v)
         sum = sum + r.doubled + r.squared

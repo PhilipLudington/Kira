@@ -8,9 +8,9 @@ type ValidationError =
     | EmptyInput
 
 // Validate string length
-fn validate_length(s: string, min: i32, max: i32) -> Result[string, ValidationError] {
-    let len: i32 = std.string.length(s)
-    if len == 0 {
+fn validate_length(s: string, min: i64, max: i64) -> Result[string, ValidationError] {
+    let len: i64 = std.string.length(s)
+    if len == 0i64 {
         return Err(EmptyInput)
     }
     if len < min {
@@ -45,10 +45,10 @@ effect fn main() -> void {
     std.io.println("======================")
 
     // Test various inputs with min=3, max=10
-    let r1: Result[string, ValidationError] = validate_length("hello", 3, 10)
-    let r2: Result[string, ValidationError] = validate_length("hi", 3, 10)
-    let r3: Result[string, ValidationError] = validate_length("this is way too long", 3, 10)
-    let r4: Result[string, ValidationError] = validate_length("", 3, 10)
+    let r1: Result[string, ValidationError] = validate_length("hello", 3i64, 10i64)
+    let r2: Result[string, ValidationError] = validate_length("hi", 3i64, 10i64)
+    let r3: Result[string, ValidationError] = validate_length("this is way too long", 3i64, 10i64)
+    let r4: Result[string, ValidationError] = validate_length("", 3i64, 10i64)
 
     std.io.println("Testing validation (min=3, max=10):")
     std.io.println("  'hello': " + format_result(r1))

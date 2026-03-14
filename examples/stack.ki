@@ -7,7 +7,7 @@ fn push(stack: List[i32], value: i32) -> List[i32] {
 }
 
 // Get stack size using stdlib
-fn stack_size(stack: List[i32]) -> i32 {
+fn stack_size(stack: List[i32]) -> i64 {
     return std.list.length(stack)
 }
 
