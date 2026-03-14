@@ -496,3 +496,29 @@ test "e2e: out-of-bounds access aborts with KIRA_BOUNDS_CHECK" {
     // Verify the error message mentions bounds
     try std.testing.expect(std.mem.indexOf(u8, stderr_output, "bounds error") != null);
 }
+
+// --- env_args ---
+
+test "e2e: env_args returns array with program name" {
+    const allocator = std.testing.allocator;
+
+    // Program that gets args and prints the count (should be 1 = binary name)
+    const source =
+        \\effect fn main() -> void {
+        \\    let args: [string] = std.env.args()
+        \\    std.io.println("done")
+        \\}
+    ;
+
+    const c_code = compileToC(allocator, source) catch return;
+    defer allocator.free(c_code);
+
+    // Verify it compiles and runs successfully (C-only, no interpreter comparison)
+    const output = compileCAndRun(allocator, c_code) catch |err| {
+        if (err == error.CompilerNotFound) return error.SkipZigTest;
+        return err;
+    };
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("done", std.mem.trimRight(u8, output, "\n\r \t"));
+}

@@ -89,10 +89,14 @@ pub const CCodeGen = struct {
             const func = &module.functions.items[idx];
             const has_return = !std.mem.eql(u8, func.return_type_name, "void");
 
-            try self.write("int main(void) {\n");
+            try self.write("int main(int argc, char** argv) {\n");
             self.indent_level += 1;
             try self.writeIndent();
             try self.write("GC_INIT();\n");
+            try self.writeIndent();
+            try self.write("_kira_argc = argc;\n");
+            try self.writeIndent();
+            try self.write("_kira_argv = argv;\n");
             try self.writeIndent();
             if (has_return) {
                 try self.writeFmt("kira_int result = kira_main();\n", .{});
@@ -317,6 +321,19 @@ pub const CCodeGen = struct {
         try self.write("static void kira_time_sleep(kira_int ms) {\n");
         try self.write("    KIRA_ASSERT_EFFECT(\"time_sleep\");\n");
         try self.write("    usleep((useconds_t)(ms * 1000));\n");
+        try self.write("}\n\n");
+
+        // Command-line argument globals (set by main(), read by kira_env_args())
+        try self.write("/* Command-line arguments */\n");
+        try self.write("static int _kira_argc = 0;\n");
+        try self.write("static char** _kira_argv = NULL;\n");
+        try self.write("static kira_int kira_env_args(void) {\n");
+        try self.write("    kira_int* arr = (kira_int*)GC_MALLOC((_kira_argc + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = _kira_argc;\n");
+        try self.write("    for (int i = 0; i < _kira_argc; i++) {\n");
+        try self.write("        arr[i + 1] = (kira_int)(intptr_t)_kira_argv[i];\n");
+        try self.write("    }\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
         try self.write("}\n\n");
 
         // Memoization cache support (general case: linked-list cache)
@@ -1005,6 +1022,8 @@ pub const CCodeGen = struct {
                     // --- Tier 5: Time builtins ---
                 } else if (std.mem.eql(u8, c.name, "time_now")) {
                     try self.writeFmt("v{d} = kira_time_now();\n", .{ref});
+                } else if (std.mem.eql(u8, c.name, "env_args")) {
+                    try self.writeFmt("v{d} = kira_env_args();\n", .{ref});
                 } else if (std.mem.eql(u8, c.name, "time_sleep")) {
                     try self.writeFmt("kira_time_sleep(v{d}); v{d} = 0;\n", .{ c.args[0], ref });
 
@@ -2437,4 +2456,40 @@ test "codegen memoized function emits cache wrapper" {
     try std.testing.expect(std.mem.indexOf(u8, output, "kira_fib_memo_impl(n)") != null);
     // Preamble has memo infrastructure
     try std.testing.expect(std.mem.indexOf(u8, output, "#define KIRA_MEMO_ARRAY_SIZE 4096") != null);
+}
+
+test "codegen env_args builtin and main(argc, argv)" {
+    const backing = std.testing.allocator;
+    var module = Module.init(backing);
+    defer module.deinit();
+    const alloc = module.allocator();
+
+    // effect fn main() -> void { let args = env_args(); }
+    var func = Function.init(alloc);
+    func.name = "main";
+    func.is_effect = true;
+    func.return_type_name = "void";
+    const blk = try func.addBlock(alloc);
+    _ = try func.addInstruction(alloc, blk, .{ .op = .{ .call_builtin = .{ .name = "env_args", .args = &.{} } } });
+    const void_val = try func.addInstruction(alloc, blk, .{ .op = .{ .const_void = {} } });
+    func.setTerminator(blk, .{ .ret = void_val });
+    _ = try module.addFunction(func);
+
+    var gen = CCodeGen.init(backing);
+    defer gen.deinit();
+    try gen.generateModule(&module);
+
+    const output = gen.getOutput();
+    // Preamble has argc/argv globals
+    try std.testing.expect(std.mem.indexOf(u8, output, "static int _kira_argc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "static char** _kira_argv") != null);
+    // Preamble has kira_env_args helper
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_int kira_env_args(void)") != null);
+    // Entry point accepts argc/argv
+    try std.testing.expect(std.mem.indexOf(u8, output, "int main(int argc, char** argv)") != null);
+    // Entry point stores globals
+    try std.testing.expect(std.mem.indexOf(u8, output, "_kira_argc = argc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_kira_argv = argv") != null);
+    // Builtin call emits kira_env_args()
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_env_args()") != null);
 }

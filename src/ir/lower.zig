@@ -1173,6 +1173,11 @@ pub const Lowerer = struct {
             if (std.mem.eql(u8, method, "sleep")) return "time_sleep";
         }
 
+        // std.env builtins (Tier 5)
+        if (std.mem.eql(u8, module_name, "env")) {
+            if (std.mem.eql(u8, method, "args")) return "env_args";
+        }
+
         // std.assert builtins (Tier 5)
         if (std.mem.eql(u8, module_name, "assert")) {
             if (std.mem.eql(u8, method, "assert_eq")) return "assert_eq";

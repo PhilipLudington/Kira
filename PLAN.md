@@ -2,7 +2,7 @@
 
 ## Overview
 Mature Kira's C code generation backend from "basic programs work" to "correct, complete, and safe." Reference: DESIGN.md, src/codegen.zig.
-Current status: Phase 3 complete — memoization, string comparison, bounds checking, method_call audit done. 614 total tests pass (16 E2E). Remaining: docs/flags (Phase 1), env_args (Phase 2), example programs (blocked).
+Current status: Phases 0-3 functionally complete. 616 total tests pass (18 E2E). Remaining: docs/flags (Phase 1), example programs (blocked by closures/ADT gaps).
 
 ## Phase 0: E2E Test Harness
 
@@ -132,7 +132,7 @@ Run E2E tests normally — Boehm GC is a drop-in replacement. Optionally verify 
 - [x] `fs_append_file` — `fopen` with "ab" mode, returns Result[void, string]
 - [x] `time_now` — `gettimeofday()` returning milliseconds
 - [x] `time_sleep` — `usleep()`
-- [ ] `env_args` — `argc`/`argv` passed through from `main()` (requires arch change)
+- [x] `env_args` — `argc`/`argv` stored in globals by `main(int argc, char** argv)`, `kira_env_args()` preamble helper constructs Kira array
 - [x] `assert_eq` / `assert_not_eq` / `assert_contains` — runtime checks with abort
 
 ### Implementation Pattern
