@@ -2520,6 +2520,18 @@ pub const TypeChecker = struct {
             );
         }
 
+        // Fallback: uppercase name might be a constant or let binding, not a variant.
+        // The parser cannot distinguish `None` (variant) from `PI` (constant) since both
+        // start with uppercase. If no variant was found and there are no arguments, check
+        // the symbol table for a variable/constant with this name.
+        if (vc.arguments == null) {
+            if (self.symbol_table.lookup(vc.variant_name)) |sym| {
+                if (sym.kind == .variable or sym.kind == .function) {
+                    return try self.getSymbolType(sym, span);
+                }
+            }
+        }
+
         try self.addDiagnostic(try errors_mod.undefinedSymbol(self.allocator, vc.variant_name, span));
         return ResolvedType.errorType(span);
     }

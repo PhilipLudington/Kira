@@ -23,6 +23,8 @@ pub fn createModule(allocator: Allocator) !Value {
     errdefer fields.deinit(allocator);
 
     try fields.put(allocator, "to_string", root.makeBuiltin("to_string", &intToString));
+    try fields.put(allocator, "to_i64", root.makeBuiltin("to_i64", &intIdentity));
+    try fields.put(allocator, "to_i32", root.makeBuiltin("to_i32", &intIdentity));
     try fields.put(allocator, "parse", root.makeBuiltin("parse", &intParse));
     try fields.put(allocator, "abs", root.makeBuiltin("abs", &intAbs));
     try fields.put(allocator, "min", root.makeBuiltin("min", &intMin));
@@ -34,6 +36,16 @@ pub fn createModule(allocator: Allocator) !Value {
             .type_name = "std.int",
             .fields = fields,
         },
+    };
+}
+
+/// Integer type conversion (identity at runtime since all ints are i128)
+fn intIdentity(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    _ = ctx;
+    if (args.len != 1) return error.ArityMismatch;
+    return switch (args[0]) {
+        .integer => args[0],
+        else => error.TypeMismatch,
     };
 }
 

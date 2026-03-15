@@ -1764,6 +1764,15 @@ pub const Interpreter = struct {
             return Value{ .nil = {} };
         }
 
+        // Fallback: uppercase name might be a constant/let binding, not a variant.
+        // The parser parses all bare uppercase identifiers as variant constructors,
+        // but they could be constants (e.g., `const PI: f64 = 3.14`).
+        if (vc.arguments == null) {
+            if (env.get(vc.variant_name)) |binding| {
+                return binding.value;
+            }
+        }
+
         // Generic variant
         const fields: ?Value.VariantValue.VariantFields = if (vc.arguments) |args| blk: {
             const tuple_fields = try self.arenaAlloc().alloc(Value, args.len);

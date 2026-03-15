@@ -36,7 +36,7 @@ pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
 
 /// Compute the area of a circle with the given radius.
 pub fn circle_area(radius: f64) -> f64 {
-    return 3.14159265358979 * radius * radius
+    return PI * radius * radius
 }
 
 // Private helper — should not appear in docs.
