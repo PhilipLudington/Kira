@@ -1603,8 +1603,9 @@ pub const Lowerer = struct {
         for (is.parts) |part| {
             const ref = switch (part) {
                 .literal => |lit| try self.emit(.{ .const_string = lit }),
-                .expression => |expr| blk: {
-                    const val = try self.lowerExpression(expr);
+                .expression => |fe| blk: {
+                    const val = try self.lowerExpression(fe.expr);
+                    // TODO: pass fe.format_spec through IR for C codegen
                     break :blk try self.emit(.{ .to_string = val });
                 },
             };
@@ -2134,7 +2135,7 @@ pub const Lowerer = struct {
             .interpolated_string => |*is| {
                 for (is.parts) |part| {
                     switch (part) {
-                        .expression => |e| try self.collectFreeVarsInExpr(e, names, refs, alloc),
+                        .expression => |fe| try self.collectFreeVarsInExpr(fe.expr, names, refs, alloc),
                         .literal => {},
                     }
                 }

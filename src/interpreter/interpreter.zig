@@ -1769,9 +1769,12 @@ pub const Interpreter = struct {
                 .literal => |lit| {
                     result.appendSlice(alloc, lit) catch return error.OutOfMemory;
                 },
-                .expression => |expr| {
-                    const value = try self.evalExpression(expr, env);
-                    const str = value.toString(alloc) catch return error.OutOfMemory;
+                .expression => |fe| {
+                    const value = try self.evalExpression(fe.expr, env);
+                    const str = if (fe.format_spec) |spec|
+                        value.toFormattedString(alloc, spec) catch return error.OutOfMemory
+                    else
+                        value.toString(alloc) catch return error.OutOfMemory;
                     result.appendSlice(alloc, str) catch return error.OutOfMemory;
                 },
             }

@@ -541,8 +541,8 @@ pub const TypeChecker = struct {
                 // Check all expression parts
                 for (is.parts) |part| {
                     switch (part) {
-                        .expression => |e| {
-                            const expr_type = try self.checkExpression(e);
+                        .expression => |fe| {
+                            const expr_type = try self.checkExpression(fe.expr);
                             // Expression must be string-convertible (has Display trait)
                             // For now, allow any type
                             _ = expr_type;

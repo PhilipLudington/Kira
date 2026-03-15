@@ -541,6 +541,110 @@ pub const Value = union(enum) {
         try self.write(list.writer(allocator));
         return list.toOwnedSlice(allocator);
     }
+
+    /// Convert value to a formatted string using a format specifier.
+    /// Format spec syntax: [0][width][.precision][type]
+    ///   type: d (decimal), x/X (hex), o (octal), b (binary), f (float), e (scientific), s (string)
+    ///   width: minimum field width
+    ///   0: zero-pad (for numeric types)
+    ///   .precision: decimal places for floats
+    pub fn toFormattedString(self: Value, allocator: Allocator, spec: []const u8) ![]const u8 {
+        // Parse format spec
+        var zero_pad = false;
+        var width: ?usize = null;
+        var precision: ?usize = null;
+        var fmt_type: u8 = 0;
+
+        var i: usize = 0;
+        if (i < spec.len and spec[i] == '0' and i + 1 < spec.len and spec[i + 1] != '.') {
+            zero_pad = true;
+            i += 1;
+        }
+        // Parse width
+        const width_start = i;
+        while (i < spec.len and spec[i] >= '0' and spec[i] <= '9') : (i += 1) {}
+        if (i > width_start) {
+            width = std.fmt.parseInt(usize, spec[width_start..i], 10) catch null;
+        }
+        // Parse .precision
+        if (i < spec.len and spec[i] == '.') {
+            i += 1;
+            const prec_start = i;
+            while (i < spec.len and spec[i] >= '0' and spec[i] <= '9') : (i += 1) {}
+            precision = std.fmt.parseInt(usize, spec[prec_start..i], 10) catch 0;
+        }
+        // Parse type char
+        if (i < spec.len) {
+            fmt_type = spec[i];
+        }
+
+        // Format based on value type and spec
+        var buf: [128]u8 = undefined;
+        const raw = switch (self) {
+            .integer => |val| blk: {
+                switch (fmt_type) {
+                    'x' => break :blk std.fmt.bufPrint(&buf, "{x}", .{@as(i64, @intCast(val))}) catch return self.toString(allocator),
+                    'X' => break :blk std.fmt.bufPrint(&buf, "{X}", .{@as(i64, @intCast(val))}) catch return self.toString(allocator),
+                    'o' => break :blk std.fmt.bufPrint(&buf, "{o}", .{@as(i64, @intCast(val))}) catch return self.toString(allocator),
+                    'b' => break :blk std.fmt.bufPrint(&buf, "{b}", .{@as(i64, @intCast(val))}) catch return self.toString(allocator),
+                    else => break :blk std.fmt.bufPrint(&buf, "{d}", .{val}) catch return self.toString(allocator),
+                }
+            },
+            .float => |val| blk: {
+                if (precision) |prec| {
+                    // Format with specific decimal places
+                    break :blk formatFloat(&buf, val, prec) catch return self.toString(allocator);
+                }
+                if (fmt_type == 'e') {
+                    break :blk std.fmt.bufPrint(&buf, "{e}", .{val}) catch return self.toString(allocator);
+                }
+                break :blk std.fmt.bufPrint(&buf, "{d}", .{val}) catch return self.toString(allocator);
+            },
+            else => return self.toString(allocator),
+        };
+
+        // Apply width and padding
+        if (width) |w| {
+            if (raw.len < w) {
+                const pad_char: u8 = if (zero_pad) '0' else ' ';
+                const padded = try allocator.alloc(u8, w);
+                const pad_len = w - raw.len;
+                @memset(padded[0..pad_len], pad_char);
+                @memcpy(padded[pad_len..], raw);
+                return padded;
+            }
+        }
+
+        return allocator.dupe(u8, raw);
+    }
+
+    /// Format a float with a specific number of decimal places.
+    fn formatFloat(buf: []u8, val: f64, decimal_places: usize) ![]const u8 {
+        // Use Zig's float formatting and truncate/pad to desired precision
+        const formatted = std.fmt.bufPrint(buf, "{d}", .{val}) catch return error.OutOfMemory;
+
+        // Find the decimal point
+        const dot_pos = std.mem.indexOfScalar(u8, formatted, '.') orelse {
+            // No decimal point — add one with zeros
+            if (decimal_places == 0) return formatted;
+            const end = @min(formatted.len + 1 + decimal_places, buf.len);
+            buf[formatted.len] = '.';
+            @memset(buf[formatted.len + 1 .. end], '0');
+            return buf[0..end];
+        };
+
+        const current_decimals = formatted.len - dot_pos - 1;
+        if (decimal_places == 0) {
+            return formatted[0..dot_pos];
+        } else if (current_decimals >= decimal_places) {
+            return formatted[0 .. dot_pos + 1 + decimal_places];
+        } else {
+            // Pad with zeros
+            const end = @min(dot_pos + 1 + decimal_places, buf.len);
+            @memset(buf[formatted.len..end], '0');
+            return buf[0..end];
+        }
+    }
 };
 
 /// Environment for variable bindings with lexical scoping.

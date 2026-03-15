@@ -110,7 +110,40 @@ false
 "Quote: \"hi\""
 ```
 
-**Escape sequences**: `\n` (newline), `\t` (tab), `\\` (backslash), `\"` (quote), `\r` (carriage return)
+**Escape sequences**: `\n` (newline), `\t` (tab), `\\` (backslash), `\"` (quote), `\r` (carriage return), `\$` (literal dollar sign)
+
+#### String Interpolation
+
+Strings can contain embedded expressions using `${expr}` syntax. Each expression is evaluated and automatically converted to a string.
+
+```kira
+let name: string = "Alice"
+let age: i32 = 30
+let greeting: string = "Hello, ${name}! You are ${age} years old."
+// → "Hello, Alice! You are 30 years old."
+```
+
+**Rules:**
+
+- Any expression is allowed inside `${}`, including arithmetic and function calls
+- Values are converted to strings automatically: integers produce their decimal representation, booleans produce `"true"` or `"false"`, strings pass through unchanged
+- Use `\$` to include a literal dollar sign: `"Price: \$${price}"` → `"Price: $42"`
+- Interpolations can be adjacent: `"${first}${last}"` → `"AliceSmith"`
+- The result type is always `string`
+
+```kira
+// Expressions
+let sum: string = "Total: ${a + b}"
+
+// Booleans
+let flag: string = "Active: ${is_active}"  // → "Active: true"
+
+// Adjacent interpolations
+let full: string = "${first} ${last}"
+
+// Escaped dollar sign
+let price: string = "Cost: \$${amount}"    // → "Cost: $50"
+```
 
 ---
 

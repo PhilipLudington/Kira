@@ -318,7 +318,13 @@ pub const Expression = struct {
     /// Part of an interpolated string
     pub const InterpolatedPart = union(enum) {
         literal: []const u8,
-        expression: *Expression,
+        expression: FormattedExpr,
+    };
+
+    /// Expression with optional format specifier (e.g., `${x:03d}`)
+    pub const FormattedExpr = struct {
+        expr: *Expression,
+        format_spec: ?[]const u8,
     };
 
     /// Null coalesce expression (e.g., `value ?? default`)

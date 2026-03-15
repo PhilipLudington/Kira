@@ -2654,10 +2654,18 @@ pub const Parser = struct {
                     continue;
                 }
 
-                // Lex and parse the expression
-                const expr = try self.parseEmbeddedExpression(expr_text);
+                // Check for format specifier (e.g., "x:03d" → expr="x", spec="03d")
+                const sep = findFormatSeparator(expr_text);
+                const actual_expr = if (sep) |s| expr_text[0..s] else expr_text;
+                const fmt_spec: ?[]const u8 = if (sep) |s| expr_text[s + 1 ..] else null;
 
-                parts.append(self.allocator, .{ .expression = expr }) catch return error.OutOfMemory;
+                // Lex and parse the expression
+                const expr = try self.parseEmbeddedExpression(actual_expr);
+
+                parts.append(self.allocator, .{ .expression = .{
+                    .expr = expr,
+                    .format_spec = fmt_spec,
+                } }) catch return error.OutOfMemory;
                 i = j + 1; // skip past '}'
                 literal_start = i;
             } else {
@@ -2689,6 +2697,29 @@ pub const Parser = struct {
 
         const expr = try sub_parser.parseExpression();
         return self.allocExpr(expr);
+    }
+
+    /// Find the `:` that separates an expression from a format specifier
+    /// inside an interpolation. Scans from right to left, skipping colons
+    /// that are inside braces, parens, or brackets.
+    /// Returns the index of the separator colon, or null if none found.
+    fn findFormatSeparator(text: []const u8) ?usize {
+        var depth: usize = 0;
+        var i: usize = text.len;
+        while (i > 0) {
+            i -= 1;
+            switch (text[i]) {
+                '}', ')', ']' => depth += 1,
+                '{', '(', '[' => {
+                    if (depth > 0) depth -= 1;
+                },
+                ':' => {
+                    if (depth == 0) return i;
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 
     /// Process escape sequences in a string literal content (without surrounding quotes)

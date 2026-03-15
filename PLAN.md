@@ -156,8 +156,8 @@ Start server, make 100 sequential requests with `ab` or a shell loop, verify no 
 - [x] Interpreter: `evalInterpolatedString()` — evaluate parts, call `.toString()`, concatenate (completed 2026-03-14)
 - [x] C codegen: type-aware `to_string` — pass-through for strings, `"true"`/`"false"` for bools, `snprintf` for integers (completed 2026-03-14)
 - [x] E2E tests: simple vars, multiple expressions, escaped `\$`, adjacent interpolations, expression-only strings, booleans, mixed types (completed 2026-03-14)
-- [ ] Language documentation: dedicated spec section on interpolation syntax and semantics
-- [ ] Format specifiers (future): support `${x:03d}`-style formatting
+- [x] Language documentation: dedicated spec section on interpolation syntax and semantics (completed 2026-03-15)
+- [x] Format specifiers: `${x:03d}`-style formatting — supports d, x, X, o, b (integers), .Nf (float precision), width, zero-padding (completed 2026-03-15)
 
 ### Syntax Reference
 

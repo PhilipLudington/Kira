@@ -36,7 +36,7 @@ y = 10                   // Reassignment
 | `f64` | `3.14`, `2.5e-3` |
 | `bool` | `true`, `false` |
 | `char` | `'A'`, `'🎉'` |
-| `string` | `"hello"` |
+| `string` | `"hello"`, `"Hi ${name}"` |
 | `void` | (no value) |
 
 ### Composite

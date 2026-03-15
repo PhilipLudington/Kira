@@ -690,6 +690,61 @@ test "e2e: interpolation mixed types" {
     );
 }
 
+// Format specifier tests (interpreter-only; C codegen support is future work)
+
+test "e2e: format specifier zero-padded integer" {
+    const output = try interpretAndCapture(std.testing.allocator,
+        \\effect fn main() -> void {
+        \\    let x: i32 = 42
+        \\    std.io.println("${x:05d}")
+        \\}
+    );
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("00042\n", output);
+}
+
+test "e2e: format specifier hex" {
+    const output = try interpretAndCapture(std.testing.allocator,
+        \\effect fn main() -> void {
+        \\    std.io.println("${255:x}")
+        \\    std.io.println("${255:X}")
+        \\}
+    );
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("ff\nFF\n", output);
+}
+
+test "e2e: format specifier float precision" {
+    const output = try interpretAndCapture(std.testing.allocator,
+        \\effect fn main() -> void {
+        \\    let pi: f64 = 3.14159
+        \\    std.io.println("${pi:.2f}")
+        \\}
+    );
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("3.14\n", output);
+}
+
+test "e2e: format specifier width padding" {
+    const output = try interpretAndCapture(std.testing.allocator,
+        \\effect fn main() -> void {
+        \\    std.io.println("[${42:6d}]")
+        \\}
+    );
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("[    42]\n", output);
+}
+
+test "e2e: format specifier binary" {
+    const output = try interpretAndCapture(std.testing.allocator,
+        \\effect fn main() -> void {
+        \\    std.io.println("${10:b}")
+        \\}
+    );
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("1010\n", output);
+}
+
 // ============================================================
 // Interop E2E Tests
 // ============================================================

@@ -1212,7 +1212,7 @@ pub const Resolver = struct {
             .interpolated_string => |is| {
                 for (is.parts) |part| {
                     switch (part) {
-                        .expression => |e| try self.resolveExpression(e),
+                        .expression => |fe| try self.resolveExpression(fe.expr),
                         .literal => {},
                     }
                 }

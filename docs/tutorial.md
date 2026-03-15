@@ -144,6 +144,12 @@ let multiline: string = "Line 1\nLine 2\nLine 3"
 
 // Escape sequences
 let escaped: string = "Tab:\tNewline:\nQuote:\""
+
+// String interpolation with ${}
+let name: string = "Alice"
+let age: i32 = 30
+let message: string = "Hello, ${name}! You are ${age} years old."
+// → "Hello, Alice! You are 30 years old."
 ```
 
 ### Tuples
