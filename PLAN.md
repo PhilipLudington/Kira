@@ -4,7 +4,7 @@
 Address remaining gaps in the Kira compiler: string interpolation (the one unimplemented language feature from DESIGN.md), LSP enhancements for a better editor experience, and interop hardening with E2E tests.
 
 Reference: [DESIGN.md](DESIGN.md), [IDEA.md](IDEA.md).
-Current status: Phase 1 complete. Phase 2 not started.
+Current status: Phases 0–2 complete. Phase 3 not started.
 
 ---
 
@@ -66,7 +66,8 @@ Manual testing with the VS Code extension (or any LSP client). Verify: errors un
 
 ---
 
-## Phase 2: LSP Advanced Features
+## Phase 2: LSP Advanced Features ✅
+**Status:** Complete (2026-03-14)
 
 **Goal:** Add rename, workspace symbols, and signature help for a more complete IDE experience.
 **Estimated Effort:** 3 days
@@ -77,14 +78,14 @@ Manual testing with the VS Code extension (or any LSP client). Verify: errors un
 - Function signature help on `(`
 
 ### Tasks
-- [ ] Implement `textDocument/rename` handler — find the symbol at cursor (reuse `findSymbolAtPosition`), collect all references (reuse `findReferences`), return a `WorkspaceEdit` with text edits for each location. Validate the new name is a valid identifier. (`src/lsp/features.zig`, `src/lsp/server.zig`)
-- [ ] Implement `workspace/symbol` handler — scan all open documents' symbol tables, return matching symbols filtered by query string. (`src/lsp/server.zig`)
-- [ ] Implement `textDocument/signatureHelp` handler — when the cursor is inside a function call's argument list, look up the function's type signature and return parameter labels with the active parameter index highlighted. (`src/lsp/features.zig`)
-- [ ] Add `WorkspaceEdit`, `TextEdit`, and `SignatureHelp` types to LSP types. (`src/lsp/types.zig`)
-- [ ] Register new capabilities in `initialize` response — declare support for rename, workspace symbols, and signature help providers. (`src/lsp/server.zig:handleInitialize`)
+- [x] Implement `textDocument/rename` handler — finds symbol at cursor (reuses `findSymbolAtPosition`), collects all references (reuses `findReferences`), returns `WorkspaceEdit` with text edits for each location. Validates new name is a valid identifier. (`src/lsp/server.zig`) (completed 2026-03-14)
+- [x] Implement `workspace/symbol` handler — iterates all open documents' symbol tables, returns matching top-level symbols filtered by query substring. (`src/lsp/server.zig`) (completed 2026-03-14)
+- [x] Implement `textDocument/signatureHelp` handler — walks source backward from cursor to find unmatched `(`, extracts function name, counts commas for active parameter index, looks up function signature from symbol table. (`src/lsp/features.zig`, `src/lsp/server.zig`) (completed 2026-03-14)
+- [x] Add `WorkspaceEdit`, `TextEdit`, `SignatureHelp`, `SignatureInformation`, `ParameterInformation`, and `SymbolInformation` types to LSP types. (`src/lsp/types.zig`) (completed 2026-03-14)
+- [x] Register new capabilities in `initialize` response — `renameProvider`, `workspaceSymbolProvider`, `signatureHelpProvider` with trigger characters `(` and `,`. (`src/lsp/server.zig:handleInitialize`) (completed 2026-03-14)
 
 ### Testing Strategy
-Manual testing with LSP client. Verify: rename updates all occurrences, workspace symbol search returns results from multiple files, signature help shows correct parameter info.
+Automated unit tests in `src/lsp/server.zig` (integration tests via TestStream) and `src/lsp/features.zig` (findSignatureContext unit tests). Tests verify: rename produces WorkspaceEdit with correct newText, invalid rename names are rejected, workspace symbol returns matching results, signature help returns signatures with parameters. Total: 10 new tests added.
 
 ---
 

@@ -227,7 +227,7 @@ pub fn getCompletionsAt(allocator: Allocator, table: *SymbolTable, prefix: []con
 }
 
 /// Top-level declarations (functions, types, traits) are always visible regardless of position.
-fn isTopLevel(sym: Symbol) bool {
+pub fn isTopLevel(sym: Symbol) bool {
     return switch (sym.kind) {
         .function, .type_def, .trait_def, .module, .import_alias => true,
         .variable, .type_param => false,
@@ -446,6 +446,82 @@ fn spanToLspRange(span: Span) types.Range {
     };
 }
 
+/// Result of signature help analysis
+pub const SignatureContext = struct {
+    function_name: []const u8,
+    active_param: u32,
+};
+
+/// Analyze source text around cursor to find function call context.
+/// Returns the function name and active parameter index if cursor is inside a call.
+/// Positions are 0-indexed (LSP convention).
+pub fn findSignatureContext(source: []const u8, line: u32, character: u32) ?SignatureContext {
+    // Find cursor offset in source
+    var offset: usize = 0;
+    var current_line: u32 = 0;
+    while (offset < source.len and current_line < line) {
+        if (source[offset] == '\n') current_line += 1;
+        offset += 1;
+    }
+    offset += character;
+    if (offset > source.len) return null;
+
+    // Walk backward from cursor to find unmatched '('
+    var depth: i32 = 0;
+    var comma_count: u32 = 0;
+    var pos = offset;
+    while (pos > 0) {
+        pos -= 1;
+        const c = source[pos];
+        if (c == ')') {
+            depth += 1;
+        } else if (c == '(') {
+            if (depth == 0) {
+                // Found unmatched open paren — extract function name before it
+                var name_end = pos;
+                // Skip whitespace before '('
+                while (name_end > 0 and (source[name_end - 1] == ' ' or source[name_end - 1] == '\t')) {
+                    name_end -= 1;
+                }
+                var name_start = name_end;
+                while (name_start > 0 and isIdentChar(source[name_start - 1])) {
+                    name_start -= 1;
+                }
+                if (name_start == name_end) return null;
+                return .{
+                    .function_name = source[name_start..name_end],
+                    .active_param = comma_count,
+                };
+            }
+            depth -= 1;
+        } else if (c == ',' and depth == 0) {
+            comma_count += 1;
+        } else if (c == '\n' and depth == 0) {
+            // Don't cross line boundaries outside nested parens
+            // (multi-line call args are fine within parens)
+        }
+    }
+
+    return null;
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
+}
+
+/// Find a function symbol by name in the symbol table.
+pub fn findFunctionByName(table: *SymbolTable, name: []const u8) ?*const Symbol {
+    for (table.symbols.items) |*sym| {
+        if (std.mem.eql(u8, sym.name, name)) {
+            switch (sym.kind) {
+                .function => return sym,
+                else => {},
+            }
+        }
+    }
+    return null;
+}
+
 // --- Helpers ---
 
 fn positionInSpan(line: u32, col: u32, span: Span) bool {
@@ -467,6 +543,48 @@ fn spanSize(span: Span) usize {
 }
 
 // --- Tests ---
+
+test "findSignatureContext simple call" {
+    const source = "let x = add(1, 2)";
+    // Cursor at position after "add(" — character 12 (0-indexed)
+    const ctx = findSignatureContext(source, 0, 12);
+    try std.testing.expect(ctx != null);
+    try std.testing.expectEqualStrings("add", ctx.?.function_name);
+    try std.testing.expectEqual(@as(u32, 0), ctx.?.active_param);
+}
+
+test "findSignatureContext second parameter" {
+    const source = "let x = add(1, 2)";
+    // Cursor after the comma — character 15 (0-indexed)
+    const ctx = findSignatureContext(source, 0, 15);
+    try std.testing.expect(ctx != null);
+    try std.testing.expectEqualStrings("add", ctx.?.function_name);
+    try std.testing.expectEqual(@as(u32, 1), ctx.?.active_param);
+}
+
+test "findSignatureContext nested call" {
+    const source = "let x = foo(bar(1), 2)";
+    // Cursor at character 20, inside outer call's second arg
+    const ctx = findSignatureContext(source, 0, 20);
+    try std.testing.expect(ctx != null);
+    try std.testing.expectEqualStrings("foo", ctx.?.function_name);
+    try std.testing.expectEqual(@as(u32, 1), ctx.?.active_param);
+}
+
+test "findSignatureContext no call" {
+    const source = "let x = 42";
+    const ctx = findSignatureContext(source, 0, 5);
+    try std.testing.expect(ctx == null);
+}
+
+test "findSignatureContext multiline" {
+    const source = "let x = add(\n  1,\n  2\n)";
+    // Cursor on line 2, character 2 (inside the third param position)
+    const ctx = findSignatureContext(source, 2, 2);
+    try std.testing.expect(ctx != null);
+    try std.testing.expectEqualStrings("add", ctx.?.function_name);
+    try std.testing.expectEqual(@as(u32, 1), ctx.?.active_param);
+}
 
 test "positionInSpan basic" {
     const span = Span{

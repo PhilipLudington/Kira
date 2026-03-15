@@ -108,6 +108,49 @@ pub const DocumentSymbol = struct {
     children: []const DocumentSymbol,
 };
 
+/// LSP TextEdit — a change to a text document
+pub const TextEdit = struct {
+    range: Range,
+    newText: []const u8,
+};
+
+/// LSP WorkspaceEdit — changes across documents
+pub const WorkspaceEdit = struct {
+    /// Map of document URI to list of edits
+    changes: []const DocumentChanges,
+
+    pub const DocumentChanges = struct {
+        uri: []const u8,
+        edits: []const TextEdit,
+    };
+};
+
+/// LSP ParameterInformation
+pub const ParameterInformation = struct {
+    label: []const u8,
+};
+
+/// LSP SignatureInformation
+pub const SignatureInformation = struct {
+    label: []const u8,
+    parameters: []const ParameterInformation,
+    activeParameter: u32,
+};
+
+/// LSP SignatureHelp
+pub const SignatureHelp = struct {
+    signatures: []const SignatureInformation,
+    activeSignature: u32 = 0,
+    activeParameter: u32 = 0,
+};
+
+/// LSP SymbolInformation (for workspace/symbol)
+pub const SymbolInformation = struct {
+    name: []const u8,
+    kind: SymbolKind,
+    location: Location,
+};
+
 /// Parse a JSON-RPC message from raw JSON bytes
 pub fn parseMessage(allocator: std.mem.Allocator, json_bytes: []const u8) !Message {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_bytes, .{});

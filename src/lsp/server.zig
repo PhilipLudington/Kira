@@ -5,6 +5,7 @@ const Transport = @import("transport.zig").Transport;
 const TransportError = @import("transport.zig").TransportError;
 const types = @import("types.zig");
 const features = @import("features.zig");
+const pretty_printer = @import("../ast/pretty_printer.zig");
 
 const log = std.log.scoped(.lsp_server);
 
@@ -144,6 +145,12 @@ pub const Server = struct {
             try self.handleCompletion(id, params_val);
         } else if (std.mem.eql(u8, method, "textDocument/documentSymbol")) {
             try self.handleDocumentSymbol(id, params_val);
+        } else if (std.mem.eql(u8, method, "textDocument/rename")) {
+            try self.handleRename(id, params_val);
+        } else if (std.mem.eql(u8, method, "workspace/symbol")) {
+            try self.handleWorkspaceSymbol(id, params_val);
+        } else if (std.mem.eql(u8, method, "textDocument/signatureHelp")) {
+            try self.handleSignatureHelp(id, params_val);
         } else {
             if (id != null) {
                 try self.sendErrorResponse(id, -32601, "Method not found");
@@ -172,7 +179,7 @@ pub const Server = struct {
         var buf = JsonBuf.init(alloc);
         try buf.append("{\"jsonrpc\":\"2.0\",\"id\":");
         try buf.appendId(id);
-        try buf.append(",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentSymbolProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]}},\"serverInfo\":{\"name\":\"kira-lsp\",\"version\":\"0.1.0\"}}}");
+        try buf.append(",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentSymbolProvider\":true,\"renameProvider\":true,\"workspaceSymbolProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]},\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]}},\"serverInfo\":{\"name\":\"kira-lsp\",\"version\":\"0.1.0\"}}}");
         try self.transport.writeMessage(buf.items());
     }
 
@@ -441,6 +448,221 @@ pub const Server = struct {
         }
 
         try buf.append("]}");
+        try self.transport.writeMessage(buf.items());
+    }
+
+    fn handleRename(self: *Server, id: ?types.Id, params_val: ?std.json.Value) !void {
+        const rp = self.extractRequestParams(params_val) orelse return try self.sendNullResult(id);
+        const pos = rp.position orelse return try self.sendNullResult(id);
+
+        // Extract newName from params
+        const pv = params_val orelse return try self.sendNullResult(id);
+        const new_name = getString(if (pv == .object) pv.object else null, "newName") orelse
+            return try self.sendErrorResponse(id, -32602, "Missing newName parameter");
+
+        // Validate new name is a valid identifier
+        if (new_name.len == 0) return try self.sendErrorResponse(id, -32602, "New name cannot be empty");
+        for (new_name) |c| {
+            if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')) {
+                return try self.sendErrorResponse(id, -32602, "New name is not a valid identifier");
+            }
+        }
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var table = self.analyzeSource(rp.source) orelse return try self.sendNullResult(id);
+        defer table.deinit();
+
+        const symbol = features.findSymbolAtPosition(&table, pos.line + 1, pos.character + 1) orelse
+            return try self.sendNullResult(id);
+
+        const refs = features.findReferences(alloc, &table, symbol.name) catch
+            return try self.sendNullResult(id);
+
+        // Build WorkspaceEdit response
+        var buf = JsonBuf.init(alloc);
+        try buf.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        try buf.appendId(id);
+        try buf.append(",\"result\":{\"changes\":{\"");
+        try buf.appendEscaped(rp.uri);
+        try buf.append("\":[");
+
+        for (refs, 0..) |ref, i| {
+            if (i > 0) try buf.append(",");
+            const ref_line = if (ref.line > 0) ref.line - 1 else 0;
+            const ref_col = if (ref.character > 0) ref.character - 1 else 0;
+            try buf.append("{\"range\":{\"start\":{\"line\":");
+            try buf.appendInt(ref_line);
+            try buf.append(",\"character\":");
+            try buf.appendInt(ref_col);
+            try buf.append("},\"end\":{\"line\":");
+            try buf.appendInt(ref_line);
+            try buf.append(",\"character\":");
+            try buf.appendInt(ref_col + @as(u32, @intCast(symbol.name.len)));
+            try buf.append("}},\"newText\":\"");
+            try buf.appendEscaped(new_name);
+            try buf.append("\"}");
+        }
+
+        try buf.append("]}}}");
+        try self.transport.writeMessage(buf.items());
+    }
+
+    fn handleWorkspaceSymbol(self: *Server, id: ?types.Id, params_val: ?std.json.Value) !void {
+        // Extract query string
+        const pv = params_val orelse return try self.sendNullResult(id);
+        const query = getString(if (pv == .object) pv.object else null, "query") orelse "";
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var buf = JsonBuf.init(alloc);
+        try buf.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        try buf.appendId(id);
+        try buf.append(",\"result\":[");
+
+        var result_count: usize = 0;
+
+        // Iterate all open documents
+        var doc_it = self.documents.iterator();
+        while (doc_it.next()) |entry| {
+            const uri = entry.key_ptr.*;
+            const source = entry.value_ptr.*;
+
+            var table = self.analyzeSource(source) orelse continue;
+            defer table.deinit();
+
+            for (table.symbols.items) |sym| {
+                // Skip anonymous/internal symbols
+                if (sym.name.len == 0) continue;
+                if (sym.name[0] == '_') continue;
+
+                // Only include top-level symbols
+                if (!features.isTopLevel(sym)) continue;
+
+                // Filter by query
+                if (query.len > 0 and std.mem.indexOf(u8, sym.name, query) == null) continue;
+
+                if (result_count > 0) try buf.append(",");
+
+                const sym_line = if (sym.span.start.line > 0) sym.span.start.line - 1 else 0;
+                const sym_col = if (sym.span.start.column > 0) sym.span.start.column - 1 else 0;
+                const sym_end_line = if (sym.span.end.line > 0) sym.span.end.line - 1 else 0;
+                const sym_end_col = if (sym.span.end.column > 0) sym.span.end.column - 1 else 0;
+
+                const kind: u32 = switch (sym.kind) {
+                    .function => 12,
+                    .type_def => 23,
+                    .trait_def => 11,
+                    .module => 2,
+                    .import_alias => 13,
+                    .variable, .type_param => 13,
+                };
+
+                try buf.append("{\"name\":\"");
+                try buf.appendEscaped(sym.name);
+                try buf.append("\",\"kind\":");
+                try buf.appendInt(kind);
+                try buf.append(",\"location\":{\"uri\":\"");
+                try buf.appendEscaped(uri);
+                try buf.append("\",\"range\":{\"start\":{\"line\":");
+                try buf.appendInt(sym_line);
+                try buf.append(",\"character\":");
+                try buf.appendInt(sym_col);
+                try buf.append("},\"end\":{\"line\":");
+                try buf.appendInt(sym_end_line);
+                try buf.append(",\"character\":");
+                try buf.appendInt(sym_end_col);
+                try buf.append("}}}}");
+
+                result_count += 1;
+            }
+        }
+
+        try buf.append("]}");
+        try self.transport.writeMessage(buf.items());
+    }
+
+    fn handleSignatureHelp(self: *Server, id: ?types.Id, params_val: ?std.json.Value) !void {
+        const rp = self.extractRequestParams(params_val) orelse return try self.sendNullResult(id);
+        const pos = rp.position orelse return try self.sendNullResult(id);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        // Find function call context from source text
+        const ctx = features.findSignatureContext(rp.source, pos.line, pos.character) orelse
+            return try self.sendNullResult(id);
+
+        var table = self.analyzeSource(rp.source) orelse return try self.sendNullResult(id);
+        defer table.deinit();
+
+        // Look up the function symbol
+        const func_sym = features.findFunctionByName(&table, ctx.function_name) orelse
+            return try self.sendNullResult(id);
+
+        const func = func_sym.kind.function;
+
+        // Build signature label: "fn name(param1: Type1, param2: Type2) -> ReturnType"
+        var sig_buf = std.ArrayListUnmanaged(u8){};
+        try sig_buf.appendSlice(alloc, "fn ");
+        try sig_buf.appendSlice(alloc, func_sym.name);
+        try sig_buf.appendSlice(alloc, "(");
+
+        // Track parameter label offsets for parameter info
+        const ParamLabel = struct { start: usize, end: usize };
+        var param_labels = std.ArrayListUnmanaged(ParamLabel){};
+
+        for (func.parameter_names, 0..) |name, i| {
+            if (i > 0) try sig_buf.appendSlice(alloc, ", ");
+            const param_start = sig_buf.items.len;
+            try sig_buf.appendSlice(alloc, name);
+            if (i < func.parameter_types.len) {
+                try sig_buf.appendSlice(alloc, ": ");
+                const t = pretty_printer.formatType(alloc, func.parameter_types[i].*) catch "?";
+                try sig_buf.appendSlice(alloc, t);
+            }
+            const param_end = sig_buf.items.len;
+            try param_labels.append(alloc, .{ .start = param_start, .end = param_end });
+        }
+
+        try sig_buf.appendSlice(alloc, ") -> ");
+        const ret = pretty_printer.formatType(alloc, func.return_type.*) catch "?";
+        try sig_buf.appendSlice(alloc, ret);
+
+        const sig_label = sig_buf.items;
+
+        // Build response
+        var buf = JsonBuf.init(alloc);
+        try buf.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        try buf.appendId(id);
+        try buf.append(",\"result\":{\"signatures\":[{\"label\":\"");
+        try buf.appendEscaped(sig_label);
+        try buf.append("\",\"parameters\":[");
+
+        for (param_labels.items, 0..) |pl, i| {
+            if (i > 0) try buf.append(",");
+            try buf.append("{\"label\":\"");
+            try buf.appendEscaped(sig_label[pl.start..pl.end]);
+            try buf.append("\"}");
+        }
+
+        const active_param = if (ctx.active_param < param_labels.items.len)
+            ctx.active_param
+        else if (param_labels.items.len > 0)
+            @as(u32, @intCast(param_labels.items.len - 1))
+        else
+            0;
+
+        try buf.append("],\"activeParameter\":");
+        try buf.appendInt(active_param);
+        try buf.append("}],\"activeSignature\":0,\"activeParameter\":");
+        try buf.appendInt(active_param);
+        try buf.append("}}");
         try self.transport.writeMessage(buf.items());
     }
 
@@ -899,4 +1121,165 @@ test "Server handles shutdown and exit" {
 
     const output = stream.written();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"result\":null") != null);
+}
+
+test "Server advertises new capabilities" {
+    const input = comptime frameLspMessages(&.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+    });
+
+    var stream = TestStream{ .data = input };
+    defer stream.deinit();
+
+    var server = Server.init(
+        std.testing.allocator,
+        @ptrCast(&stream),
+        TestStream.readFn,
+        @ptrCast(&stream),
+        TestStream.writeFn,
+    );
+    defer server.deinit();
+
+    try server.run();
+
+    const output = stream.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "renameProvider") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "workspaceSymbolProvider") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "signatureHelpProvider") != null);
+}
+
+test "Server handles rename" {
+    const did_open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\",\"languageId\":\"kira\",\"version\":1,\"text\":\"let x: i32 = 42\\nlet y: i32 = x + 1\\n\"}}}";
+    // Rename 'x' at line 0, character 4 (inside "let x")
+    const rename_req =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"foo\"}}";
+
+    const input = comptime frameLspMessages(&.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}",
+        did_open,
+        rename_req,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+    });
+
+    var stream = TestStream{ .data = input };
+    defer stream.deinit();
+
+    var server = Server.init(
+        std.testing.allocator,
+        @ptrCast(&stream),
+        TestStream.readFn,
+        @ptrCast(&stream),
+        TestStream.writeFn,
+    );
+    defer server.deinit();
+
+    try server.run();
+
+    const output = stream.written();
+    // Should have a WorkspaceEdit with changes
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"changes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"newText\":\"foo\"") != null);
+}
+
+test "Server handles rename with invalid name" {
+    const did_open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\",\"languageId\":\"kira\",\"version\":1,\"text\":\"let x: i32 = 42\\n\"}}}";
+    const rename_req =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/rename\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\"},\"position\":{\"line\":0,\"character\":4},\"newName\":\"not valid!\"}}";
+
+    const input = comptime frameLspMessages(&.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}",
+        did_open,
+        rename_req,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+    });
+
+    var stream = TestStream{ .data = input };
+    defer stream.deinit();
+
+    var server = Server.init(
+        std.testing.allocator,
+        @ptrCast(&stream),
+        TestStream.readFn,
+        @ptrCast(&stream),
+        TestStream.writeFn,
+    );
+    defer server.deinit();
+
+    try server.run();
+
+    const output = stream.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "not a valid identifier") != null);
+}
+
+test "Server handles workspace symbol" {
+    const did_open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\",\"languageId\":\"kira\",\"version\":1,\"text\":\"fn greet(name: string) -> string {\\n    return name\\n}\\nfn hello() -> i32 {\\n    return 42\\n}\\n\"}}}";
+    const ws_symbol_req =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"greet\"}}";
+
+    const input = comptime frameLspMessages(&.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}",
+        did_open,
+        ws_symbol_req,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+    });
+
+    var stream = TestStream{ .data = input };
+    defer stream.deinit();
+
+    var server = Server.init(
+        std.testing.allocator,
+        @ptrCast(&stream),
+        TestStream.readFn,
+        @ptrCast(&stream),
+        TestStream.writeFn,
+    );
+    defer server.deinit();
+
+    try server.run();
+
+    const output = stream.written();
+    // Should find greet but not hello
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"greet\"") != null);
+}
+
+test "Server handles signature help" {
+    const did_open =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\",\"languageId\":\"kira\",\"version\":1,\"text\":\"fn add(a: i32, b: i32) -> i32 {\\n    return a + b\\n}\\nlet result: i32 = add(1, 2)\\n\"}}}";
+    // Cursor at line 3, character 24 — inside "add(1, " after the comma
+    const sig_help_req =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/signatureHelp\",\"params\":{\"textDocument\":{\"uri\":\"file:///test.ki\"},\"position\":{\"line\":3,\"character\":24}}}";
+
+    const input = comptime frameLspMessages(&.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}",
+        did_open,
+        sig_help_req,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+    });
+
+    var stream = TestStream{ .data = input };
+    defer stream.deinit();
+
+    var server = Server.init(
+        std.testing.allocator,
+        @ptrCast(&stream),
+        TestStream.readFn,
+        @ptrCast(&stream),
+        TestStream.writeFn,
+    );
+    defer server.deinit();
+
+    try server.run();
+
+    const output = stream.written();
+    // Should have signature info with parameters
+    try std.testing.expect(std.mem.indexOf(u8, output, "signatures") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "parameters") != null);
 }
