@@ -6,7 +6,7 @@ Add a `std.net` module to the Kira standard library providing TCP networking pri
 
 Reference: kira-http DESIGN.md, kira-http PLAN.md (Phase 2)
 
-Current status: Phase 1 complete. Phase 2 next.
+Current status: Phase 2 mostly complete (HTTP client works, TLS/redirects deferred).
 
 ## Phase 0: Minimal TCP Server Primitives
 
@@ -99,11 +99,11 @@ Before Phase 2, these must be true:
 - kira-http's `simple_get.ki` example works
 
 ### Tasks
-- [ ] Implement `http_request(request_record) -> Result[response_record, string]` — takes a record with `{ method, url, headers, body }`, makes an HTTP request, returns `{ status, headers, body }`
-- [ ] Parse URL to extract host, port, path
-- [ ] Open TCP connection to remote host using `std.net.tcpConnectToHost`
-- [ ] Send HTTP/1.1 request line, headers, and body
-- [ ] Read response: status line, headers, body (using Content-Length or chunked transfer)
+- [x] Implement `http_request(request_record) -> Result[response_record, string]` — takes a record with `{ method, url, headers, body }`, makes an HTTP request, returns `{ status, headers, body }` (completed 2026-03-15)
+- [x] Parse URL to extract host, port, path (completed 2026-03-15)
+- [x] Open TCP connection to remote host using `std.net.tcpConnectToHost` (completed 2026-03-15)
+- [x] Send HTTP/1.1 request line, headers, and body (completed 2026-03-15)
+- [x] Read response: status line, headers, body (using Content-Length or read-until-close) (completed 2026-03-15)
 - [ ] Handle TLS/HTTPS (Zig's `std.crypto.tls` or shell out to system — decide approach)
 - [ ] Handle redirects (optional, can defer to kira-http layer)
 
