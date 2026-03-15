@@ -85,6 +85,29 @@ pub const CompletionOptions = struct {
     triggerCharacters: []const []const u8 = &.{ ".", ":" },
 };
 
+/// LSP SymbolKind values used by documentSymbol
+pub const SymbolKind = enum(u8) {
+    function = 12,
+    struct_kind = 23, // Struct
+    interface = 11, // Interface (used for traits)
+    constant = 14,
+    event = 24, // Event (used for test/bench)
+    module = 2,
+    enum_member = 22, // EnumMember (used for variants)
+    method = 6,
+    variable = 13,
+    _,
+};
+
+/// LSP DocumentSymbol with optional children
+pub const DocumentSymbol = struct {
+    name: []const u8,
+    kind: SymbolKind,
+    range: Range,
+    selection_range: Range,
+    children: []const DocumentSymbol,
+};
+
 /// Parse a JSON-RPC message from raw JSON bytes
 pub fn parseMessage(allocator: std.mem.Allocator, json_bytes: []const u8) !Message {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_bytes, .{});

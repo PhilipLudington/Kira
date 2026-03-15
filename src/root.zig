@@ -128,6 +128,8 @@ pub const ParseErrorInfo = struct {
     message: []const u8,
     line: u32,
     column: u32,
+    end_line: u32 = 0,
+    end_column: u32 = 0,
     expected: ?[]const u8,
     found: ?[]const u8,
 };
@@ -208,6 +210,8 @@ pub fn parseWithErrors(allocator: std.mem.Allocator, source: []const u8) ParseRe
                     .message = error_alloc.dupe(u8, err.message) catch err.message,
                     .line = err.span.start.line,
                     .column = err.span.start.column,
+                    .end_line = err.span.end.line,
+                    .end_column = err.span.end.column,
                     .expected = if (err.expected) |e| (error_alloc.dupe(u8, e) catch e) else null,
                     .found = if (err.found) |f| (error_alloc.dupe(u8, f) catch f) else null,
                 };

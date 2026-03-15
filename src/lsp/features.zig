@@ -2,9 +2,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const root = @import("../root.zig");
 const pretty_printer = @import("../ast/pretty_printer.zig");
+const types = @import("types.zig");
 const Symbol = root.Symbol;
 const SymbolTable = root.SymbolTable;
 const Span = root.Span;
+const Declaration = root.Declaration;
+const Program = root.Program;
+const DocumentSymbol = types.DocumentSymbol;
+const SymbolKind = types.SymbolKind;
 
 /// Result of a hover request
 pub const HoverResult = struct {
@@ -142,16 +147,32 @@ pub fn findReferences(allocator: Allocator, table: *SymbolTable, name: []const u
     return try results.toOwnedSlice(allocator);
 }
 
-/// Get completion items for symbols visible at the given scope
+/// Get completion items for symbols visible at the given position.
+/// Filters out symbols defined after the cursor, deduplicates by name
+/// (keeping the closest definition), and adds type detail info.
 pub fn getCompletions(allocator: Allocator, table: *SymbolTable, prefix: []const u8) ![]CompletionItem {
+    return getCompletionsAt(allocator, table, prefix, null);
+}
+
+/// Position-aware completion: only show symbols defined before cursor_line (1-indexed).
+pub fn getCompletionsAt(allocator: Allocator, table: *SymbolTable, prefix: []const u8, cursor_line: ?u32) ![]CompletionItem {
     var results = std.ArrayListUnmanaged(CompletionItem){};
     errdefer results.deinit(allocator);
+
+    // Track seen names to deduplicate — later definitions (closer to cursor) win
+    var seen = std.StringHashMapUnmanaged(usize){}; // name -> index in results
+    defer seen.deinit(allocator);
 
     const symbols = table.symbols.items;
     for (symbols) |sym| {
         // Skip anonymous/internal symbols
         if (sym.name.len == 0) continue;
         if (sym.name[0] == '_') continue;
+
+        // Skip symbols defined after cursor position
+        if (cursor_line) |cl| {
+            if (sym.span.start.line > cl and !isTopLevel(sym)) continue;
+        }
 
         // Match prefix
         if (prefix.len > 0 and !std.mem.startsWith(u8, sym.name, prefix)) continue;
@@ -165,11 +186,21 @@ pub fn getCompletions(allocator: Allocator, table: *SymbolTable, prefix: []const
             .type_param, .import_alias => .variable,
         };
 
-        try results.append(allocator, .{
+        const detail = getCompletionDetail(allocator, &sym) catch null;
+
+        const item = CompletionItem{
             .label = sym.name,
             .kind = kind,
-            .detail = null,
-        });
+            .detail = detail,
+        };
+
+        // Deduplicate: later definitions shadow earlier ones
+        if (seen.get(sym.name)) |idx| {
+            results.items[idx] = item;
+        } else {
+            try seen.put(allocator, sym.name, results.items.len);
+            try results.append(allocator, item);
+        }
     }
 
     // Add keywords
@@ -183,14 +214,236 @@ pub fn getCompletions(allocator: Allocator, table: *SymbolTable, prefix: []const
 
     for (&keywords) |kw| {
         if (prefix.len > 0 and !std.mem.startsWith(u8, kw, prefix)) continue;
-        try results.append(allocator, .{
-            .label = kw,
-            .kind = .keyword,
-            .detail = null,
-        });
+        if (!seen.contains(kw)) {
+            try results.append(allocator, .{
+                .label = kw,
+                .kind = .keyword,
+                .detail = null,
+            });
+        }
     }
 
     return try results.toOwnedSlice(allocator);
+}
+
+/// Top-level declarations (functions, types, traits) are always visible regardless of position.
+fn isTopLevel(sym: Symbol) bool {
+    return switch (sym.kind) {
+        .function, .type_def, .trait_def, .module, .import_alias => true,
+        .variable, .type_param => false,
+    };
+}
+
+/// Format a brief type description for completion detail.
+fn getCompletionDetail(allocator: Allocator, sym: *const Symbol) !?[]const u8 {
+    switch (sym.kind) {
+        .variable => |v| {
+            const type_str = try pretty_printer.formatType(allocator, v.binding_type.*);
+            return type_str;
+        },
+        .function => |f| {
+            var buf = std.ArrayListUnmanaged(u8){};
+            errdefer buf.deinit(allocator);
+            try buf.appendSlice(allocator, "(");
+            for (f.parameter_names, 0..) |name, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                try buf.appendSlice(allocator, name);
+                if (i < f.parameter_types.len) {
+                    try buf.appendSlice(allocator, ": ");
+                    const t = try pretty_printer.formatType(allocator, f.parameter_types[i].*);
+                    defer allocator.free(t);
+                    try buf.appendSlice(allocator, t);
+                }
+            }
+            try buf.appendSlice(allocator, ") -> ");
+            const ret = try pretty_printer.formatType(allocator, f.return_type.*);
+            defer allocator.free(ret);
+            try buf.appendSlice(allocator, ret);
+            return try buf.toOwnedSlice(allocator);
+        },
+        .type_def => return "type",
+        .trait_def => return "trait",
+        .module => return "module",
+        .type_param => return "type param",
+        .import_alias => return "import",
+    }
+}
+
+/// Build document symbols from a parsed program's declarations.
+pub fn getDocumentSymbols(allocator: Allocator, program: *const Program) ![]const DocumentSymbol {
+    var results = std.ArrayListUnmanaged(DocumentSymbol){};
+    errdefer results.deinit(allocator);
+
+    for (program.declarations) |decl| {
+        if (try declToSymbol(allocator, &decl)) |sym| {
+            try results.append(allocator, sym);
+        }
+    }
+
+    return try results.toOwnedSlice(allocator);
+}
+
+fn declToSymbol(allocator: Allocator, decl: *const Declaration) !?DocumentSymbol {
+    const range = spanToLspRange(decl.span);
+    switch (decl.kind) {
+        .function_decl => |f| {
+            return .{
+                .name = f.name,
+                .kind = .function,
+                .range = range,
+                .selection_range = range,
+                .children = &.{},
+            };
+        },
+        .type_decl => |t| {
+            var children = std.ArrayListUnmanaged(DocumentSymbol){};
+            errdefer children.deinit(allocator);
+
+            switch (t.definition) {
+                .sum_type => |sum| {
+                    for (sum.variants) |variant| {
+                        const vrange = spanToLspRange(variant.span);
+                        try children.append(allocator, .{
+                            .name = variant.name,
+                            .kind = .enum_member,
+                            .range = vrange,
+                            .selection_range = vrange,
+                            .children = &.{},
+                        });
+                    }
+                },
+                .product_type => |prod| {
+                    for (prod.fields) |field| {
+                        const frange = spanToLspRange(field.span);
+                        try children.append(allocator, .{
+                            .name = field.name,
+                            .kind = .variable,
+                            .range = frange,
+                            .selection_range = frange,
+                            .children = &.{},
+                        });
+                    }
+                },
+                .type_alias => {},
+            }
+
+            return .{
+                .name = t.name,
+                .kind = .struct_kind,
+                .range = range,
+                .selection_range = range,
+                .children = try children.toOwnedSlice(allocator),
+            };
+        },
+        .trait_decl => |t| {
+            var children = std.ArrayListUnmanaged(DocumentSymbol){};
+            errdefer children.deinit(allocator);
+
+            for (t.methods) |method| {
+                const mrange = spanToLspRange(method.span);
+                try children.append(allocator, .{
+                    .name = method.name,
+                    .kind = .method,
+                    .range = mrange,
+                    .selection_range = mrange,
+                    .children = &.{},
+                });
+            }
+
+            return .{
+                .name = t.name,
+                .kind = .interface,
+                .range = range,
+                .selection_range = range,
+                .children = try children.toOwnedSlice(allocator),
+            };
+        },
+        .impl_block => |impl| {
+            var children = std.ArrayListUnmanaged(DocumentSymbol){};
+            errdefer children.deinit(allocator);
+
+            for (impl.methods) |method| {
+                try children.append(allocator, .{
+                    .name = method.name,
+                    .kind = .method,
+                    .range = range, // FunctionDecl has no span; use parent
+                    .selection_range = range,
+                    .children = &.{},
+                });
+            }
+
+            // Build impl name: "impl TraitName for Type" or "impl Type"
+            const impl_name = if (impl.trait_name) |tn| tn else "impl";
+
+            return .{
+                .name = impl_name,
+                .kind = .struct_kind,
+                .range = range,
+                .selection_range = range,
+                .children = try children.toOwnedSlice(allocator),
+            };
+        },
+        .const_decl => |c| {
+            return .{
+                .name = c.name,
+                .kind = .constant,
+                .range = range,
+                .selection_range = range,
+                .children = &.{},
+            };
+        },
+        .let_decl => |l| {
+            return .{
+                .name = l.name,
+                .kind = .variable,
+                .range = range,
+                .selection_range = range,
+                .children = &.{},
+            };
+        },
+        .module_decl => |m| {
+            const mod_name = if (m.path.len > 0) m.path[m.path.len - 1] else "module";
+            return .{
+                .name = mod_name,
+                .kind = .module,
+                .range = range,
+                .selection_range = range,
+                .children = &.{},
+            };
+        },
+        .test_decl => |t| {
+            return .{
+                .name = t.name,
+                .kind = .event,
+                .range = range,
+                .selection_range = range,
+                .children = &.{},
+            };
+        },
+        .bench_decl => |b| {
+            return .{
+                .name = b.name,
+                .kind = .event,
+                .range = range,
+                .selection_range = range,
+                .children = &.{},
+            };
+        },
+        .import_decl => return null, // Imports are not shown in document outline
+    }
+}
+
+fn spanToLspRange(span: Span) types.Range {
+    return .{
+        .start = .{
+            .line = if (span.start.line > 0) span.start.line - 1 else 0,
+            .character = if (span.start.column > 0) span.start.column - 1 else 0,
+        },
+        .end = .{
+            .line = if (span.end.line > 0) span.end.line - 1 else 0,
+            .character = if (span.end.column > 0) span.end.column - 1 else 0,
+        },
+    };
 }
 
 // --- Helpers ---

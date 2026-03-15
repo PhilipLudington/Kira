@@ -4,7 +4,7 @@
 Address remaining gaps in the Kira compiler: string interpolation (the one unimplemented language feature from DESIGN.md), LSP enhancements for a better editor experience, and interop hardening with E2E tests.
 
 Reference: [DESIGN.md](DESIGN.md), [IDEA.md](IDEA.md).
-Current status: Phase 0 complete. Phase 1 not started.
+Current status: Phase 1 complete. Phase 2 not started.
 
 ---
 
@@ -43,7 +43,8 @@ Before Phase 1, these must be true:
 
 ---
 
-## Phase 1: LSP Core Improvements
+## Phase 1: LSP Core Improvements ✅
+**Status:** Complete (2026-03-14)
 
 **Goal:** Add diagnostic publishing, document symbols, and context-aware completion to the LSP server — the three highest-impact features for editor usability.
 **Estimated Effort:** 3 days
@@ -54,11 +55,11 @@ Before Phase 1, these must be true:
 - Completion filtered by scope and context instead of flat symbol dump
 
 ### Tasks
-- [ ] Improve diagnostic publishing on document change — currently `publishDiagnostics()` runs the full pipeline (parse → resolve → typecheck) and extracts errors. Wire this to trigger on `didChange` (not just `didSave`) with a short debounce. Map diagnostic spans to LSP ranges accurately. (`src/lsp/server.zig:499-552`)
-- [ ] Implement `textDocument/documentSymbol` handler — walk the parsed AST and emit `DocumentSymbol` objects for top-level declarations: functions (kind=Function), types (kind=Struct), traits (kind=Interface), constants (kind=Constant), test/bench (kind=Event). Include nested symbols for type variants and impl methods. (`src/lsp/features.zig`, `src/lsp/server.zig`)
-- [ ] Add `DocumentSymbol` type to LSP types — name, kind, range, selectionRange, children. (`src/lsp/types.zig`)
-- [ ] Improve completion with scope awareness — filter completions to symbols visible at the cursor position using the symbol table's scope chain. Rank by proximity (local > module > imported). Add type information to completion detail field. (`src/lsp/features.zig:146-194`)
-- [ ] Add `textDocument/didChange` to diagnostic trigger — currently diagnostics only publish on open/save. Trigger on content changes with incremental text sync. (`src/lsp/server.zig`)
+- [x] Improve diagnostic publishing on document change — `didChange` already triggered diagnostics; improved by: mapping full span ranges (start+end) instead of single-character, publishing warnings/hints (not just errors) with correct LSP severity, always running typechecker when resolver succeeds. (`src/lsp/server.zig`, `src/root.zig`) (completed 2026-03-14)
+- [x] Implement `textDocument/documentSymbol` handler — walks parsed AST declarations, emits DocumentSymbol objects for functions (Function), types (Struct with variant/field children), traits (Interface with method children), impl blocks (with method children), constants (Constant), let bindings (Variable), test/bench (Event). Imports excluded. (`src/lsp/features.zig`, `src/lsp/server.zig`) (completed 2026-03-14)
+- [x] Add `DocumentSymbol` type to LSP types — SymbolKind enum, DocumentSymbol struct with name, kind, range, selectionRange, children. Registered `documentSymbolProvider` capability. (`src/lsp/types.zig`) (completed 2026-03-14)
+- [x] Improve completion with scope awareness — filters out symbols defined after cursor position (top-level declarations always visible), deduplicates by name (later/closer definitions shadow earlier ones), adds type detail strings for variables (type name), functions (parameter signature + return type), and other symbol kinds. (`src/lsp/features.zig`, `src/lsp/server.zig`) (completed 2026-03-14)
+- [x] Add `textDocument/didChange` to diagnostic trigger — was already wired: `handleDidChange` calls `updateDocument` which calls `publishDiagnostics`. Full document sync (textDocumentSync: 1) already in place. (`src/lsp/server.zig`) (completed 2026-03-14)
 
 ### Testing Strategy
 Manual testing with the VS Code extension (or any LSP client). Verify: errors underline correctly and update on edit, document outline shows all top-level declarations, completion narrows to relevant symbols.

@@ -142,6 +142,8 @@ pub const Server = struct {
             try self.handleReferences(id, params_val);
         } else if (std.mem.eql(u8, method, "textDocument/completion")) {
             try self.handleCompletion(id, params_val);
+        } else if (std.mem.eql(u8, method, "textDocument/documentSymbol")) {
+            try self.handleDocumentSymbol(id, params_val);
         } else {
             if (id != null) {
                 try self.sendErrorResponse(id, -32601, "Method not found");
@@ -170,7 +172,7 @@ pub const Server = struct {
         var buf = JsonBuf.init(alloc);
         try buf.append("{\"jsonrpc\":\"2.0\",\"id\":");
         try buf.appendId(id);
-        try buf.append(",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]}},\"serverInfo\":{\"name\":\"kira-lsp\",\"version\":\"0.1.0\"}}}");
+        try buf.append(",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentSymbolProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]}},\"serverInfo\":{\"name\":\"kira-lsp\",\"version\":\"0.1.0\"}}}");
         try self.transport.writeMessage(buf.items());
     }
 
@@ -376,7 +378,10 @@ pub const Server = struct {
         };
         defer table.deinit();
 
-        const comp_items = features.getCompletions(alloc, &table, "") catch
+        // Convert 0-indexed LSP line to 1-indexed Kira line for scope filtering
+        const cursor_line: ?u32 = if (rp.position) |pos| pos.line + 1 else null;
+
+        const comp_items = features.getCompletionsAt(alloc, &table, "", cursor_line) catch
             return try self.sendNullResult(id);
 
         var buf = JsonBuf.init(alloc);
@@ -390,10 +395,52 @@ pub const Server = struct {
             try buf.appendEscaped(item.label);
             try buf.append("\",\"kind\":");
             try buf.appendInt(@intFromEnum(item.kind));
+            if (item.detail) |detail| {
+                try buf.append(",\"detail\":\"");
+                try buf.appendEscaped(detail);
+                try buf.append("\"");
+            }
             try buf.append("}");
         }
 
         try buf.append("]}}");
+        try self.transport.writeMessage(buf.items());
+    }
+
+    fn handleDocumentSymbol(self: *Server, id: ?types.Id, params_val: ?std.json.Value) !void {
+        const pv = params_val orelse return try self.sendNullResult(id);
+        const text_doc = getObject(pv, "textDocument") orelse return try self.sendNullResult(id);
+        const json_uri = getString(text_doc, "uri") orelse return try self.sendNullResult(id);
+
+        const source = self.documents.get(json_uri) orelse return try self.sendNullResult(id);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        // Parse to get AST declarations
+        const parse_result = root.parseWithErrors(self.allocator, source);
+        var result = parse_result;
+        defer result.deinit();
+
+        if (result.hasErrors()) return try self.sendNullResult(id);
+
+        const prog = result.program orelse return try self.sendNullResult(id);
+
+        const doc_symbols = features.getDocumentSymbols(alloc, &prog) catch
+            return try self.sendNullResult(id);
+
+        var buf = JsonBuf.init(alloc);
+        try buf.append("{\"jsonrpc\":\"2.0\",\"id\":");
+        try buf.appendId(id);
+        try buf.append(",\"result\":[");
+
+        for (doc_symbols, 0..) |sym, i| {
+            if (i > 0) try buf.append(",");
+            try appendDocumentSymbol(&buf, &sym);
+        }
+
+        try buf.append("]}");
         try self.transport.writeMessage(buf.items());
     }
 
@@ -515,33 +562,34 @@ pub const Server = struct {
         if (result.hasErrors()) {
             for (result.errors) |err| {
                 if (diag_count > 0) try buf.append(",");
-                try appendDiagnostic(&buf, err.line, err.column, err.message);
+                try appendDiagnosticRange(&buf, 1, err.line, err.column, err.end_line, err.end_column, err.message);
                 diag_count += 1;
             }
         } else if (result.program) |*prog| {
             var table = root.SymbolTable.init(self.allocator);
             defer table.deinit();
 
-            // Use Resolver directly to access diagnostics on failure
+            // Resolver pass
             var resolver = root.Resolver.init(self.allocator, &table);
             defer resolver.deinit();
-            resolver.resolve(prog) catch {};
+            const resolve_ok = if (resolver.resolve(prog)) |_| true else |_| false;
+
             for (resolver.getDiagnostics()) |diag| {
-                if (diag.kind != .err) continue;
+                const severity = diagKindToLspSeverity(diag.kind);
                 if (diag_count > 0) try buf.append(",");
-                try appendDiagnostic(&buf, diag.span.start.line, diag.span.start.column, diag.message);
+                try appendDiagnosticRange(&buf, severity, diag.span.start.line, diag.span.start.column, diag.span.end.line, diag.span.end.column, diag.message);
                 diag_count += 1;
             }
 
-            if (diag_count == 0) {
-                // Use TypeChecker directly to access diagnostics on failure
+            // TypeChecker pass — only if resolution succeeded
+            if (resolve_ok) {
                 var checker = root.TypeChecker.init(self.allocator, &table);
                 defer checker.deinit();
                 checker.check(prog) catch {};
                 for (checker.getDiagnostics()) |diag| {
-                    if (diag.kind != .err) continue;
+                    const severity = diagKindToLspSeverity(diag.kind);
                     if (diag_count > 0) try buf.append(",");
-                    try appendDiagnostic(&buf, diag.span.start.line, diag.span.start.column, diag.message);
+                    try appendDiagnosticRange(&buf, severity, diag.span.start.line, diag.span.start.column, diag.span.end.line, diag.span.end.column, diag.message);
                     diag_count += 1;
                 }
             }
@@ -670,20 +718,69 @@ const JsonBuf = struct {
     }
 };
 
-fn appendDiagnostic(buf: *JsonBuf, line: u32, col: u32, message: []const u8) !void {
-    const l = if (line > 0) line - 1 else 0;
-    const c = if (col > 0) col - 1 else 0;
+/// Map DiagnosticKind to LSP severity: 1=Error, 2=Warning, 4=Hint
+fn diagKindToLspSeverity(kind: anytype) u32 {
+    return switch (kind) {
+        .err => 1,
+        .warning => 2,
+        .hint => 4,
+    };
+}
+
+fn appendDiagnosticRange(buf: *JsonBuf, severity: u32, start_line: u32, start_col: u32, end_line: u32, end_col: u32, message: []const u8) !void {
+    const sl = if (start_line > 0) start_line - 1 else 0;
+    const sc = if (start_col > 0) start_col - 1 else 0;
+    // Use end position if available, otherwise fall back to start + 1 char
+    const el = if (end_line > 0) end_line - 1 else sl;
+    const ec = if (end_col > 0) end_col - 1 else sc + 1;
     try buf.append("{\"range\":{\"start\":{\"line\":");
-    try buf.appendInt(l);
+    try buf.appendInt(sl);
     try buf.append(",\"character\":");
-    try buf.appendInt(c);
+    try buf.appendInt(sc);
     try buf.append("},\"end\":{\"line\":");
-    try buf.appendInt(l);
+    try buf.appendInt(el);
     try buf.append(",\"character\":");
-    try buf.appendInt(c + 1);
-    try buf.append("}},\"severity\":1,\"source\":\"kira\",\"message\":\"");
+    try buf.appendInt(ec);
+    try buf.append("}},\"severity\":");
+    try buf.appendInt(severity);
+    try buf.append(",\"source\":\"kira\",\"message\":\"");
     try buf.appendEscaped(message);
     try buf.append("\"}");
+}
+
+fn appendDocumentSymbol(buf: *JsonBuf, sym: *const types.DocumentSymbol) !void {
+    try buf.append("{\"name\":\"");
+    try buf.appendEscaped(sym.name);
+    try buf.append("\",\"kind\":");
+    try buf.appendInt(@intFromEnum(sym.kind));
+    try buf.append(",\"range\":{\"start\":{\"line\":");
+    try buf.appendInt(sym.range.start.line);
+    try buf.append(",\"character\":");
+    try buf.appendInt(sym.range.start.character);
+    try buf.append("},\"end\":{\"line\":");
+    try buf.appendInt(sym.range.end.line);
+    try buf.append(",\"character\":");
+    try buf.appendInt(sym.range.end.character);
+    try buf.append("}},\"selectionRange\":{\"start\":{\"line\":");
+    try buf.appendInt(sym.selection_range.start.line);
+    try buf.append(",\"character\":");
+    try buf.appendInt(sym.selection_range.start.character);
+    try buf.append("},\"end\":{\"line\":");
+    try buf.appendInt(sym.selection_range.end.line);
+    try buf.append(",\"character\":");
+    try buf.appendInt(sym.selection_range.end.character);
+    try buf.append("}}");
+
+    if (sym.children.len > 0) {
+        try buf.append(",\"children\":[");
+        for (sym.children, 0..) |*child, i| {
+            if (i > 0) try buf.append(",");
+            try appendDocumentSymbol(buf, child);
+        }
+        try buf.append("]");
+    }
+
+    try buf.append("}");
 }
 
 // --- Test helpers ---
