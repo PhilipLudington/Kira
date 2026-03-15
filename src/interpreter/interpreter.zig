@@ -795,9 +795,6 @@ pub const Interpreter = struct {
             // Closures
             .closure => |c| self.evalClosure(c, env),
 
-            // Match expression
-            .match_expr => |m| self.evalMatchExpr(m, env),
-
             // If expression
             .if_expr => |ie| self.evalIfExpr(ie, env),
 
@@ -1562,43 +1559,6 @@ pub const Interpreter = struct {
     }
 
     /// Evaluate a match expression
-    fn evalMatchExpr(self: *Interpreter, match: Expression.MatchExpr, env: *Environment) InterpreterError!Value {
-        const subject = try self.evalExpression(match.subject, env);
-
-        for (match.arms) |arm| {
-            // Heap-allocate arm environment since closures in the arm body
-            // may capture it and outlive this scope
-            const arm_env = try self.arenaAlloc().create(Environment);
-            arm_env.* = Environment.initWithParent(self.arenaAlloc(), env);
-
-            if (try self.matchPattern(arm.pattern, subject, arm_env)) {
-                // Check guard if present
-                if (arm.guard) |guard| {
-                    const guard_val = try self.evalExpression(guard, arm_env);
-                    if (!guard_val.isTruthy()) continue;
-                }
-
-                // Evaluate body
-                return switch (arm.body) {
-                    .expression => |expr| self.evalExpression(expr, arm_env),
-                    .block => |stmts| {
-                        for (stmts) |stmt| {
-                            self.evalStatement(&stmt, arm_env) catch |err| {
-                                if (err == error.ReturnEncountered) {
-                                    return self.return_value orelse Value{ .void = {} };
-                                }
-                                return err;
-                            };
-                        }
-                        return Value{ .void = {} };
-                    },
-                };
-            }
-        }
-
-        return error.MatchFailed;
-    }
-
     /// Evaluate an if expression
     fn evalIfExpr(self: *Interpreter, if_e: Expression.IfExpr, env: *Environment) InterpreterError!Value {
         const cond = try self.evalExpression(if_e.condition, env);

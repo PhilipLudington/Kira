@@ -1757,9 +1757,13 @@ pub const Parser = struct {
             return self.parseClosure();
         }
 
-        // Match expression
+        // Match is a statement, not an expression.
+        // Use `var` with assignment inside match arms instead of `let x = match ...`.
         if (self.check(.match)) {
-            return self.parseMatchExpr();
+            return self.reportError(
+                "'match' cannot be used as an expression; use a variable with assignment inside match arms instead",
+                null,
+            );
         }
 
         // If expression
@@ -1982,56 +1986,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseMatchExpr(self: *Parser) ParseError!Expression {
-        const start = self.peek().span;
-        _ = self.advance(); // consume 'match'
 
-        const subject = try self.allocExpr(try self.parseExpression());
-
-        try self.consume(.left_brace, "expected '{' after match subject");
-        self.skipNewlines();
-
-        var arms = std.ArrayListUnmanaged(Expression.MatchArm){};
-        errdefer arms.deinit(self.allocator);
-
-        while (!self.check(.right_brace) and !self.isAtEnd()) {
-            try arms.append(self.allocator, try self.parseExprMatchArm());
-            self.skipNewlines();
-        }
-
-        try self.consume(.right_brace, "expected '}' after match arms");
-
-        return Expression.init(.{ .match_expr = .{
-            .subject = subject,
-            .arms = try arms.toOwnedSlice(self.allocator),
-        } }, self.makeSpan(start.start));
-    }
-
-    fn parseExprMatchArm(self: *Parser) ParseError!Expression.MatchArm {
-        const start = self.peek().span;
-        const pattern = try self.allocPattern(try self.parsePattern());
-
-        var guard: ?*Expression = null;
-        if (self.match(.if_keyword)) {
-            guard = try self.allocExpr(try self.parseExpression());
-        }
-
-        try self.consume(.fat_arrow, "expected '=>' after pattern");
-
-        // Check if body is block or expression
-        const body: Expression.MatchBody = if (self.check(.left_brace)) blk: {
-            break :blk .{ .block = try self.parseBlock() };
-        } else blk: {
-            break :blk .{ .expression = try self.allocExpr(try self.parseExpression()) };
-        };
-
-        return Expression.MatchArm{
-            .pattern = pattern,
-            .guard = guard,
-            .body = body,
-            .span = self.makeSpan(start.start),
-        };
-    }
 
     /// Parse an if expression (if used as a value)
     /// Syntax: if condition { expr } else { expr }
@@ -2952,7 +2907,7 @@ test "parse binary expression" {
     try std.testing.expect(expr.kind.binary.operator == .add);
 }
 
-test "parse match expression" {
+test "match in expression position is rejected" {
     const source =
         \\match x {
         \\    Some(v) => v
@@ -2969,9 +2924,16 @@ test "parse match expression" {
     var parser = Parser.init(alloc, tokens.items);
     defer parser.deinit();
 
-    const expr = try parser.parseExpression();
-    try std.testing.expect(expr.kind == .match_expr);
-    try std.testing.expectEqual(@as(usize, 2), expr.kind.match_expr.arms.len);
+    const result = parser.parseExpression();
+    try std.testing.expectError(ParseError.UnexpectedToken, result);
+
+    // Verify the error message is helpful
+    const errors = parser.getErrors();
+    try std.testing.expect(errors.len > 0);
+    try std.testing.expectEqualStrings(
+        "'match' cannot be used as an expression; use a variable with assignment inside match arms instead",
+        errors[0].message,
+    );
 }
 
 test "parse program" {

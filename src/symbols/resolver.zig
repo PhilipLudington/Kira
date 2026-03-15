@@ -1125,25 +1125,6 @@ pub const Resolver = struct {
 
                 try self.table.leaveScope();
             },
-            .match_expr => |match_expr| {
-                try self.resolveExpression(match_expr.subject);
-                for (match_expr.arms) |arm| {
-                    _ = try self.table.enterScope(.block);
-                    try self.resolvePattern(arm.pattern, null, false);
-                    if (arm.guard) |guard| {
-                        try self.resolveExpression(guard);
-                    }
-                    switch (arm.body) {
-                        .expression => |e| try self.resolveExpression(e),
-                        .block => |block| {
-                            for (block) |*stmt| {
-                                try self.resolveStatement(stmt);
-                            }
-                        },
-                    }
-                    try self.table.leaveScope();
-                }
-            },
             .if_expr => |if_expr| {
                 try self.resolveExpression(if_expr.condition);
                 // Resolve then branch

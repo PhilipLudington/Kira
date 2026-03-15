@@ -819,7 +819,6 @@ pub const Lowerer = struct {
             .variant_constructor => |*vc| self.lowerVariantConstructor(vc),
             .closure => |*cl| self.lowerClosure(cl),
             .if_expr => |*ie| self.lowerIfExpr(ie),
-            .match_expr => |*me| self.lowerMatchExpr(me),
             .interpolated_string => |*is| self.lowerInterpolatedString(is),
             .grouped => |inner| self.lowerExpression(inner),
             .try_expr => |inner| self.lowerTryExpr(inner),
@@ -1422,156 +1421,6 @@ pub const Lowerer = struct {
         return self.emit(.{ .phi = .{ .incoming = incoming } });
     }
 
-    fn lowerMatchExpr(self: *Lowerer, me: *const Expression.MatchExpr) LowerError!ValueRef {
-        const func = self.currentFunc().?;
-        const alloc = self.irAlloc();
-        const subject = try self.lowerExpression(me.subject);
-
-        if (me.arms.len == 0) return self.emit(.{ .const_void = {} });
-
-        // Derive context type for variant disambiguation
-        const context_type = inferTypeFromArms(me.arms) orelse self.inferTypeFromSubject(subject);
-
-        // Optimization: emit switch_tag for constructor-only match expressions
-        if (self.canUseSwitchTag(me.arms, context_type)) {
-            return self.lowerMatchExprSwitch(me.arms, subject, context_type);
-        }
-
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        var phi_entries = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
-
-        for (me.arms) |*arm| {
-            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-            const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-
-            const matches = try self.lowerPatternCheck(arm.pattern, subject, context_type);
-
-            const final_cond = if (arm.guard) |guard| blk: {
-                const guard_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-                self.setTerminator(.{ .branch = .{
-                    .condition = matches,
-                    .then_block = guard_blk,
-                    .else_block = next_blk,
-                } });
-                self.current_block = guard_blk;
-                break :blk try self.lowerExpression(guard);
-            } else matches;
-
-            self.setTerminator(.{ .branch = .{
-                .condition = final_cond,
-                .then_block = arm_blk,
-                .else_block = next_blk,
-            } });
-
-            self.current_block = arm_blk;
-            try self.pushScope();
-            errdefer self.popScope();
-            try self.lowerPatternBindings(arm.pattern, subject);
-            const arm_val = try self.lowerMatchBody(&arm.body);
-            const arm_end = self.current_block;
-
-            // Append phi entry BEFORE popScope so errdefer won't double-pop on OOM
-            phi_entries.append(alloc, .{
-                .block = arm_end,
-                .value = arm_val,
-            }) catch return LowerError.OutOfMemory;
-            self.popScope();
-            // Guard: only set jump if the arm body didn't already set a terminator
-            // (e.g. an explicit return statement). Mirrors lowerMatchStatement.
-            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
-                self.setTerminator(.{ .jump = merge_blk });
-            }
-
-            self.current_block = next_blk;
-        }
-
-        // Fallthrough is unreachable — exhaustiveness is guaranteed by the type checker.
-        // Use unreachable_term (not jump) so this block is NOT a structural predecessor
-        // of merge_blk, keeping the phi node's incoming edges consistent.
-        // NOTE: This block remains in the function's block list but is dead code.
-        // Downstream CFG walkers must skip blocks with unreachable_term terminators.
-        self.setTerminator(.{ .unreachable_term = {} });
-
-        self.current_block = merge_blk;
-        if (phi_entries.items.len > 0) {
-            return self.emit(.{ .phi = .{
-                .incoming = phi_entries.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
-            } });
-        }
-        return self.emit(.{ .const_void = {} });
-    }
-
-    /// Emit a match expression using switch_tag for constructor-only patterns.
-    fn lowerMatchExprSwitch(self: *Lowerer, arms: anytype, subject: ValueRef, context_type: ?[]const u8) LowerError!ValueRef {
-        const func = self.currentFunc().?;
-        const alloc = self.irAlloc();
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        var phi_entries = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
-
-        const tag = try self.emit(.{ .get_tag = subject });
-
-        var cases = std.ArrayListUnmanaged(Terminator.SwitchCase){};
-        var default_block: ?BlockId = null;
-
-        const ArmBlock = struct { block: BlockId, arm_idx: usize };
-        var arm_blocks = std.ArrayListUnmanaged(ArmBlock){};
-
-        for (arms, 0..) |*arm, idx| {
-            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-            arm_blocks.append(alloc, .{ .block = arm_blk, .arm_idx = idx }) catch return LowerError.OutOfMemory;
-
-            switch (arm.pattern.kind) {
-                .constructor => |c| {
-                    const type_name: ?[]const u8 = if (c.type_path) |tp|
-                        (if (tp.len > 0) tp[0] else null)
-                    else
-                        context_type;
-                    const tag_value = self.lookupVariantTag(c.variant_name, type_name) orelse 0;
-                    cases.append(alloc, .{ .tag = tag_value, .block = arm_blk }) catch return LowerError.OutOfMemory;
-                },
-                .wildcard, .identifier => {
-                    default_block = arm_blk;
-                },
-                else => unreachable,
-            }
-        }
-
-        const default = default_block orelse merge_blk;
-
-        self.setTerminator(.{ .switch_tag = .{
-            .value = tag,
-            .cases = cases.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
-            .default = default,
-        } });
-
-        // Emit arm bodies
-        for (arm_blocks.items) |ab| {
-            self.current_block = ab.block;
-            try self.pushScope();
-            errdefer self.popScope();
-            try self.lowerPatternBindings(arms[ab.arm_idx].pattern, subject);
-            const arm_val = try self.lowerMatchBody(&arms[ab.arm_idx].body);
-            const arm_end = self.current_block;
-
-            phi_entries.append(alloc, .{
-                .block = arm_end,
-                .value = arm_val,
-            }) catch return LowerError.OutOfMemory;
-            self.popScope();
-            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
-                self.setTerminator(.{ .jump = merge_blk });
-            }
-        }
-
-        self.current_block = merge_blk;
-        if (phi_entries.items.len > 0) {
-            return self.emit(.{ .phi = .{
-                .incoming = phi_entries.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
-            } });
-        }
-        return self.emit(.{ .const_void = {} });
-    }
-
     fn lowerMatchBody(self: *Lowerer, body: *const Expression.MatchBody) LowerError!ValueRef {
         return switch (body.*) {
             .expression => |expr| self.lowerExpression(expr),
@@ -2077,13 +1926,6 @@ pub const Lowerer = struct {
                 try self.collectFreeVarsInExpr(ie.condition, names, refs, alloc);
                 try self.collectFreeVarsInMatchBody(&ie.then_branch, names, refs, alloc);
                 try self.collectFreeVarsInMatchBody(&ie.else_branch, names, refs, alloc);
-            },
-            .match_expr => |*me| {
-                try self.collectFreeVarsInExpr(me.subject, names, refs, alloc);
-                for (me.arms) |*arm| {
-                    if (arm.guard) |guard| try self.collectFreeVarsInExpr(guard, names, refs, alloc);
-                    try self.collectFreeVarsInMatchBody(&arm.body, names, refs, alloc);
-                }
             },
             .closure => |*cl| {
                 // When recursing into a nested closure, any identifier that matches

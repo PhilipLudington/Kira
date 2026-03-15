@@ -882,36 +882,6 @@ pub const Formatter = struct {
                 try self.writeIndent();
                 try self.writeByte('}');
             },
-            .match_expr => |me| {
-                try self.write("match ");
-                try self.formatExpression(me.subject.*);
-                try self.write(" {\n");
-                self.indent();
-                for (me.arms) |arm| {
-                    try self.writeIndent();
-                    try self.formatPattern(arm.pattern.*);
-                    if (arm.guard) |guard| {
-                        try self.write(" if ");
-                        try self.formatExpression(guard.*);
-                    }
-                    try self.write(" => ");
-                    switch (arm.body) {
-                        .expression => |e| try self.formatExpression(e.*),
-                        .block => |stmts| {
-                            try self.write("{\n");
-                            self.indent();
-                            try self.formatStatements(stmts);
-                            self.dedent();
-                            try self.writeIndent();
-                            try self.writeByte('}');
-                        },
-                    }
-                    try self.writeByte('\n');
-                }
-                self.dedent();
-                try self.writeIndent();
-                try self.writeByte('}');
-            },
             .if_expr => |ie| {
                 try self.write("if ");
                 try self.formatExpression(ie.condition.*);

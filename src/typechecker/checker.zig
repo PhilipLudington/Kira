@@ -472,8 +472,6 @@ pub const TypeChecker = struct {
 
             .closure => |c| try self.checkClosure(c, expr.span),
 
-            .match_expr => |me| try self.checkMatchExpr(me, expr.span),
-
             .if_expr => |ie| try self.checkIfExpr(ie, expr.span),
 
             .tuple_literal => |tl| {
@@ -2197,80 +2195,6 @@ pub const TypeChecker = struct {
                 break :blk ResolvedType.voidType(span);
             },
         };
-    }
-
-    /// Check match expression
-    fn checkMatchExpr(self: *TypeChecker, me: Expression.MatchExpr, span: Span) TypeCheckError!ResolvedType {
-        const subject_type = try self.checkExpression(me.subject);
-
-        if (me.arms.len == 0) {
-            try self.addDiagnostic(try errors_mod.simpleError(
-                self.allocator,
-                "match expression must have at least one arm",
-                span,
-            ));
-            return ResolvedType.errorType(span);
-        }
-
-        // Check each arm and ensure all return the same type
-        var result_type: ?ResolvedType = null;
-
-        // Collect patterns and guard info for exhaustiveness checking
-        var patterns = std.ArrayListUnmanaged(*const Pattern){};
-        defer patterns.deinit(self.allocator);
-        var guards = std.ArrayListUnmanaged(bool){};
-        defer guards.deinit(self.allocator);
-
-        for (me.arms) |arm| {
-            _ = try self.symbol_table.enterScope(.block);
-            errdefer self.scopeCleanup();
-
-            // Check pattern against subject type and add bindings to scope
-            try self.checkPattern(arm.pattern, subject_type);
-            try self.addPatternBindings(arm.pattern, null, subject_type, false);
-
-            // Collect pattern and guard info for exhaustiveness checking
-            try patterns.append(self.allocator, arm.pattern);
-            try guards.append(self.allocator, arm.guard != null);
-
-            // Check guard if present
-            if (arm.guard) |guard| {
-                const guard_type = try self.checkExpression(guard);
-                if (!guard_type.isBool()) {
-                    try self.addDiagnostic(try errors_mod.simpleError(
-                        self.allocator,
-                        "match guard must be a boolean expression",
-                        guard.span,
-                    ));
-                }
-            }
-
-            // Check body
-            const arm_type = switch (arm.body) {
-                .expression => |e| try self.checkExpression(e),
-                .block => |block| try self.checkBlockExpressionType(block, span),
-            };
-
-            if (result_type) |rt| {
-                if (!self.typesMatch(rt, arm_type)) {
-                    try self.addDiagnostic(try errors_mod.typeMismatch(
-                        self.allocator,
-                        rt,
-                        arm_type,
-                        arm.span,
-                    ));
-                }
-            } else {
-                result_type = arm_type;
-            }
-
-            try self.scopeLeave();
-        }
-
-        // Check exhaustiveness
-        try self.checkMatchExhaustiveness(patterns.items, guards.items, subject_type, span);
-
-        return result_type orelse ResolvedType.voidType(span);
     }
 
     /// Check if expression
@@ -5542,74 +5466,6 @@ test "constructors: Cons(head, Nil) preserves head element type" {
     };
     const expected_list = try checker.resolveAstType(&expected_list_ast);
     try std.testing.expect(!checker.typeIsAssignable(expected_list, inferred));
-}
-
-test "match expression block arm uses tail expression type" {
-    const allocator = std.testing.allocator;
-    const span = Span{
-        .start = .{ .line = 1, .column = 1, .offset = 0 },
-        .end = .{ .line = 1, .column = 10, .offset = 9 },
-    };
-
-    var table = SymbolTable.init(allocator);
-    defer table.deinit();
-
-    var checker = TypeChecker.init(allocator, &table);
-    defer checker.deinit();
-
-    var subj = Expression{
-        .kind = .{ .bool_literal = true },
-        .span = span,
-    };
-
-    var pat_true = Pattern.init(.{ .bool_literal = true }, span);
-    var pat_false = Pattern.init(.{ .bool_literal = false }, span);
-
-    var expr_true = Expression{
-        .kind = .{ .integer_literal = .{ .value = 1, .suffix = null } },
-        .span = span,
-    };
-    const stmt_true = Statement{
-        .kind = .{ .expression_statement = &expr_true },
-        .span = span,
-    };
-    var expr_false = Expression{
-        .kind = .{ .integer_literal = .{ .value = 0, .suffix = null } },
-        .span = span,
-    };
-    const stmt_false = Statement{
-        .kind = .{ .expression_statement = &expr_false },
-        .span = span,
-    };
-
-    var true_block = [_]Statement{stmt_true};
-    const arm_true = Expression.MatchArm{
-        .pattern = &pat_true,
-        .guard = null,
-        .body = .{ .block = true_block[0..] },
-        .span = span,
-    };
-    var false_block = [_]Statement{stmt_false};
-    const arm_false = Expression.MatchArm{
-        .pattern = &pat_false,
-        .guard = null,
-        .body = .{ .block = false_block[0..] },
-        .span = span,
-    };
-    var arms = [_]Expression.MatchArm{ arm_true, arm_false };
-
-    var match_expr = Expression{
-        .kind = .{ .match_expr = .{
-            .subject = &subj,
-            .arms = &arms,
-        } },
-        .span = span,
-    };
-
-    const t = try checker.checkExpression(&match_expr);
-    try std.testing.expect(t.kind == .primitive);
-    try std.testing.expectEqual(Type.PrimitiveType.i32, t.kind.primitive);
-    try std.testing.expect(!checker.hasErrors());
 }
 
 test "expand alias type reports indirect alias cycles" {

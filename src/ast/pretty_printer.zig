@@ -262,9 +262,6 @@ pub const PrettyPrinter = struct {
             .null_coalesce => {
                 try self.write("NullCoalesce(??)");
             },
-            .match_expr => |me| {
-                try self.writeFmt("MatchExpr({d} arms)", .{me.arms.len});
-            },
             .interpolated_string => |is| {
                 try self.writeFmt("InterpolatedString({d} parts)", .{is.parts.len});
             },

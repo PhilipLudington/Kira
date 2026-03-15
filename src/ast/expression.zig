@@ -47,9 +47,6 @@ pub const Expression = struct {
         // Closures
         closure: Closure,
 
-        // Match expression (match can be used as expression in some contexts)
-        match_expr: MatchExpr,
-
         // If expression (if used as value)
         if_expr: IfExpr,
 
@@ -240,21 +237,7 @@ pub const Expression = struct {
         span: Span,
     };
 
-    /// Match expression
-    pub const MatchExpr = struct {
-        subject: *Expression,
-        arms: []MatchArm,
-    };
-
-    /// Match arm (pattern => expression or block)
-    pub const MatchArm = struct {
-        pattern: *Pattern,
-        guard: ?*Expression, // Optional `if condition`
-        body: MatchBody,
-        span: Span,
-    };
-
-    /// Match arm body can be an expression or statement block
+    /// Branch body can be an expression or statement block (used by IfExpr)
     pub const MatchBody = union(enum) {
         expression: *Expression,
         block: []Statement,
