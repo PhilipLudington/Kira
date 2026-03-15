@@ -583,87 +583,13 @@ pub const Interpreter = struct {
 
         // Multi-segment path: need to create nested structure
         // For ["src", "json"], create src.json
+        //
+        // Strategy: build the tree from the leaf up using only FRESH hashmaps.
+        // At each level, clone existing sibling entries from the environment via
+        // read-only navigation (never struct-copy + put, which corrupts shared
+        // backing arrays).
 
-        // Start with the root segment
         const root_name = path[0];
-        var current_record: std.StringArrayHashMapUnmanaged(Value) = undefined;
-
-        // Get or create the root record
-        if (env.get(root_name)) |existing| {
-            if (existing.value == .record) {
-                current_record = existing.value.record.fields;
-            } else {
-                // Root exists but isn't a record - create a new empty record
-                current_record = std.StringArrayHashMapUnmanaged(Value){};
-            }
-        } else {
-            current_record = std.StringArrayHashMapUnmanaged(Value){};
-        }
-
-        // Navigate/create intermediate segments
-        // For ["src", "json", "utils"], we need src -> json -> utils
-        var i: usize = 1;
-        while (i < path.len - 1) : (i += 1) {
-            const segment = path[i];
-            if (current_record.get(segment)) |existing| {
-                if (existing == .record) {
-                    // Use existing intermediate record
-                    current_record = existing.record.fields;
-                } else {
-                    // Overwrite non-record with empty record
-                    const new_fields = std.StringArrayHashMapUnmanaged(Value){};
-                    current_record.put(self.arenaAlloc(), segment, Value{
-                        .record = .{ .type_name = null, .fields = new_fields },
-                    }) catch return error.OutOfMemory;
-                    current_record = new_fields;
-                }
-            } else {
-                // Create new intermediate record
-                const new_fields = std.StringArrayHashMapUnmanaged(Value){};
-                current_record.put(self.arenaAlloc(), segment, Value{
-                    .record = .{ .type_name = null, .fields = new_fields },
-                }) catch return error.OutOfMemory;
-                current_record = new_fields;
-            }
-        }
-
-        // Add the leaf module at the final segment
-        const leaf_name = path[path.len - 1];
-        if (current_record.get(leaf_name)) |existing| {
-            if (existing == .record) {
-                // Merge new exports into existing module
-                var merged = existing.record.fields;
-                var field_iter = module_fields.iterator();
-                while (field_iter.next()) |entry| {
-                    merged.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-                }
-                current_record.put(self.arenaAlloc(), leaf_name, Value{
-                    .record = .{ .type_name = null, .fields = merged },
-                }) catch return error.OutOfMemory;
-            } else {
-                current_record.put(self.arenaAlloc(), leaf_name, leaf_module) catch return error.OutOfMemory;
-            }
-        } else {
-            current_record.put(self.arenaAlloc(), leaf_name, leaf_module) catch return error.OutOfMemory;
-        }
-
-        // Now rebuild the full tree and define it at the root
-        // We need to rebuild from the current_record back up to root
-        // This is necessary because we modified the leaf, but the intermediate
-        // records need to reflect those changes
-
-        // Simple approach: just rebuild the whole thing by re-evaluating
-        // Actually, we can just update the root with the modified structure
-        // since all records share the same underlying hashmaps
-
-        // The issue is that when we get existing.value.record.fields, we get a copy
-        // of the hashmap, not a reference. So modifications don't propagate.
-        // We need to rebuild the entire structure.
-
-        // Rebuild from innermost to outermost.
-        // We must create FRESH hashmaps at each level (not struct-copy existing ones)
-        // because a struct copy shares backing arrays, causing corruption on resize.
-        // We also navigate existing intermediate records to preserve their sibling entries.
         var module_value = leaf_module;
         var j: usize = path.len - 1;
         while (j > 0) {
@@ -671,7 +597,7 @@ pub const Interpreter = struct {
 
             var outer_fields = std.StringArrayHashMapUnmanaged(Value){};
 
-            // Look up existing record at this path level to preserve sibling entries.
+            // Read-only: look up existing record at this path level to preserve sibling entries.
             // Navigate: env[path[0]].path[1]...path[j]
             if (env.get(path[0])) |root_binding| {
                 if (root_binding.value == .record) {
