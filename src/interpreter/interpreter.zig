@@ -660,27 +660,49 @@ pub const Interpreter = struct {
         // of the hashmap, not a reference. So modifications don't propagate.
         // We need to rebuild the entire structure.
 
-        // Rebuild from innermost to outermost
+        // Rebuild from innermost to outermost.
+        // We must create FRESH hashmaps at each level (not struct-copy existing ones)
+        // because a struct copy shares backing arrays, causing corruption on resize.
+        // We also navigate existing intermediate records to preserve their sibling entries.
         var module_value = leaf_module;
         var j: usize = path.len - 1;
         while (j > 0) {
             j -= 1;
 
-            var outer_fields: std.StringArrayHashMapUnmanaged(Value) = undefined;
+            var outer_fields = std.StringArrayHashMapUnmanaged(Value){};
 
-            if (j == 0) {
-                // At root level, check for existing record to merge with
-                if (env.get(path[0])) |existing| {
-                    if (existing.value == .record) {
-                        outer_fields = existing.value.record.fields;
-                    } else {
-                        outer_fields = std.StringArrayHashMapUnmanaged(Value){};
+            // Look up existing record at this path level to preserve sibling entries.
+            // Navigate: env[path[0]].path[1]...path[j]
+            if (env.get(path[0])) |root_binding| {
+                if (root_binding.value == .record) {
+                    var nav = root_binding.value.record.fields;
+                    var found = (j == 0);
+
+                    if (j > 0) {
+                        found = true;
+                        for (path[1 .. j + 1]) |segment| {
+                            if (nav.get(segment)) |intermediate| {
+                                if (intermediate == .record) {
+                                    nav = intermediate.record.fields;
+                                } else {
+                                    found = false;
+                                    break;
+                                }
+                            } else {
+                                found = false;
+                                break;
+                            }
+                        }
                     }
-                } else {
-                    outer_fields = std.StringArrayHashMapUnmanaged(Value){};
+
+                    if (found) {
+                        // Clone existing fields into the fresh hashmap
+                        var iter = nav.iterator();
+                        while (iter.next()) |entry| {
+                            outer_fields.put(self.arenaAlloc(), entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+                        }
+                    }
                 }
-            } else {
-                outer_fields = std.StringArrayHashMapUnmanaged(Value){};
             }
 
             outer_fields.put(self.arenaAlloc(), path[j + 1], module_value) catch return error.OutOfMemory;
