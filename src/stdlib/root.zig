@@ -8,6 +8,7 @@
 //!   - std.string: String operations (length, split, trim, etc.)
 //!   - std.io: I/O effects (print, println, read_line)
 //!   - std.fs: Filesystem effects (read_file, write_file, exists, remove)
+//!   - std.net: TCP networking (tcp_listen, accept, read, write, close)
 //!   - std.env: Environment access (args)
 
 const std = @import("std");
@@ -36,6 +37,7 @@ pub const assert = @import("assert.zig");
 pub const builder = @import("builder.zig");
 pub const map = @import("map.zig");
 pub const bytes = @import("bytes.zig");
+pub const net = @import("net.zig");
 
 /// Register all standard library modules in the environment.
 /// Each module is registered as a record with its functions as fields.
@@ -61,6 +63,7 @@ pub fn registerStdlib(allocator: Allocator, env: *Environment) !void {
     try std_fields.put(allocator, "builder", try builder.createModule(allocator));
     try std_fields.put(allocator, "map", try map.createModule(allocator));
     try std_fields.put(allocator, "bytes", try bytes.createModule(allocator));
+    try std_fields.put(allocator, "net", try net.createModule(allocator));
 
     const std_module = Value{
         .record = .{
@@ -123,4 +126,5 @@ test {
     _ = builder;
     _ = map;
     _ = bytes;
+    _ = net;
 }
