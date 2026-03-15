@@ -1,0 +1,769 @@
+// kira-dash — Terminal Dashboard for Web Service Monitoring
+//
+// A CLI tool that monitors HTTP/HTTPS endpoints, collects response time
+// statistics, and displays a live-updating summary.
+//
+// Features exercised:
+//   std.net (http_request), std.time, std.math, std.fs, std.bytes,
+//   std.char, std.string, std.map, std.list, ADTs, pattern matching,
+//   effects, higher-order functions, string interpolation, memo fn
+//
+// Usage:
+//   kira run examples/kira_dash.ki
+
+// ============================================================================
+// Types — ADTs for endpoints, results, and status
+// ============================================================================
+
+type Method =
+    | GET
+    | POST
+    | PUT
+    | DELETE
+    | HEAD
+
+fn method_to_string(m: Method) -> string {
+    match m {
+        GET => { return "GET" }
+        POST => { return "POST" }
+        PUT => { return "PUT" }
+        DELETE => { return "DELETE" }
+        HEAD => { return "HEAD" }
+    }
+}
+
+type Endpoint = {
+    name: string,
+    url: string,
+    method: Method,
+    interval_ms: i64,
+    expect_status: i32
+}
+
+fn make_endpoint(name: string, url: string, method: Method, interval_ms: i64, expect_status: i32) -> Endpoint {
+    return Endpoint {
+        name: name,
+        url: url,
+        method: method,
+        interval_ms: interval_ms,
+        expect_status: expect_status
+    }
+}
+
+// Check result: the core ADT of the dashboard
+type CheckResult =
+    | Up(i64)
+    | Down(string)
+    | Timeout
+
+fn check_result_to_string(r: CheckResult) -> string {
+    match r {
+        Up(ms) => { return "UP (${std.int.to_string(ms)}ms)" }
+        Down(reason) => { return "DOWN (${reason})" }
+        Timeout => { return "TIMEOUT" }
+    }
+}
+
+fn is_up(r: CheckResult) -> bool {
+    match r {
+        Up(_) => { return true }
+        Down(_) => { return false }
+        Timeout => { return false }
+    }
+}
+
+fn latency_ms(r: CheckResult) -> Option[i64] {
+    match r {
+        Up(ms) => { return Some(ms) }
+        Down(_) => { return None }
+        Timeout => { return None }
+    }
+}
+
+// Dashboard configuration
+type DashConfig = {
+    endpoints: List[Endpoint],
+    history_size: i32,
+    check_count: i32
+}
+
+// ============================================================================
+// Stats — Statistics engine
+// ============================================================================
+
+// Add a value to a bounded history list (newest first)
+fn push_history(history: List[i64], value: i64, max_size: i32) -> List[i64] {
+    let new_list: List[i64] = Cons(value, history)
+    let len: i64 = std.list.length(new_list)
+    var limit: i64 = 0i64
+    var remaining: i32 = max_size
+    while remaining > 0 {
+        limit = limit + 1i64
+        remaining = remaining - 1
+    }
+    if len > limit {
+        return std.list.take(new_list, limit)
+    }
+    return new_list
+}
+
+fn sum_i64(values: List[i64]) -> i64 {
+    return std.list.fold(values, 0i64, fn(acc: i64, v: i64) -> i64 {
+        return acc + v
+    })
+}
+
+fn min_val(values: List[i64]) -> Option[i64] {
+    return std.list.fold(values, None, fn(best: Option[i64], v: i64) -> Option[i64] {
+        match best {
+            None => { return Some(v) }
+            Some(b) => {
+                if v < b { return Some(v) }
+                return best
+            }
+        }
+    })
+}
+
+fn max_val(values: List[i64]) -> Option[i64] {
+    return std.list.fold(values, None, fn(best: Option[i64], v: i64) -> Option[i64] {
+        match best {
+            None => { return Some(v) }
+            Some(b) => {
+                if v > b { return Some(v) }
+                return best
+            }
+        }
+    })
+}
+
+fn avg_i64(values: List[i64]) -> i64 {
+    let n: i64 = std.list.length(values)
+    if n == 0i64 { return 0i64 }
+    return sum_i64(values) / n
+}
+
+// Get element at index
+fn list_at(xs: List[i64], idx: i64) -> Option[i64] {
+    var current: List[i64] = xs
+    var i: i64 = 0i64
+    while i < idx {
+        match current {
+            Cons(_, tail) => { current = tail }
+            Nil => { return None }
+        }
+        i = i + 1i64
+    }
+    match current {
+        Cons(head, _) => { return Some(head) }
+        Nil => { return None }
+    }
+}
+
+// Insertion sort for percentile calculation
+fn insert_sorted(sorted: List[i64], v: i64) -> List[i64] {
+    match sorted {
+        Nil => { return Cons(v, Nil) }
+        Cons(head, tail) => {
+            if v <= head {
+                return Cons(v, sorted)
+            }
+            return Cons(head, insert_sorted(tail, v))
+        }
+    }
+}
+
+fn sort_i64(values: List[i64]) -> List[i64] {
+    return std.list.fold(values, Nil, fn(sorted: List[i64], v: i64) -> List[i64] {
+        return insert_sorted(sorted, v)
+    })
+}
+
+// Percentile: sort, pick index at (p * n / 100)
+fn percentile(values: List[i64], p: i32) -> i64 {
+    let n: i64 = std.list.length(values)
+    if n == 0i64 { return 0i64 }
+    if n == 1i64 {
+        match std.list.head(values) {
+            Some(v) => { return v }
+            None => { return 0i64 }
+        }
+    }
+    let sorted: List[i64] = sort_i64(values)
+    // Convert p to i64 for arithmetic
+    var p_i64: i64 = 0i64
+    var p_rem: i32 = p
+    while p_rem > 0 {
+        p_i64 = p_i64 + 1i64
+        p_rem = p_rem - 1
+    }
+    var idx: i64 = (p_i64 * n) / 100i64
+    if idx >= n { idx = n - 1i64 }
+    match list_at(sorted, idx) {
+        Some(v) => { return v }
+        None => { return 0i64 }
+    }
+}
+
+// Per-endpoint statistics record
+type EndpointStats = {
+    name: string,
+    url: string,
+    total_checks: i64,
+    up_count: i64,
+    latencies: List[i64],
+    last_result: CheckResult,
+    history_size: i32
+}
+
+fn new_stats(name: string, url: string, history_size: i32) -> EndpointStats {
+    return EndpointStats {
+        name: name,
+        url: url,
+        total_checks: 0i64,
+        up_count: 0i64,
+        latencies: Nil,
+        last_result: Timeout,
+        history_size: history_size
+    }
+}
+
+fn record_check(stats: EndpointStats, result: CheckResult) -> EndpointStats {
+    let new_total: i64 = stats.total_checks + 1i64
+    var new_up: i64 = stats.up_count
+    if is_up(result) {
+        new_up = stats.up_count + 1i64
+    }
+    var new_latencies: List[i64] = stats.latencies
+    match latency_ms(result) {
+        Some(ms) => {
+            new_latencies = push_history(stats.latencies, ms, stats.history_size)
+        }
+        None => {}
+    }
+    return EndpointStats {
+        name: stats.name,
+        url: stats.url,
+        total_checks: new_total,
+        up_count: new_up,
+        latencies: new_latencies,
+        last_result: result,
+        history_size: stats.history_size
+    }
+}
+
+fn avg_latency(stats: EndpointStats) -> i64 {
+    return avg_i64(stats.latencies)
+}
+
+fn p99_latency(stats: EndpointStats) -> i64 {
+    return percentile(stats.latencies, 99)
+}
+
+fn min_latency(stats: EndpointStats) -> Option[i64] {
+    return min_val(stats.latencies)
+}
+
+fn max_latency(stats: EndpointStats) -> Option[i64] {
+    return max_val(stats.latencies)
+}
+
+// Memoized uptime string formatting
+memo fn format_uptime(up: i64, total: i64) -> string {
+    if total == 0i64 { return "N/A" }
+    let pct: i64 = (up * 100i64) / total
+    return "${std.int.to_string(pct)}%"
+}
+
+// ============================================================================
+// Config — Parse config files
+// ============================================================================
+
+// Memoized method string parser
+memo fn parse_method(s: string) -> Method {
+    if s == "POST" { return POST }
+    if s == "PUT" { return PUT }
+    if s == "DELETE" { return DELETE }
+    if s == "HEAD" { return HEAD }
+    return GET
+}
+
+fn map_get_or(m: HashMap[string, string], key: string, default: string) -> string {
+    match std.map.get(m, key) {
+        Some(v) => { return v }
+        None => { return default }
+    }
+}
+
+fn parse_i32_or(s: string, default: i32) -> i32 {
+    let parsed: Option[i32] = std.int.parse(s)
+    match parsed {
+        Some(n) => { return n }
+        None => { return default }
+    }
+}
+
+fn parse_i64_or(s: string, default: i64) -> i64 {
+    let parsed: Option[i32] = std.int.parse(s)
+    match parsed {
+        Some(n) => {
+            var result: i64 = 0i64
+            var remaining: i32 = n
+            if remaining >= 0 {
+                while remaining > 0 {
+                    result = result + 1i64
+                    remaining = remaining - 1
+                }
+            } else {
+                while remaining < 0 {
+                    result = result - 1i64
+                    remaining = remaining + 1
+                }
+            }
+            return result
+        }
+        None => { return default }
+    }
+}
+
+fn join_with(parts: List[string], sep: string) -> string {
+    var result: string = ""
+    var first: bool = true
+    std.list.foreach(parts, fn(part: string) -> void {
+        if first {
+            result = part
+            first = false
+        } else {
+            result = "${result}${sep}${part}"
+        }
+    })
+    return result
+}
+
+fn append_endpoint(eps: List[Endpoint], ep: Endpoint) -> List[Endpoint] {
+    match eps {
+        Nil => { return Cons(ep, Nil) }
+        Cons(head, tail) => { return Cons(head, append_endpoint(tail, ep)) }
+    }
+}
+
+fn build_endpoint(fields: HashMap[string, string]) -> Endpoint {
+    let name: string = map_get_or(fields, "name", "unnamed")
+    let url: string = map_get_or(fields, "url", "http://localhost")
+    let method: Method = parse_method(map_get_or(fields, "method", "GET"))
+    let interval: i64 = parse_i64_or(map_get_or(fields, "interval_ms", "5000"), 5000i64)
+    let expect: i32 = parse_i32_or(map_get_or(fields, "expect_status", "200"), 200)
+    return make_endpoint(name, url, method, interval, expect)
+}
+
+fn parse_config(content: string) -> DashConfig {
+    let lines: List[string] = std.string.split(content, "\n")
+    var endpoints: List[Endpoint] = Nil
+    var history_size: i32 = 50
+    var check_count: i32 = 3
+    var current_ep: HashMap[string, string] = std.map.new()
+    var in_endpoint: bool = false
+
+    std.list.foreach(lines, fn(line: string) -> void {
+        let trimmed: string = std.string.trim(line)
+        if std.string.length(trimmed) == 0i64 { return }
+        if std.string.starts_with(trimmed, "#") { return }
+
+        if trimmed == "[endpoint]" {
+            if in_endpoint {
+                let ep: Endpoint = build_endpoint(current_ep)
+                endpoints = append_endpoint(endpoints, ep)
+            }
+            current_ep = std.map.new()
+            in_endpoint = true
+            return
+        }
+
+        let parts: List[string] = std.string.split(trimmed, "=")
+        match std.list.head(parts) {
+            Some(key) => {
+                match std.list.tail(parts) {
+                    Some(rest) => {
+                        let value: string = join_with(rest, "=")
+                        if in_endpoint {
+                            current_ep = std.map.put(current_ep, key, value)
+                        } else {
+                            if key == "history_size" {
+                                history_size = parse_i32_or(value, 50)
+                            }
+                            if key == "check_count" {
+                                check_count = parse_i32_or(value, 3)
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+            None => {}
+        }
+    })
+
+    if in_endpoint {
+        let ep: Endpoint = build_endpoint(current_ep)
+        endpoints = append_endpoint(endpoints, ep)
+    }
+
+    return DashConfig {
+        endpoints: endpoints,
+        history_size: history_size,
+        check_count: check_count
+    }
+}
+
+effect fn load_config(path: string) -> Result[DashConfig, string] {
+    match std.fs.read_file(path) {
+        Ok(content) => { return Ok(parse_config(content)) }
+        Err(e) => { return Err("Failed to read config: ${e}") }
+    }
+}
+
+// ============================================================================
+// Monitor — Core polling via HTTP requests
+// ============================================================================
+
+// HTTP status type (mirrors std.net response shape)
+type HttpStatus =
+    | OK
+    | Created
+    | Accepted
+    | NoContent
+    | MovedPermanently
+    | Found
+    | NotModified
+    | BadRequest
+    | Unauthorized
+    | Forbidden
+    | NotFound
+    | MethodNotAllowed
+    | Conflict
+    | InternalError
+    | NotImplemented
+    | BadGateway
+    | ServiceUnavailable
+    | Custom(i32)
+
+type HttpError =
+    | ConnectionFailed(string)
+    | InvalidUrl(string)
+    | InvalidResponse(string)
+    | HttpTimeout
+
+type Header = {
+    name: string,
+    value: string
+}
+
+type Response = {
+    status: HttpStatus,
+    headers: List[Header],
+    body: string
+}
+
+type HttpRequest = {
+    method: Method,
+    url: string,
+    headers: List[Header],
+    body: Option[string]
+}
+
+fn status_code(s: HttpStatus) -> i32 {
+    match s {
+        OK => { return 200 }
+        Created => { return 201 }
+        Accepted => { return 202 }
+        NoContent => { return 204 }
+        MovedPermanently => { return 301 }
+        Found => { return 302 }
+        NotModified => { return 304 }
+        BadRequest => { return 400 }
+        Unauthorized => { return 401 }
+        Forbidden => { return 403 }
+        NotFound => { return 404 }
+        MethodNotAllowed => { return 405 }
+        Conflict => { return 409 }
+        InternalError => { return 500 }
+        NotImplemented => { return 501 }
+        BadGateway => { return 502 }
+        ServiceUnavailable => { return 503 }
+        Custom(code) => { return code }
+    }
+}
+
+// Check a single endpoint
+effect fn check_endpoint(ep: Endpoint) -> CheckResult {
+    let start: i64 = std.time.now()
+
+    let request: HttpRequest = HttpRequest {
+        method: ep.method,
+        url: ep.url,
+        headers: Nil,
+        body: None
+    }
+
+    let result: Result[Response, HttpError] = std.net.http_request(request)
+
+    let end: i64 = std.time.now()
+    let elapsed: i64 = std.time.elapsed(start, end)
+
+    match result {
+        Ok(response) => {
+            let code: i32 = status_code(response.status)
+            if code == ep.expect_status {
+                return Up(elapsed)
+            }
+            return Down("HTTP ${std.int.to_string(code)}")
+        }
+        Err(err) => {
+            match err {
+                ConnectionFailed(msg) => { return Down("Connection failed: ${msg}") }
+                InvalidUrl(msg) => { return Down("Invalid URL: ${msg}") }
+                InvalidResponse(msg) => { return Down("Bad response: ${msg}") }
+                HttpTimeout => { return Timeout }
+            }
+        }
+    }
+}
+
+// Run one round of checks
+effect fn check_all(endpoints: List[Endpoint], stats_map: HashMap[string, EndpointStats]) -> HashMap[string, EndpointStats] {
+    var updated: HashMap[string, EndpointStats] = stats_map
+    std.list.foreach(endpoints, fn(ep: Endpoint) -> void {
+        let result: CheckResult = check_endpoint(ep)
+        match std.map.get(updated, ep.name) {
+            Some(stats) => {
+                updated = std.map.put(updated, ep.name, record_check(stats, result))
+            }
+            None => {
+                let fresh: EndpointStats = new_stats(ep.name, ep.url, 100)
+                updated = std.map.put(updated, ep.name, record_check(fresh, result))
+            }
+        }
+    })
+    return updated
+}
+
+fn init_stats_map(config: DashConfig) -> HashMap[string, EndpointStats] {
+    return std.list.fold(config.endpoints, std.map.new(), fn(m: HashMap[string, EndpointStats], ep: Endpoint) -> HashMap[string, EndpointStats] {
+        return std.map.put(m, ep.name, new_stats(ep.name, ep.url, config.history_size))
+    })
+}
+
+// ============================================================================
+// Display — Terminal output formatting
+// ============================================================================
+
+// ANSI color helpers (higher-order: could be composed)
+fn color_green(s: string) -> string { return "\x1b[32m${s}\x1b[0m" }
+fn color_red(s: string) -> string { return "\x1b[31m${s}\x1b[0m" }
+fn color_yellow(s: string) -> string { return "\x1b[33m${s}\x1b[0m" }
+fn color_cyan(s: string) -> string { return "\x1b[36m${s}\x1b[0m" }
+fn color_bold(s: string) -> string { return "\x1b[1m${s}\x1b[0m" }
+fn color_dim(s: string) -> string { return "\x1b[2m${s}\x1b[0m" }
+
+fn pad_right(s: string, width: i64) -> string {
+    let len: i64 = std.string.length(s)
+    if len >= width { return s }
+    var result: string = s
+    var remaining: i64 = width - len
+    while remaining > 0i64 {
+        result = "${result} "
+        remaining = remaining - 1i64
+    }
+    return result
+}
+
+fn repeat_str(c: string, n: i64) -> string {
+    var result: string = ""
+    var remaining: i64 = n
+    while remaining > 0i64 {
+        result = "${result}${c}"
+        remaining = remaining - 1i64
+    }
+    return result
+}
+
+fn format_status(result: CheckResult) -> string {
+    match result {
+        Up(_) => { return color_green("UP") }
+        Down(_) => { return color_red("DOWN") }
+        Timeout => { return color_yellow("TIMEOUT") }
+    }
+}
+
+fn format_latency(result: CheckResult) -> string {
+    match result {
+        Up(ms) => { return "${std.int.to_string(ms)}ms" }
+        Down(_) => { return "--" }
+        Timeout => { return "--" }
+    }
+}
+
+fn format_error_detail(result: CheckResult) -> string {
+    match result {
+        Up(_) => { return "" }
+        Down(reason) => { return "  Error: ${reason}" }
+        Timeout => { return "  (timed out)" }
+    }
+}
+
+// Display a single endpoint's stats
+effect fn display_endpoint(stats: EndpointStats) -> void {
+    let name_padded: string = pad_right(stats.name, 14i64)
+    let status_str: string = format_status(stats.last_result)
+    let latency_str: string = format_latency(stats.last_result)
+
+    std.io.println("  ${color_bold(name_padded)} ${color_dim(stats.url)}")
+
+    let avg_ms: i64 = avg_latency(stats)
+    let p99_ms: i64 = p99_latency(stats)
+    let uptime: string = format_uptime(stats.up_count, stats.total_checks)
+
+    let detail: string = "                 Status: ${status_str}  Latency: ${latency_str} (avg: ${std.int.to_string(avg_ms)}ms, p99: ${std.int.to_string(p99_ms)}ms)  Uptime: ${uptime}"
+    std.io.println(detail)
+
+    // Show error details if down
+    let err_detail: string = format_error_detail(stats.last_result)
+    if std.string.length(err_detail) > 0i64 {
+        std.io.println("                 ${color_red(err_detail)}")
+    }
+
+    // Show min/max range if we have latency data
+    match min_latency(stats) {
+        Some(min_ms) => {
+            match max_latency(stats) {
+                Some(max_ms) => {
+                    let range: string = "Range: ${std.int.to_string(min_ms)}ms - ${std.int.to_string(max_ms)}ms  Checks: ${std.int.to_string(stats.total_checks)}"
+                    std.io.println("                 ${color_dim(range)}")
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+    std.io.println("")
+}
+
+// Display full dashboard
+effect fn display_dashboard(config: DashConfig, stats_map: HashMap[string, EndpointStats], start_time: i64) -> void {
+    let ep_count: i64 = std.list.length(config.endpoints)
+    let separator: string = repeat_str("-", 72i64)
+
+    let title: string = color_cyan("kira-dash")
+    let subtitle: string = color_dim("--- monitoring " + std.int.to_string(ep_count) + " endpoints")
+
+    std.io.println("")
+    std.io.println("  ${title} ${subtitle}")
+    std.io.println("  ${separator}")
+    std.io.println("")
+
+    std.list.foreach(config.endpoints, fn(ep: Endpoint) -> void {
+        match std.map.get(stats_map, ep.name) {
+            Some(stats) => { display_endpoint(stats) }
+            None => {
+                let waiting: string = color_dim("Waiting for first check...")
+                std.io.println("  ${pad_right(ep.name, 14i64)} ${waiting}")
+                std.io.println("")
+            }
+        }
+    })
+
+    // Footer with timing info
+    let now: i64 = std.time.now()
+    let running_ms: i64 = std.time.elapsed(start_time, now)
+    let running_secs: i64 = running_ms / 1000i64
+    let running_mins: i64 = running_secs / 60i64
+    let remaining_secs: i64 = running_secs - (running_mins * 60i64)
+
+    let total_checks: i64 = std.list.fold(config.endpoints, 0i64, fn(acc: i64, ep: Endpoint) -> i64 {
+        match std.map.get(stats_map, ep.name) {
+            Some(stats) => { return acc + stats.total_checks }
+            None => { return acc }
+        }
+    })
+
+    std.io.println("  ${separator}")
+    let footer: string = "  Running: ${std.int.to_string(running_mins)}m ${std.int.to_string(remaining_secs)}s  |  Total checks: ${std.int.to_string(total_checks)}"
+    std.io.println(color_dim(footer))
+}
+
+// ============================================================================
+// Main — Orchestration
+// ============================================================================
+
+effect fn main() -> void {
+    std.io.println("")
+    std.io.println(color_bold("  kira-dash v1.0"))
+    std.io.println("  A terminal dashboard for web service monitoring")
+    std.io.println("")
+
+    // Default config with demo endpoints
+    let config: DashConfig = DashConfig {
+        endpoints: Cons(
+            make_endpoint("Example.com", "https://example.com", GET, 5000i64, 200),
+            Cons(
+                make_endpoint("GitHub API", "https://api.github.com", GET, 10000i64, 200),
+                Nil
+            )
+        ),
+        history_size: 50,
+        check_count: 3
+    }
+
+    let ep_count: i64 = std.list.length(config.endpoints)
+    std.io.println("  Loaded ${std.int.to_string(ep_count)} endpoints:")
+    std.list.foreach(config.endpoints, fn(ep: Endpoint) -> void {
+        std.io.println("    ${color_cyan(ep.name)}: ${ep.url} (${method_to_string(ep.method)})")
+    })
+    std.io.println("")
+
+    // Initialize stats map
+    var stats_map: HashMap[string, EndpointStats] = init_stats_map(config)
+    let start_time: i64 = std.time.now()
+
+    // Main monitoring loop
+    var round: i32 = 0
+    while round < config.check_count {
+        round = round + 1
+        std.io.println(color_dim("  >>> Check round ${std.int.to_string(round)} of ${std.int.to_string(config.check_count)}"))
+
+        stats_map = check_all(config.endpoints, stats_map)
+        display_dashboard(config, stats_map, start_time)
+        std.io.println("")
+
+        if round < config.check_count {
+            std.io.println(color_dim("  Waiting 3 seconds..."))
+            std.io.println("")
+            std.time.sleep(3000i64)
+        }
+    }
+
+    // Final summary
+    std.io.println(color_bold("  === Final Summary ==="))
+    std.io.println("")
+    std.list.foreach(config.endpoints, fn(ep: Endpoint) -> void {
+        match std.map.get(stats_map, ep.name) {
+            Some(stats) => {
+                let uptime: string = format_uptime(stats.up_count, stats.total_checks)
+                let avg_ms: i64 = avg_latency(stats)
+                let p99_ms: i64 = p99_latency(stats)
+                let avg_str: string = pad_right(std.int.to_string(avg_ms) + "ms", 8i64)
+                let p99_str: string = pad_right(std.int.to_string(p99_ms) + "ms", 8i64)
+                let name_col: string = pad_right(ep.name, 16i64)
+                let up_col: string = pad_right(uptime, 6i64)
+                std.io.println("  ${name_col} Uptime: ${up_col} Avg: ${avg_str} P99: ${p99_str} Checks: ${std.int.to_string(stats.total_checks)}")
+            }
+            None => {
+                let name_col: string = pad_right(ep.name, 16i64)
+                std.io.println("  ${name_col} No data")
+            }
+        }
+    })
+    std.io.println("")
+    std.io.println(color_dim("  Monitoring complete."))
+    std.io.println("")
+}
