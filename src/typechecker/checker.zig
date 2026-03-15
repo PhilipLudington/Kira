@@ -2215,9 +2215,11 @@ pub const TypeChecker = struct {
         // Check each arm and ensure all return the same type
         var result_type: ?ResolvedType = null;
 
-        // Collect patterns for exhaustiveness checking
+        // Collect patterns and guard info for exhaustiveness checking
         var patterns = std.ArrayListUnmanaged(*const Pattern){};
         defer patterns.deinit(self.allocator);
+        var guards = std.ArrayListUnmanaged(bool){};
+        defer guards.deinit(self.allocator);
 
         for (me.arms) |arm| {
             _ = try self.symbol_table.enterScope(.block);
@@ -2227,8 +2229,9 @@ pub const TypeChecker = struct {
             try self.checkPattern(arm.pattern, subject_type);
             try self.addPatternBindings(arm.pattern, null, subject_type, false);
 
-            // Collect pattern for exhaustiveness checking
+            // Collect pattern and guard info for exhaustiveness checking
             try patterns.append(self.allocator, arm.pattern);
+            try guards.append(self.allocator, arm.guard != null);
 
             // Check guard if present
             if (arm.guard) |guard| {
@@ -2265,7 +2268,7 @@ pub const TypeChecker = struct {
         }
 
         // Check exhaustiveness
-        try self.checkMatchExhaustiveness(patterns.items, subject_type, span);
+        try self.checkMatchExhaustiveness(patterns.items, guards.items, subject_type, span);
 
         return result_type orelse ResolvedType.voidType(span);
     }
@@ -2980,9 +2983,11 @@ pub const TypeChecker = struct {
             .match_statement => |match_stmt| {
                 const subject_type = try self.checkExpression(match_stmt.subject);
 
-                // Collect patterns for exhaustiveness checking
+                // Collect patterns and guard info for exhaustiveness checking
                 var patterns = std.ArrayListUnmanaged(*const Pattern){};
                 defer patterns.deinit(self.allocator);
+                var guards = std.ArrayListUnmanaged(bool){};
+                defer guards.deinit(self.allocator);
 
                 for (match_stmt.arms) |arm| {
                     _ = try self.symbol_table.enterScope(.block);
@@ -2992,8 +2997,9 @@ pub const TypeChecker = struct {
                     try self.checkPattern(arm.pattern, subject_type);
                     try self.addPatternBindings(arm.pattern, null, subject_type, false);
 
-                    // Collect pattern for exhaustiveness checking
+                    // Collect pattern and guard info for exhaustiveness checking
                     try patterns.append(self.allocator, arm.pattern);
+                    try guards.append(self.allocator, arm.guard != null);
 
                     if (arm.guard) |guard| {
                         const guard_type = try self.checkExpression(guard);
@@ -3013,7 +3019,7 @@ pub const TypeChecker = struct {
                 }
 
                 // Check exhaustiveness
-                try self.checkMatchExhaustiveness(patterns.items, subject_type, stmt.span);
+                try self.checkMatchExhaustiveness(patterns.items, guards.items, subject_type, stmt.span);
             },
 
             .return_statement => |ret| {
@@ -4111,6 +4117,7 @@ pub const TypeChecker = struct {
     fn checkMatchExhaustiveness(
         self: *TypeChecker,
         patterns: []const *const Pattern,
+        has_guard: []const bool,
         subject_type_raw: ResolvedType,
         span: Span,
     ) TypeCheckError!void {
@@ -4122,7 +4129,7 @@ pub const TypeChecker = struct {
             &self.diagnostics,
         );
 
-        var result = compiler.checkExhaustiveness(patterns, subject_type, span) catch |err| {
+        var result = compiler.checkExhaustiveness(patterns, has_guard, subject_type, span) catch |err| {
             return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
             };

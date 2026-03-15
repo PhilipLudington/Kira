@@ -177,10 +177,14 @@ pub const PatternCompiler = struct {
         };
     }
 
-    /// Check if a match expression/statement is exhaustive
+    /// Check if a match expression/statement is exhaustive.
+    /// `has_guard` indicates which arms have guards — guarded arms don't
+    /// contribute to the "covered" set because their guard may fail at runtime,
+    /// so subsequent arms with the same pattern are still reachable.
     pub fn checkExhaustiveness(
         self: *PatternCompiler,
         patterns: []const *const Pattern,
+        has_guard: []const bool,
         subject_type: ResolvedType,
         _: Span, // Used for potential future error context
     ) !ExhaustivenessResult {
@@ -212,7 +216,11 @@ pub const PatternCompiler = struct {
                     try unreachable_arms.append(self.allocator, i);
                 }
             }
-            try covered.append(self.allocator, space);
+            // Only unguarded arms contribute to coverage — a guarded arm's
+            // pattern can fail at runtime so it doesn't make later arms unreachable.
+            if (i >= has_guard.len or !has_guard[i]) {
+                try covered.append(self.allocator, space);
+            }
         }
 
         // Determine missing patterns based on type
@@ -1191,7 +1199,7 @@ test "bool exhaustiveness - complete" {
 
     const bool_type = ResolvedType.primitive(.bool, span);
 
-    const result = try compiler.checkExhaustiveness(&patterns, bool_type, span);
+    const result = try compiler.checkExhaustiveness(&patterns, &.{}, bool_type, span);
     defer allocator.free(result.missing_patterns);
     defer allocator.free(result.unreachable_arms);
 
@@ -1225,7 +1233,7 @@ test "bool exhaustiveness - incomplete" {
 
     const bool_type = ResolvedType.primitive(.bool, span);
 
-    const result = try compiler.checkExhaustiveness(&patterns, bool_type, span);
+    const result = try compiler.checkExhaustiveness(&patterns, &.{}, bool_type, span);
     defer allocator.free(result.missing_patterns);
     defer allocator.free(result.unreachable_arms);
 
@@ -1255,7 +1263,7 @@ test "wildcard covers everything" {
 
     const bool_type = ResolvedType.primitive(.bool, span);
 
-    const result = try compiler.checkExhaustiveness(&patterns, bool_type, span);
+    const result = try compiler.checkExhaustiveness(&patterns, &.{}, bool_type, span);
     defer allocator.free(result.missing_patterns);
     defer allocator.free(result.unreachable_arms);
 
@@ -1283,7 +1291,7 @@ test "integer needs catch-all" {
 
     const int_type = ResolvedType.primitive(.i32, span);
 
-    const result = try compiler.checkExhaustiveness(&patterns, int_type, span);
+    const result = try compiler.checkExhaustiveness(&patterns, &.{}, int_type, span);
     defer allocator.free(result.missing_patterns);
     defer allocator.free(result.unreachable_arms);
 
@@ -1448,11 +1456,93 @@ test "identifier pattern covers like wildcard" {
 
     const bool_type = ResolvedType.primitive(.bool, span);
 
-    const result = try compiler.checkExhaustiveness(&patterns, bool_type, span);
+    const result = try compiler.checkExhaustiveness(&patterns, &.{}, bool_type, span);
     defer allocator.free(result.missing_patterns);
     defer allocator.free(result.unreachable_arms);
 
     try std.testing.expect(result.is_exhaustive);
+}
+
+test "guarded arms do not make subsequent arms unreachable" {
+    const allocator = std.testing.allocator;
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var diagnostics = std.ArrayListUnmanaged(Diagnostic){};
+    defer diagnostics.deinit(allocator);
+    defer {
+        for (diagnostics.items) |d| {
+            allocator.free(d.message);
+        }
+    }
+
+    var compiler = PatternCompiler.init(allocator, &table, &diagnostics);
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 5, .offset = 4 },
+    };
+
+    // Simulate: match x { true if guard => ..., true => ..., false => ... }
+    // The second `true` arm should NOT be unreachable because the first has a guard.
+    var pat_true1 = Pattern.init(.{ .bool_literal = true }, span);
+    var pat_true2 = Pattern.init(.{ .bool_literal = true }, span);
+    var pat_false = Pattern.init(.{ .bool_literal = false }, span);
+
+    const patterns = [_]*Pattern{ &pat_true1, &pat_true2, &pat_false };
+    const has_guard = [_]bool{ true, false, false };
+
+    const bool_type = ResolvedType.primitive(.bool, span);
+
+    const result = try compiler.checkExhaustiveness(&patterns, &has_guard, bool_type, span);
+    defer allocator.free(result.missing_patterns);
+    defer allocator.free(result.unreachable_arms);
+
+    // Should be exhaustive (true + false covered by unguarded arms)
+    try std.testing.expect(result.is_exhaustive);
+    // No arms should be unreachable — the guarded true doesn't cover for the unguarded true
+    try std.testing.expectEqual(@as(usize, 0), result.unreachable_arms.len);
+}
+
+test "unguarded duplicate is still unreachable" {
+    const allocator = std.testing.allocator;
+    var table = SymbolTable.init(allocator);
+    defer table.deinit();
+
+    var diagnostics = std.ArrayListUnmanaged(Diagnostic){};
+    defer diagnostics.deinit(allocator);
+    defer {
+        for (diagnostics.items) |d| {
+            allocator.free(d.message);
+        }
+    }
+
+    var compiler = PatternCompiler.init(allocator, &table, &diagnostics);
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 5, .offset = 4 },
+    };
+
+    // Simulate: match x { true => ..., true => ..., false => ... }
+    // The second `true` IS unreachable (no guard on first).
+    var pat_true1 = Pattern.init(.{ .bool_literal = true }, span);
+    var pat_true2 = Pattern.init(.{ .bool_literal = true }, span);
+    var pat_false = Pattern.init(.{ .bool_literal = false }, span);
+
+    const patterns = [_]*Pattern{ &pat_true1, &pat_true2, &pat_false };
+    const no_guards = [_]bool{ false, false, false };
+
+    const bool_type = ResolvedType.primitive(.bool, span);
+
+    const result = try compiler.checkExhaustiveness(&patterns, &no_guards, bool_type, span);
+    defer allocator.free(result.missing_patterns);
+    defer allocator.free(result.unreachable_arms);
+
+    try std.testing.expect(result.is_exhaustive);
+    // Second arm (index 1) should be unreachable
+    try std.testing.expectEqual(@as(usize, 1), result.unreachable_arms.len);
+    try std.testing.expectEqual(@as(usize, 1), result.unreachable_arms[0]);
 }
 
 test "tuple space structure" {
