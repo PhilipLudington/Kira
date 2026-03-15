@@ -539,8 +539,11 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
     }
 
     // Call internal function
+    const is_string_return = isStringType(func.return_type_name);
     if (is_void_return) {
         try appendFmt(allocator, output, "    kira_{s}(", .{name});
+    } else if (is_string_return) {
+        try appendFmt(allocator, output, "    const char* _r = kira_{s}(", .{name});
     } else {
         try appendFmt(allocator, output, "    kira_int _r = kira_{s}(", .{name});
     }
@@ -550,7 +553,9 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
         if (i > 0) try appendSlice(allocator, output, ", ");
         if (isFloatType(param.type_name)) {
             try appendFmt(allocator, output, "_a{d}", .{i});
-        } else if (isStringType(param.type_name) or shouldPassByPointer(param.type_name, module)) {
+        } else if (isStringType(param.type_name)) {
+            try appendFmt(allocator, output, "{s}", .{param.name});
+        } else if (shouldPassByPointer(param.type_name, module)) {
             try appendFmt(allocator, output, "(kira_int)(intptr_t){s}", .{param.name});
         } else {
             try appendFmt(allocator, output, "(kira_int){s}", .{param.name});
@@ -566,8 +571,8 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
             } else {
                 try appendFmt(allocator, output, "    {s} _ret; memcpy(&_ret, &_r, sizeof(double));\n    return _ret;\n", .{ret_c.c_type});
             }
-        } else if (isStringType(func.return_type_name)) {
-            try appendSlice(allocator, output, "    return (const char*)(intptr_t)_r;\n");
+        } else if (is_string_return) {
+            try appendSlice(allocator, output, "    return _r;\n");
         } else if (ret_is_large) {
             try appendSlice(allocator, output, "    return (void*)(intptr_t)_r;\n");
         } else {
@@ -1288,10 +1293,11 @@ test "generateLibraryWrappers with mixed types" {
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_scale(_a0)") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "memcpy(&_ret, &_r, sizeof(double))") != null);
 
-    // String wrapper: intptr_t cast
+    // String wrapper: pass-through (both wrapper and internal use const char*)
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "const char* greet(const char* name)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrappers, "(kira_int)(intptr_t)name") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrappers, "return (const char*)(intptr_t)_r;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_greet(name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "const char* _r = kira_greet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "return _r;") != null);
 
     // Void wrapper: no return
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "void reset(void)") != null);

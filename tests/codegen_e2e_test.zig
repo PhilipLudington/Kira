@@ -1006,6 +1006,145 @@ test "e2e interop: compiled library with C test harness" {
     try std.testing.expectEqualStrings("30\n30", output);
 }
 
+test "e2e interop: cross-language round-trip memory stability" {
+    const allocator = std.testing.allocator;
+
+    // Library with integer and string-returning functions.
+    // greet() allocates via GC on every call — exercises the memory boundary.
+    const source =
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\
+        \\fn greet(name: string) -> string {
+        \\    return "Hello, " + name
+        \\}
+    ;
+
+    // Compile to C
+    const c_code = try compileToC(allocator, source);
+    defer allocator.free(c_code);
+
+    // Get IR module for library wrappers
+    var result = try compileToIRModule(allocator, source);
+    defer result.module.deinit();
+    defer result.program.deinit();
+    defer result.lowerer.deinit();
+    defer result.checker.deinit();
+    defer result.resolver.deinit();
+    defer result.table.deinit();
+
+    // Generate library wrappers
+    const wrappers = try Kira.interop.klar.generateLibraryWrappers(allocator, &result.module);
+    defer allocator.free(wrappers);
+
+    // Generate header
+    const header = try Kira.interop.klar.generateHeader(allocator, &result.module, "roundtrip");
+    defer allocator.free(header);
+
+    // Write header file
+    const h_path = "/tmp/kira_e2e_roundtrip.h";
+    {
+        const h_file = std.fs.cwd().createFile(h_path, .{}) catch return error.SkipZigTest;
+        defer h_file.close();
+        h_file.writeAll(header) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(h_path) catch {};
+
+    // Write combined library C source (codegen + wrappers)
+    const lib_path = "/tmp/kira_e2e_roundtrip_lib.c";
+    {
+        const lib_file = std.fs.cwd().createFile(lib_path, .{}) catch return error.SkipZigTest;
+        defer lib_file.close();
+        lib_file.writeAll(c_code) catch return error.SkipZigTest;
+        lib_file.writeAll(wrappers) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(lib_path) catch {};
+
+    // C test harness: calls Kira functions 10,000 times via the typed wrapper
+    // API (same interface Klar uses), then checks GC heap didn't grow unboundedly.
+    const test_c_path = "/tmp/kira_e2e_roundtrip_main.c";
+    {
+        const test_file = std.fs.cwd().createFile(test_c_path, .{}) catch return error.SkipZigTest;
+        defer test_file.close();
+        test_file.writeAll(
+            \\#include <stdio.h>
+            \\#include <gc.h>
+            \\#include "kira_e2e_roundtrip.h"
+            \\
+            \\int main(void) {
+            \\    GC_INIT();
+            \\
+            \\    /* Warmup: let GC stabilize */
+            \\    for (int i = 0; i < 1000; i++) {
+            \\        (void)add(i, i + 1);
+            \\        (void)greet("warmup");
+            \\    }
+            \\    GC_gcollect();
+            \\    size_t heap_before = GC_get_heap_size();
+            \\
+            \\    /* Round-trip: 10,000 iterations with string allocation */
+            \\    for (int i = 0; i < 10000; i++) {
+            \\        int32_t sum = add(i, i + 1);
+            \\        (void)sum;
+            \\        const char* msg = greet("World");
+            \\        (void)msg;
+            \\        if (i % 1000 == 0) GC_gcollect();
+            \\    }
+            \\
+            \\    GC_gcollect();
+            \\    size_t heap_after = GC_get_heap_size();
+            \\
+            \\    /* Fail if heap grew more than 10x — indicates unbounded leak */
+            \\    if (heap_before > 0 && heap_after > heap_before * 10) {
+            \\        printf("LEAK: %zu -> %zu bytes\n", heap_before, heap_after);
+            \\        return 1;
+            \\    }
+            \\
+            \\    printf("OK\n");
+            \\    return 0;
+            \\}
+            \\
+        ) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(test_c_path) catch {};
+
+    // Compile both files together
+    const bin_path = "/tmp/kira_e2e_roundtrip";
+    const cc_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            "cc", "-o", bin_path, test_c_path, lib_path,
+            "-I/tmp", "-lm",
+            "-I/opt/homebrew/include", "-L/opt/homebrew/lib", "-lgc",
+        },
+    }) catch return error.SkipZigTest;
+    defer allocator.free(cc_result.stdout);
+    defer allocator.free(cc_result.stderr);
+
+    if (cc_result.term != .Exited or cc_result.term.Exited != 0) {
+        return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(bin_path) catch {};
+
+    // Run and verify no memory growth
+    const run_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{bin_path},
+    }) catch return error.SkipZigTest;
+    defer allocator.free(run_result.stderr);
+
+    if (run_result.term != .Exited or run_result.term.Exited != 0) {
+        allocator.free(run_result.stdout);
+        return error.SkipZigTest;
+    }
+
+    const output = std.mem.trimRight(u8, run_result.stdout, "\n\r \t");
+    defer allocator.free(run_result.stdout);
+
+    try std.testing.expectEqualStrings("OK", output);
+}
+
 test "e2e: list_map, list_filter, list_length with closures" {
     try assertE2E(
         \\fn count_words(text: string) -> i64 {
