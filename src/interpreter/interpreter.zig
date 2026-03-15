@@ -9,6 +9,7 @@ const ast = @import("../ast/root.zig");
 const symbols = @import("../symbols/root.zig");
 const value_mod = @import("value.zig");
 const coverage_mod = @import("../coverage.zig");
+const net = @import("../stdlib/net.zig");
 
 const Expression = ast.Expression;
 const Statement = ast.Statement;
@@ -315,6 +316,9 @@ pub const Interpreter = struct {
     }
 
     pub fn deinit(self: *Interpreter) void {
+        // Close all open network handles before tearing down
+        net.closeAllHandles();
+
         self.global_env.deinit();
         // method_table keys, values, and hash map metadata are all arena-allocated
         self.method_table.deinit(self.arena.allocator());

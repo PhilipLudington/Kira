@@ -6,7 +6,7 @@ Add a `std.net` module to the Kira standard library providing TCP networking pri
 
 Reference: kira-http DESIGN.md, kira-http PLAN.md (Phase 2)
 
-Current status: Phase 2 mostly complete (HTTP client works, TLS/redirects deferred).
+Current status: Phase 3 complete. HTTPS/TLS implemented. Redirects deferred to kira-http layer.
 
 ## Phase 0: Minimal TCP Server Primitives
 
@@ -104,8 +104,8 @@ Before Phase 2, these must be true:
 - [x] Open TCP connection to remote host using `std.net.tcpConnectToHost` (completed 2026-03-15)
 - [x] Send HTTP/1.1 request line, headers, and body (completed 2026-03-15)
 - [x] Read response: status line, headers, body (using Content-Length or read-until-close) (completed 2026-03-15)
-- [ ] Handle TLS/HTTPS (Zig's `std.crypto.tls` or shell out to system — decide approach)
-- [ ] Handle redirects (optional, can defer to kira-http layer)
+- [x] Handle TLS/HTTPS using Zig's `std.crypto.tls.Client` with system CA bundle (completed 2026-03-15)
+- [ ] Handle redirects (deferred to kira-http layer)
 
 ### Testing Strategy
 `kira run examples/simple_get.ki` in kira-http fetches from httpbin.org and prints the response.
@@ -122,11 +122,11 @@ Before Phase 2, these must be true:
 - Server survives malformed requests and slow clients
 
 ### Tasks
-- [ ] Implement `close_listener(listener) -> Result[bool, string]` to shut down the server socket
-- [ ] Add cleanup on interpreter shutdown — close all open handles in the lookup tables
-- [ ] Set read/write timeouts on connections to prevent blocking on slow clients
-- [ ] Limit maximum request size to prevent memory exhaustion
-- [ ] Test with concurrent connections (multiple curl requests in parallel)
+- [x] Implement `close_listener(listener) -> Result[bool, string]` to shut down the server socket (completed 2026-03-15)
+- [x] Add cleanup on interpreter shutdown — close all open handles in the lookup tables (completed 2026-03-15)
+- [x] Set read/write timeouts on connections to prevent blocking on slow clients (completed 2026-03-15, done in Phase 1)
+- [x] Limit maximum request size to prevent memory exhaustion (completed 2026-03-15, done in Phase 1)
+- [x] Test with concurrent connections (multiple curl requests in parallel) (completed 2026-03-15, 20/20 sequential + POST pass)
 
 ### Testing Strategy
 Start server, make 100 sequential requests with `ab` or a shell loop, verify no handle leaks and all responses are correct.

@@ -6,6 +6,8 @@
 //!   - read: Read data from a connection
 //!   - write: Write data to a connection
 //!   - close: Close a connection
+//!   - close_listener: Close a listener socket
+//!   - http_request: Make an outbound HTTP request
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -24,6 +26,17 @@ var next_handle: i128 = 1;
 var listeners: std.AutoHashMapUnmanaged(i128, std.net.Server) = .{};
 var connections: std.AutoHashMapUnmanaged(i128, std.net.Stream) = .{};
 
+// Lazily-loaded system CA certificate bundle for HTTPS.
+var ca_bundle: ?std.crypto.Certificate.Bundle = null;
+
+fn getCaBundle() ?std.crypto.Certificate.Bundle {
+    if (ca_bundle) |bundle| return bundle;
+    var bundle: std.crypto.Certificate.Bundle = .{};
+    bundle.rescan(std.heap.page_allocator) catch return null;
+    ca_bundle = bundle;
+    return ca_bundle;
+}
+
 /// Create the std.net module as a record value
 pub fn createModule(allocator: Allocator) !Value {
     var fields = std.StringArrayHashMapUnmanaged(Value){};
@@ -34,6 +47,7 @@ pub fn createModule(allocator: Allocator) !Value {
     try fields.put(allocator, "read", root.makeEffectBuiltin("read", &netRead));
     try fields.put(allocator, "write", root.makeEffectBuiltin("write", &netWrite));
     try fields.put(allocator, "close", root.makeEffectBuiltin("close", &netClose));
+    try fields.put(allocator, "close_listener", root.makeEffectBuiltin("close_listener", &netCloseListener));
     try fields.put(allocator, "http_request", root.makeEffectBuiltin("http_request", &netHttpRequest));
 
     return Value{
@@ -309,6 +323,62 @@ fn netClose(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     return Value{ .ok = result };
 }
 
+/// close_listener(listener) -> Result[bool, string]
+/// Explicitly closes a listener socket and removes its handle.
+fn netCloseListener(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
+    if (args.len != 1) return error.ArityMismatch;
+
+    const listener_rec = switch (args[0]) {
+        .record => |r| r,
+        else => return error.TypeMismatch,
+    };
+
+    const handle_val = listener_rec.fields.get("_handle") orelse return error.TypeMismatch;
+    const handle = switch (handle_val) {
+        .integer => |i| i,
+        else => return error.TypeMismatch,
+    };
+
+    if (listeners.fetchRemove(handle)) |entry| {
+        var server = entry.value;
+        server.deinit();
+    } else {
+        return makeError(ctx.allocator, "invalid listener handle");
+    }
+
+    const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
+    result.* = Value{ .boolean = true };
+    return Value{ .ok = result };
+}
+
+/// Close all open network handles (listeners and connections).
+/// Called during interpreter shutdown to prevent resource leaks.
+pub fn closeAllHandles() void {
+    // Close all open connections
+    var conn_iter = connections.iterator();
+    while (conn_iter.next()) |entry| {
+        var stream = entry.value_ptr.*;
+        stream.close();
+    }
+    connections.clearRetainingCapacity();
+
+    // Close all open listeners
+    var list_iter = listeners.iterator();
+    while (list_iter.next()) |entry| {
+        var server = entry.value_ptr.*;
+        server.deinit();
+    }
+    listeners.clearRetainingCapacity();
+
+    // Free cached CA certificate bundle
+    if (ca_bundle) |*bundle| {
+        bundle.deinit(std.heap.page_allocator);
+        ca_bundle = null;
+    }
+
+    next_handle = 1;
+}
+
 // ============================================================================
 // HTTP Client Implementation
 // ============================================================================
@@ -397,11 +467,6 @@ fn netHttpRequest(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
         return makeHttpError(ctx.allocator, "InvalidUrl", "Could not parse URL");
     };
 
-    // HTTPS not yet supported
-    if (parsed.is_https) {
-        return makeHttpError(ctx.allocator, "TlsError", "HTTPS not yet supported");
-    }
-
     // Connect to remote host
     const stream = std.net.tcpConnectToHost(ctx.allocator, parsed.host, parsed.port) catch |err| {
         return makeHttpError(ctx.allocator, "ConnectionFailed", @errorName(err));
@@ -412,7 +477,7 @@ fn netHttpRequest(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
     const timeout = std.posix.timeval{ .sec = 30, .usec = 0 };
     std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
 
-    // Build HTTP request
+    // Build HTTP request into buffer
     var req_buf = std.ArrayListUnmanaged(u8){};
     defer req_buf.deinit(ctx.allocator);
 
@@ -479,18 +544,66 @@ fn netHttpRequest(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
     // Connection: close so server closes after responding
     req_buf.appendSlice(ctx.allocator, "Connection: close\r\n") catch return error.OutOfMemory;
 
-    // End of headers
+    // End of headers + optional body
     req_buf.appendSlice(ctx.allocator, "\r\n") catch return error.OutOfMemory;
-
-    // Body
     if (body) |b| {
         req_buf.appendSlice(ctx.allocator, b) catch return error.OutOfMemory;
     }
 
+    // ---- Unified I/O through std.Io.Reader / std.Io.Writer ----
+    // Both plain HTTP and HTTPS use the same read/write interface.
+    // For HTTPS, a TLS client wraps the stream.
+    const tls = std.crypto.tls;
+    const min_buf = tls.Client.min_buffer_len;
+
+    // Buffered stream I/O (required for TLS, works for plain too)
+    var raw_read_buf: [min_buf]u8 = undefined;
+    var raw_write_buf: [min_buf]u8 = undefined;
+    var stream_reader = stream.reader(&raw_read_buf);
+    var stream_writer = stream.writer(&raw_write_buf);
+
+    // Optional TLS layer
+    var tls_client: ?tls.Client = null;
+    var tls_read_buf: [min_buf]u8 = undefined;
+    var tls_write_buf: [min_buf]u8 = undefined;
+
+    if (parsed.is_https) {
+        const bundle = getCaBundle() orelse {
+            return makeHttpError(ctx.allocator, "TlsError", "Failed to load system CA certificates");
+        };
+        tls_client = tls.Client.init(
+            stream_reader.interface(),
+            &stream_writer.interface,
+            .{
+                .host = .{ .explicit = parsed.host },
+                .ca = .{ .bundle = bundle },
+                .read_buffer = &tls_read_buf,
+                .write_buffer = &tls_write_buf,
+                .allow_truncation_attacks = true,
+            },
+        ) catch {
+            return makeHttpError(ctx.allocator, "TlsError", "TLS handshake failed");
+        };
+    }
+
+    // Get unified reader/writer
+    const io_writer: *std.Io.Writer = if (tls_client != null) &tls_client.?.writer else &stream_writer.interface;
+    const io_reader: *std.Io.Reader = if (tls_client != null) &tls_client.?.reader else stream_reader.interface();
+
     // Send request
-    stream.writeAll(req_buf.items) catch |err| {
-        return makeHttpError(ctx.allocator, "ConnectionFailed", @errorName(err));
+    io_writer.writeAll(req_buf.items) catch {
+        return makeHttpError(ctx.allocator, "ConnectionFailed", "write failed");
     };
+    io_writer.flush() catch {
+        return makeHttpError(ctx.allocator, "ConnectionFailed", "flush failed");
+    };
+    // For HTTPS, the TLS writer flushes to the stream writer's buffer,
+    // but the stream writer itself may not have flushed to the socket yet.
+    if (tls_client != null) {
+        stream_writer.interface.flush() catch {
+            return makeHttpError(ctx.allocator, "ConnectionFailed", "stream flush failed");
+        };
+    }
 
     // Read response
     var resp_buf = std.ArrayListUnmanaged(u8){};
@@ -501,9 +614,9 @@ fn netHttpRequest(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
     // Read until we have complete headers
     var header_end: ?usize = null;
     while (header_end == null) {
-        const n = stream.read(&read_buf) catch |err| {
+        const n = io_reader.readSliceShort(&read_buf) catch {
             if (resp_buf.items.len == 0) {
-                return makeHttpError(ctx.allocator, "ConnectionFailed", @errorName(err));
+                return makeHttpError(ctx.allocator, "ConnectionFailed", "read failed");
             }
             break;
         };
@@ -539,14 +652,14 @@ fn netHttpRequest(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
     if (parseContentLength(headers_data)) |content_length| {
         const total_needed = hend + content_length;
         while (resp_buf.items.len < total_needed) {
-            const n = stream.read(&read_buf) catch break;
+            const n = io_reader.readSliceShort(&read_buf) catch break;
             if (n == 0) break;
             resp_buf.appendSlice(ctx.allocator, read_buf[0..n]) catch return error.OutOfMemory;
         }
     } else {
         // No Content-Length: read until EOF (Connection: close)
         while (true) {
-            const n = stream.read(&read_buf) catch break;
+            const n = io_reader.readSliceShort(&read_buf) catch break;
             if (n == 0) break;
             resp_buf.appendSlice(ctx.allocator, read_buf[0..n]) catch return error.OutOfMemory;
             if (resp_buf.items.len > 10 * 1024 * 1024) break;
@@ -688,6 +801,7 @@ test "net module creation" {
     try std.testing.expect(module.record.fields.contains("read"));
     try std.testing.expect(module.record.fields.contains("write"));
     try std.testing.expect(module.record.fields.contains("close"));
+    try std.testing.expect(module.record.fields.contains("close_listener"));
     try std.testing.expect(module.record.fields.contains("http_request"));
 }
 
@@ -915,4 +1029,31 @@ test "http_request type mismatch" {
 
     const result = netHttpRequest(ctx, &.{Value{ .integer = 42 }});
     try std.testing.expectError(error.TypeMismatch, result);
+}
+
+test "close_listener arity mismatch" {
+    const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
+
+    const result = netCloseListener(ctx, &.{});
+    try std.testing.expectError(error.ArityMismatch, result);
+}
+
+test "close_listener invalid handle" {
+    const allocator = std.testing.allocator;
+    const ctx = testCtx(allocator);
+
+    var rec_fields = std.StringArrayHashMapUnmanaged(Value){};
+    defer rec_fields.deinit(allocator);
+    try rec_fields.put(allocator, "_handle", Value{ .integer = 999999 });
+
+    const r = try netCloseListener(ctx, &.{Value{ .record = .{ .type_name = "TcpListener", .fields = rec_fields } }});
+    try std.testing.expect(r == .err);
+    allocator.destroy(r.err);
+}
+
+test "closeAllHandles is safe when empty" {
+    // Should not panic when no handles are open
+    closeAllHandles();
+    try std.testing.expectEqual(@as(i128, 1), next_handle);
 }
