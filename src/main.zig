@@ -963,7 +963,13 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
             // Also register declarations directly for backward compatibility
             // (allows using imported items without qualification if explicitly imported)
             for (mod_program.declarations) |*mod_decl| {
-                // Skip module declarations, only register functions/types/etc
+                // Skip module/import declarations and imported "main" functions —
+                // only the target file's main should be the entry point
+                if (mod_decl.kind == .function_decl) {
+                    if (mod_decl.name()) |decl_name| {
+                        if (std.mem.eql(u8, decl_name, "main")) continue;
+                    }
+                }
                 if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
                     interp.registerDeclaration(mod_decl, &interp.global_env) catch |err| {
                         var buf: [512]u8 = undefined;
