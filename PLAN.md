@@ -4,7 +4,7 @@
 Address remaining gaps in the Kira compiler: string interpolation (the one unimplemented language feature from DESIGN.md), LSP enhancements for a better editor experience, and interop hardening with E2E tests.
 
 Reference: [DESIGN.md](DESIGN.md), [IDEA.md](IDEA.md).
-Current status: Phases 0–2 complete. Phase 3 not started.
+Current status: All phases complete (0–3).
 
 ---
 
@@ -89,7 +89,8 @@ Automated unit tests in `src/lsp/server.zig` (integration tests via TestStream) 
 
 ---
 
-## Phase 3: Interop Hardening
+## Phase 3: Interop Hardening ✅
+**Status:** Complete (2026-03-15)
 
 **Goal:** Add E2E tests for the interop pipeline and handle remaining edge cases (indirect recursive ADTs, large type optimization).
 **Estimated Effort:** 2 days
@@ -100,19 +101,19 @@ Automated unit tests in `src/lsp/server.zig` (integration tests via TestStream) 
 - Size threshold for pass-by-pointer ADTs
 
 ### Tasks
-- [ ] Add interop E2E tests — write a Kira module with mixed types (i32, f64, string, bool, ADT), run through `generateHeader()`, `generateKlarExternBlock()`, and `generateManifestJSON()`, verify output contains correct C types, Klar types, and JSON structure. (`tests/codegen_e2e_test.zig`)
-- [ ] Add compiled interop E2E test — build a Kira module with `--lib`, compile the generated .c with a C test harness that calls the exported wrapper functions, verify correct return values. (`tests/codegen_e2e_test.zig`)
-- [ ] Implement indirect recursive ADT detection — currently only direct self-references (type T contains T) are handled. Add cycle detection for A → B → A chains. When detected, use pointer indirection for the recursive field. (`src/interop/klar.zig`)
-- [ ] Implement size-based pointer optimization — types exceeding 64 bytes should be passed by opaque pointer (`void*`) instead of inline struct in the C header. Add `kiraTypeByteSize` calculation for composite types. (`src/interop/klar.zig`)
+- [x] Add interop E2E tests — Kira source with mixed types (i32, f64, string, bool, sum type) compiled through full pipeline, then `generateHeader()`, `generateKlarExternBlock()`, and `generateManifestJSON()` output verified for correct C types, Klar types, and JSON structure. Also verifies generated header compiles with `cc -fsyntax-only`. (`tests/codegen_e2e_test.zig`) (completed 2026-03-15)
+- [x] Add compiled interop E2E test — Kira library functions compiled to C, combined with `generateLibraryWrappers()` output, linked with a C test harness that calls `add(10, 20)` and `double_it(15)`, verifies correct return values `30` and `30`. (`tests/codegen_e2e_test.zig`) (completed 2026-03-15)
+- [x] Implement indirect recursive ADT detection — added `typeReachesType()` DFS cycle detection for A → B → A chains, `isRecursiveField()` check, and `findTypeDecl()` helper. Direct self-references (Tree → Tree) and indirect cycles (A → B → A) both detected. Recursive fields emitted as `struct kira_T*` in C headers and `Ptr` in Klar extern blocks. Named struct format (`typedef struct kira_T { ... } kira_T;`) used for forward-reference support. (`src/interop/klar.zig`) (completed 2026-03-15)
+- [x] Implement size-based pointer optimization — added `computeCompositeByteSize()` that resolves composite types (sum: tag + max variant payload; product: sum of field sizes) with cycle guard. Types exceeding 64 bytes passed by opaque pointer (`void*` in C, `Ptr` in Klar) in function signatures, library wrappers, and string convenience wrappers. Type declarations still emitted inline. (`src/interop/klar.zig`) (completed 2026-03-15)
 
 ### Testing Strategy
-Automated tests in `tests/codegen_e2e_test.zig`. Verify: generated header compiles with `cc -fsyntax-only`, Klar extern block has correct types, JSON manifest is valid and parseable, recursive ADTs use pointer indirection, large types use opaque pointers.
+Automated tests in `tests/codegen_e2e_test.zig` (3 E2E tests) and `src/interop/klar.zig` (10 new unit tests). Verified: generated header compiles with `cc -fsyntax-only`, Klar extern block has correct types, JSON manifest is valid, recursive ADTs use pointer indirection, large types use opaque pointers, library wrappers handle void* conversion.
 
 ### Phase 3 Readiness Gate
 Before considering interop complete:
-- [ ] All interop E2E tests pass
-- [ ] Indirect recursive ADTs produce valid C headers
-- [ ] A Kira library with mixed types can be compiled and linked from C
+- [x] All interop E2E tests pass (completed 2026-03-15)
+- [x] Indirect recursive ADTs produce valid C headers (completed 2026-03-15)
+- [x] A Kira library with mixed types can be compiled and linked from C (completed 2026-03-15)
 
 ---
 

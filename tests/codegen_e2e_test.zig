@@ -690,6 +690,322 @@ test "e2e: interpolation mixed types" {
     );
 }
 
+// ============================================================
+// Interop E2E Tests
+// ============================================================
+
+/// Run Kira source through the full pipeline, build an IR module, and call the
+/// interop generators (header, Klar extern block, JSON manifest). Returns the
+/// three generated outputs.
+fn compileToIRModule(allocator: Allocator, source: []const u8) !struct {
+    module: Kira.ir.ir.Module,
+    program: Kira.Program,
+    table: Kira.SymbolTable,
+    resolver: Kira.Resolver,
+    checker: Kira.TypeChecker,
+    lowerer: Kira.ir.Lowerer,
+} {
+    // Parse
+    var parse_result = Kira.parseWithErrors(allocator, source);
+    if (parse_result.hasErrors()) {
+        parse_result.deinit();
+        return error.ParseFailed;
+    }
+    var program = parse_result.program orelse {
+        parse_result.deinit();
+        return error.ParseFailed;
+    };
+    parse_result.program = null;
+    if (parse_result.error_arena) |*arena| arena.deinit();
+
+    // Resolve
+    var table = Kira.SymbolTable.init(allocator);
+    var resolver = Kira.Resolver.init(allocator, &table);
+    resolver.resolve(&program) catch {
+        program.deinit();
+        resolver.deinit();
+        table.deinit();
+        return error.ResolveFailed;
+    };
+
+    // Type check
+    var checker = Kira.TypeChecker.init(allocator, &table);
+    checker.check(&program) catch {
+        program.deinit();
+        checker.deinit();
+        resolver.deinit();
+        table.deinit();
+        return error.TypeCheckFailed;
+    };
+
+    // Lower to IR
+    var lowerer = Kira.ir.Lowerer.init(allocator);
+    var ir_module = lowerer.lower(&program) catch {
+        program.deinit();
+        lowerer.deinit();
+        checker.deinit();
+        resolver.deinit();
+        table.deinit();
+        return error.LowerFailed;
+    };
+    _ = &ir_module;
+
+    return .{
+        .module = ir_module,
+        .program = program,
+        .table = table,
+        .resolver = resolver,
+        .checker = checker,
+        .lowerer = lowerer,
+    };
+}
+
+test "e2e interop: mixed types produce valid header, klar, and json" {
+    const allocator = std.testing.allocator;
+
+    const source =
+        \\type Shape =
+        \\    | Circle(f64)
+        \\    | Rect(f64, f64)
+        \\    | Pt
+        \\
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\
+        \\fn greet(name: string) -> string {
+        \\    return "hello " + name
+        \\}
+        \\
+        \\fn is_valid(x: bool) -> bool {
+        \\    return x
+        \\}
+        \\
+        \\effect fn main() -> void {
+        \\    std.io.println("test")
+        \\}
+    ;
+
+    var result = try compileToIRModule(allocator, source);
+    defer result.module.deinit();
+    defer result.program.deinit();
+    defer result.lowerer.deinit();
+    defer result.checker.deinit();
+    defer result.resolver.deinit();
+    defer result.table.deinit();
+
+    // Generate header
+    const header = try Kira.interop.klar.generateHeader(allocator, &result.module, "mixed");
+    defer allocator.free(header);
+
+    // Header should contain correct C types
+    try std.testing.expect(std.mem.indexOf(u8, header, "#ifndef KIRA_MIXED_H") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "int32_t add(int32_t a, int32_t b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "const char* greet(const char* name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "bool is_valid(bool x)") != null);
+    // main should be excluded
+    try std.testing.expect(std.mem.indexOf(u8, header, "main(") == null);
+    // ADT declarations
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Shape_Tag") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_Shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "kira_free") != null);
+
+    // Generate Klar extern block
+    const klar = try Kira.interop.klar.generateKlarExternBlock(allocator, &result.module);
+    defer allocator.free(klar);
+
+    try std.testing.expect(std.mem.indexOf(u8, klar, "extern {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, klar, "fn add(a: i32, b: i32) -> i32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, klar, "fn greet(name: CStr) -> CStr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, klar, "fn is_valid(x: Bool) -> Bool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, klar, "extern enum kira_Shape_Tag") != null);
+
+    // Generate JSON manifest
+    const json = try Kira.interop.klar.generateManifestJSON(allocator, &result.module, "mixed");
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"module\": \"mixed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"greet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"is_valid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"Shape\"") != null);
+    // main excluded
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"main\"") == null);
+}
+
+test "e2e interop: generated C header compiles with cc" {
+    const allocator = std.testing.allocator;
+
+    const source =
+        \\type Color =
+        \\    | Red
+        \\    | Green
+        \\    | Blue
+        \\
+        \\type Point = {
+        \\    x: f64,
+        \\    y: f64
+        \\}
+        \\
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\
+        \\effect fn main() -> void {
+        \\    std.io.println("test")
+        \\}
+    ;
+
+    var result = try compileToIRModule(allocator, source);
+    defer result.module.deinit();
+    defer result.program.deinit();
+    defer result.lowerer.deinit();
+    defer result.checker.deinit();
+    defer result.resolver.deinit();
+    defer result.table.deinit();
+
+    const header = try Kira.interop.klar.generateHeader(allocator, &result.module, "test");
+    defer allocator.free(header);
+
+    // Write header to temp file and verify it compiles
+    const h_path = "/tmp/kira_e2e_interop_test.h";
+    {
+        const h_file = std.fs.cwd().createFile(h_path, .{}) catch return error.SkipZigTest;
+        defer h_file.close();
+        h_file.writeAll(header) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(h_path) catch {};
+
+    // Write a minimal C file that includes the header
+    const c_path = "/tmp/kira_e2e_interop_test.c";
+    {
+        const c_file = std.fs.cwd().createFile(c_path, .{}) catch return error.SkipZigTest;
+        defer c_file.close();
+        c_file.writeAll("#include \"kira_e2e_interop_test.h\"\nint main(void) { return 0; }\n") catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(c_path) catch {};
+
+    // Compile with cc -fsyntax-only
+    const cc_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "cc", "-fsyntax-only", "-I/tmp", c_path },
+    }) catch return error.SkipZigTest;
+    defer allocator.free(cc_result.stdout);
+    defer allocator.free(cc_result.stderr);
+
+    try std.testing.expect(cc_result.term == .Exited and cc_result.term.Exited == 0);
+}
+
+test "e2e interop: compiled library with C test harness" {
+    const allocator = std.testing.allocator;
+
+    // Simple library with add function
+    const source =
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    return a + b
+        \\}
+        \\
+        \\fn double_it(x: i32) -> i32 {
+        \\    return x * 2
+        \\}
+    ;
+
+    // Compile to C
+    const c_code = try compileToC(allocator, source);
+    defer allocator.free(c_code);
+
+    // Get IR module for library wrappers
+    var result = try compileToIRModule(allocator, source);
+    defer result.module.deinit();
+    defer result.program.deinit();
+    defer result.lowerer.deinit();
+    defer result.checker.deinit();
+    defer result.resolver.deinit();
+    defer result.table.deinit();
+
+    // Generate library wrappers
+    const wrappers = try Kira.interop.klar.generateLibraryWrappers(allocator, &result.module);
+    defer allocator.free(wrappers);
+
+    // Generate header
+    const header = try Kira.interop.klar.generateHeader(allocator, &result.module, "testlib");
+    defer allocator.free(header);
+
+    // Write header file
+    const h_path = "/tmp/kira_e2e_lib_test.h";
+    {
+        const h_file = std.fs.cwd().createFile(h_path, .{}) catch return error.SkipZigTest;
+        defer h_file.close();
+        h_file.writeAll(header) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(h_path) catch {};
+
+    // Write combined library C source (codegen + wrappers)
+    const lib_path = "/tmp/kira_e2e_lib_test_lib.c";
+    {
+        const lib_file = std.fs.cwd().createFile(lib_path, .{}) catch return error.SkipZigTest;
+        defer lib_file.close();
+        lib_file.writeAll(c_code) catch return error.SkipZigTest;
+        lib_file.writeAll(wrappers) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(lib_path) catch {};
+
+    // Write C test harness
+    const test_c_path = "/tmp/kira_e2e_lib_test_main.c";
+    {
+        const test_file = std.fs.cwd().createFile(test_c_path, .{}) catch return error.SkipZigTest;
+        defer test_file.close();
+        test_file.writeAll(
+            \\#include <stdio.h>
+            \\#include "kira_e2e_lib_test.h"
+            \\
+            \\int main(void) {
+            \\    int32_t sum = add(10, 20);
+            \\    int32_t doubled = double_it(15);
+            \\    printf("%d\n%d\n", sum, doubled);
+            \\    return 0;
+            \\}
+            \\
+        ) catch return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(test_c_path) catch {};
+
+    // Compile both files together
+    const bin_path = "/tmp/kira_e2e_lib_test";
+    const cc_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            "cc", "-o", bin_path, test_c_path, lib_path,
+            "-I/tmp", "-lm",
+            "-I/opt/homebrew/include", "-L/opt/homebrew/lib", "-lgc",
+        },
+    }) catch return error.SkipZigTest;
+    defer allocator.free(cc_result.stdout);
+    defer allocator.free(cc_result.stderr);
+
+    if (cc_result.term != .Exited or cc_result.term.Exited != 0) {
+        return error.SkipZigTest;
+    }
+    defer std.fs.cwd().deleteFile(bin_path) catch {};
+
+    // Run and verify output
+    const run_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{bin_path},
+    }) catch return error.SkipZigTest;
+    defer allocator.free(run_result.stderr);
+
+    if (run_result.term != .Exited or run_result.term.Exited != 0) {
+        allocator.free(run_result.stdout);
+        return error.SkipZigTest;
+    }
+
+    const output = std.mem.trimRight(u8, run_result.stdout, "\n\r \t");
+    defer allocator.free(run_result.stdout);
+
+    try std.testing.expectEqualStrings("30\n30", output);
+}
+
 test "e2e: list_map, list_filter, list_length with closures" {
     try assertE2E(
         \\fn count_words(text: string) -> i64 {

@@ -120,21 +120,29 @@ pub fn generateHeader(allocator: Allocator, module: *const ir.Module, module_nam
         const name = func.name orelse continue;
         if (std.mem.eql(u8, name, "main")) continue;
 
-        // Return type
+        // Return type (large types passed by opaque pointer)
         const ret_c = try kiraToCTypeAlloc(allocator, func.return_type_name, module);
         defer if (ret_c.allocated) allocator.free(ret_c.c_type);
-        try appendFmt(allocator, &output, "{s} ", .{ret_c.c_type});
+        if (shouldPassByPointer(func.return_type_name, module)) {
+            try appendSlice(allocator, &output, "void* ");
+        } else {
+            try appendFmt(allocator, &output, "{s} ", .{ret_c.c_type});
+        }
         try appendFmt(allocator, &output, "{s}(", .{name});
 
-        // Parameters
+        // Parameters (large types passed by opaque pointer)
         if (func.params.len == 0) {
             try appendSlice(allocator, &output, "void");
         } else {
             for (func.params, 0..) |param, i| {
                 if (i > 0) try appendSlice(allocator, &output, ", ");
-                const param_c = try kiraToCTypeAlloc(allocator, param.type_name, module);
-                defer if (param_c.allocated) allocator.free(param_c.c_type);
-                try appendFmt(allocator, &output, "{s} {s}", .{ param_c.c_type, param.name });
+                if (shouldPassByPointer(param.type_name, module)) {
+                    try appendFmt(allocator, &output, "void* {s}", .{param.name});
+                } else {
+                    const param_c = try kiraToCTypeAlloc(allocator, param.type_name, module);
+                    defer if (param_c.allocated) allocator.free(param_c.c_type);
+                    try appendFmt(allocator, &output, "{s} {s}", .{ param_c.c_type, param.name });
+                }
             }
         }
 
@@ -172,10 +180,18 @@ pub fn generateKlarExternBlock(allocator: Allocator, module: *const ir.Module) !
 
         for (func.params, 0..) |param, i| {
             if (i > 0) try appendSlice(allocator, &output, ", ");
-            try appendFmt(allocator, &output, "{s}: {s}", .{ param.name, kiraToKlarType(param.type_name) });
+            if (shouldPassByPointer(param.type_name, module)) {
+                try appendFmt(allocator, &output, "{s}: Ptr", .{param.name});
+            } else {
+                try appendFmt(allocator, &output, "{s}: {s}", .{ param.name, kiraToKlarType(param.type_name) });
+            }
         }
 
-        try appendFmt(allocator, &output, ") -> {s}\n", .{kiraToKlarType(func.return_type_name)});
+        if (shouldPassByPointer(func.return_type_name, module)) {
+            try appendSlice(allocator, &output, ") -> Ptr\n");
+        } else {
+            try appendFmt(allocator, &output, ") -> {s}\n", .{kiraToKlarType(func.return_type_name)});
+        }
     }
 
     // kira_free declaration
@@ -215,13 +231,17 @@ fn emitHeaderTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8)
                         if (fi > 0) try appendSlice(allocator, output, " ");
                         const c_type = try kiraToCTypeAlloc(allocator, ft.type_name, module);
                         defer if (c_type.allocated) allocator.free(c_type.c_type);
-                        try appendFmt(allocator, output, "{s} {s};", .{ c_type.c_type, ft.name });
+                        if (isRecursiveField(td.name, ft.type_name, module)) {
+                            try appendFmt(allocator, output, "struct {s}* {s};", .{ c_type.c_type, ft.name });
+                        } else {
+                            try appendFmt(allocator, output, "{s} {s};", .{ c_type.c_type, ft.name });
+                        }
                     }
                     try appendFmt(allocator, output, " }} kira_{s}_{s};\n", .{ td.name, v.name });
                 }
 
-                // Tagged union struct
-                try appendFmt(allocator, output, "\ntypedef struct {{\n", .{});
+                // Tagged union struct (named for forward-reference support)
+                try appendFmt(allocator, output, "\ntypedef struct kira_{s} {{\n", .{td.name});
                 try appendFmt(allocator, output, "    kira_{s}_Tag tag;\n", .{td.name});
 
                 // Check if any variant has a payload
@@ -245,11 +265,15 @@ fn emitHeaderTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8)
                 try appendFmt(allocator, output, "}} kira_{s};\n\n", .{td.name});
             },
             .product_type => |pt| {
-                try appendFmt(allocator, output, "typedef struct {{\n", .{});
+                try appendFmt(allocator, output, "typedef struct kira_{s} {{\n", .{td.name});
                 for (pt.fields) |f| {
                     const c_type = try kiraToCTypeAlloc(allocator, f.type_name, module);
                     defer if (c_type.allocated) allocator.free(c_type.c_type);
-                    try appendFmt(allocator, output, "    {s} {s};\n", .{ c_type.c_type, f.name });
+                    if (isRecursiveField(td.name, f.type_name, module)) {
+                        try appendFmt(allocator, output, "    struct {s}* {s};\n", .{ c_type.c_type, f.name });
+                    } else {
+                        try appendFmt(allocator, output, "    {s} {s};\n", .{ c_type.c_type, f.name });
+                    }
                 }
                 try appendFmt(allocator, output, "}} kira_{s};\n\n", .{td.name});
             },
@@ -276,7 +300,11 @@ fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
                     if (v.field_count == 0) continue;
                     try appendFmt(allocator, output, "extern struct kira_{s}_{s} {{\n", .{ td.name, v.name });
                     for (v.field_types) |ft| {
-                        try appendFmt(allocator, output, "    {s}: {s}\n", .{ ft.name, kiraToKlarType(ft.type_name) });
+                        if (isRecursiveField(td.name, ft.type_name, module)) {
+                            try appendFmt(allocator, output, "    {s}: Ptr\n", .{ft.name});
+                        } else {
+                            try appendFmt(allocator, output, "    {s}: {s}\n", .{ ft.name, kiraToKlarType(ft.type_name) });
+                        }
                     }
                     try appendSlice(allocator, output, "}\n\n");
                 }
@@ -295,7 +323,11 @@ fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
                     if (v.field_count == 0) continue;
                     var variant_size: u64 = 0;
                     for (v.field_types) |ft| {
-                        variant_size += kiraTypeByteSize(ft.type_name);
+                        if (isRecursiveField(td.name, ft.type_name, module)) {
+                            variant_size += 8; // Pointer size
+                        } else {
+                            variant_size += computeCompositeByteSize(ft.type_name, module, 0);
+                        }
                     }
                     if (variant_size > largest_byte_size) {
                         largest_byte_size = variant_size;
@@ -311,7 +343,11 @@ fn emitKlarTypeDecls(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
             .product_type => |pt| {
                 try appendFmt(allocator, output, "extern struct kira_{s} {{\n", .{td.name});
                 for (pt.fields) |f| {
-                    try appendFmt(allocator, output, "    {s}: {s}\n", .{ f.name, kiraToKlarType(f.type_name) });
+                    if (isRecursiveField(td.name, f.type_name, module)) {
+                        try appendFmt(allocator, output, "    {s}: Ptr\n", .{f.name});
+                    } else {
+                        try appendFmt(allocator, output, "    {s}: {s}\n", .{ f.name, kiraToKlarType(f.type_name) });
+                    }
                 }
                 try appendSlice(allocator, output, "}\n\n");
             },
@@ -343,6 +379,102 @@ fn isStringType(type_name: []const u8) bool {
     return std.mem.eql(u8, type_name, "string");
 }
 
+/// Check if a type name refers to a user-defined type (starts with uppercase).
+fn isUserDefinedType(type_name: []const u8) bool {
+    return type_name.len > 0 and std.ascii.isUpper(type_name[0]);
+}
+
+/// Find a type declaration by name in the module.
+fn findTypeDecl(name: []const u8, module: *const ir.Module) ?ir.TypeDecl {
+    for (module.type_decls.items) |td| {
+        if (std.mem.eql(u8, td.name, name)) return td;
+    }
+    return null;
+}
+
+/// Check if `target_type` is reachable from `start_type` through field type references.
+/// Used to detect indirect recursive types (A → B → A cycles).
+fn typeReachesType(start_type: []const u8, target_type: []const u8, module: *const ir.Module, depth: usize) bool {
+    if (depth > module.type_decls.items.len) return false;
+
+    const td = findTypeDecl(start_type, module) orelse return false;
+
+    switch (td.kind) {
+        .sum_type => |st| {
+            for (st.variants) |v| {
+                for (v.field_types) |ft| {
+                    if (std.mem.eql(u8, ft.type_name, target_type)) return true;
+                    if (isUserDefinedType(ft.type_name)) {
+                        if (typeReachesType(ft.type_name, target_type, module, depth + 1)) return true;
+                    }
+                }
+            }
+        },
+        .product_type => |pt| {
+            for (pt.fields) |f| {
+                if (std.mem.eql(u8, f.type_name, target_type)) return true;
+                if (isUserDefinedType(f.type_name)) {
+                    if (typeReachesType(f.type_name, target_type, module, depth + 1)) return true;
+                }
+            }
+        },
+    }
+    return false;
+}
+
+/// Check if a field type creates a recursive reference back to the containing type.
+fn isRecursiveField(containing_type: []const u8, field_type: []const u8, module: *const ir.Module) bool {
+    if (std.mem.eql(u8, field_type, containing_type)) return true;
+    if (!isUserDefinedType(field_type)) return false;
+    return typeReachesType(field_type, containing_type, module, 0);
+}
+
+/// Compute the byte size of a type, resolving composite types from the module.
+fn computeCompositeByteSize(type_name: []const u8, module: *const ir.Module, depth: usize) u64 {
+    if (!isUserDefinedType(type_name)) return kiraTypeByteSize(type_name);
+    if (depth > module.type_decls.items.len) return 8; // Cycle guard
+
+    const td = findTypeDecl(type_name, module) orelse return 8;
+
+    switch (td.kind) {
+        .sum_type => |st| {
+            var max_payload: u64 = 0;
+            for (st.variants) |v| {
+                var payload: u64 = 0;
+                for (v.field_types) |ft| {
+                    if (isRecursiveField(type_name, ft.type_name, module)) {
+                        payload += 8; // Pointer size
+                    } else {
+                        payload += computeCompositeByteSize(ft.type_name, module, depth + 1);
+                    }
+                }
+                if (payload > max_payload) max_payload = payload;
+            }
+            return 4 + max_payload; // tag enum (4 bytes) + largest variant payload
+        },
+        .product_type => |pt| {
+            var total: u64 = 0;
+            for (pt.fields) |f| {
+                if (isRecursiveField(type_name, f.type_name, module)) {
+                    total += 8; // Pointer size
+                } else {
+                    total += computeCompositeByteSize(f.type_name, module, depth + 1);
+                }
+            }
+            return total;
+        },
+    }
+}
+
+/// Size threshold (bytes) above which types are passed by opaque pointer.
+const large_type_threshold = 64;
+
+/// Check if a type should be passed by opaque pointer due to size.
+fn shouldPassByPointer(type_name: []const u8, module: *const ir.Module) bool {
+    if (!isUserDefinedType(type_name)) return false;
+    return computeCompositeByteSize(type_name, module, 0) > large_type_threshold;
+}
+
 /// Generate C library wrapper functions that bridge between the typed C API
 /// and the internal kira_int representation. Also emits kira_free().
 /// Caller owns the returned slice.
@@ -371,17 +503,26 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
     // Return type
     const ret_c = try kiraToCTypeAlloc(allocator, func.return_type_name, module);
     defer if (ret_c.allocated) allocator.free(ret_c.c_type);
+    const ret_is_large = shouldPassByPointer(func.return_type_name, module);
 
-    // Signature
-    try appendFmt(allocator, output, "{s} {s}(", .{ ret_c.c_type, name });
+    // Signature (large types use void*)
+    if (ret_is_large) {
+        try appendFmt(allocator, output, "void* {s}(", .{name});
+    } else {
+        try appendFmt(allocator, output, "{s} {s}(", .{ ret_c.c_type, name });
+    }
     if (func.params.len == 0) {
         try appendSlice(allocator, output, "void");
     } else {
         for (func.params, 0..) |param, i| {
             if (i > 0) try appendSlice(allocator, output, ", ");
-            const param_c = try kiraToCTypeAlloc(allocator, param.type_name, module);
-            defer if (param_c.allocated) allocator.free(param_c.c_type);
-            try appendFmt(allocator, output, "{s} {s}", .{ param_c.c_type, param.name });
+            if (shouldPassByPointer(param.type_name, module)) {
+                try appendFmt(allocator, output, "void* {s}", .{param.name});
+            } else {
+                const param_c = try kiraToCTypeAlloc(allocator, param.type_name, module);
+                defer if (param_c.allocated) allocator.free(param_c.c_type);
+                try appendFmt(allocator, output, "{s} {s}", .{ param_c.c_type, param.name });
+            }
         }
     }
     try appendSlice(allocator, output, ") {\n");
@@ -409,7 +550,7 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
         if (i > 0) try appendSlice(allocator, output, ", ");
         if (isFloatType(param.type_name)) {
             try appendFmt(allocator, output, "_a{d}", .{i});
-        } else if (isStringType(param.type_name)) {
+        } else if (isStringType(param.type_name) or shouldPassByPointer(param.type_name, module)) {
             try appendFmt(allocator, output, "(kira_int)(intptr_t){s}", .{param.name});
         } else {
             try appendFmt(allocator, output, "(kira_int){s}", .{param.name});
@@ -427,6 +568,8 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
             }
         } else if (isStringType(func.return_type_name)) {
             try appendSlice(allocator, output, "    return (const char*)(intptr_t)_r;\n");
+        } else if (ret_is_large) {
+            try appendSlice(allocator, output, "    return (void*)(intptr_t)_r;\n");
         } else {
             try appendFmt(allocator, output, "    return ({s})_r;\n", .{ret_c.c_type});
         }
@@ -477,7 +620,9 @@ fn emitKlarStringWrappers(allocator: Allocator, output: *std.ArrayListUnmanaged(
         try appendFmt(allocator, output, "fn {s}_str(", .{name});
         for (func.params, 0..) |param, i| {
             if (i > 0) try appendSlice(allocator, output, ", ");
-            if (isStringType(param.type_name)) {
+            if (shouldPassByPointer(param.type_name, module)) {
+                try appendFmt(allocator, output, "{s}: Ptr", .{param.name});
+            } else if (isStringType(param.type_name)) {
                 try appendFmt(allocator, output, "{s}: string", .{param.name});
             } else {
                 try appendFmt(allocator, output, "{s}: {s}", .{ param.name, kiraToKlarType(param.type_name) });
@@ -485,6 +630,8 @@ fn emitKlarStringWrappers(allocator: Allocator, output: *std.ArrayListUnmanaged(
         }
         if (isStringType(func.return_type_name)) {
             try appendSlice(allocator, output, ") -> string =\n");
+        } else if (shouldPassByPointer(func.return_type_name, module)) {
+            try appendSlice(allocator, output, ") -> Ptr =\n");
         } else {
             try appendFmt(allocator, output, ") -> {s} =\n", .{kiraToKlarType(func.return_type_name)});
         }
@@ -1464,4 +1611,423 @@ test "generateLibraryWrappers skips kira_ prefixed functions" {
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "void kira_internal(") == null);
     // Normal function gets a wrapper
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "int32_t add(") != null);
+}
+
+// --- Recursive ADT detection tests ---
+
+test "isRecursiveField detects direct self-reference" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Tree = Leaf(i32) | Node(i32, Tree, Tree)
+    _ = try module.addTypeDecl(.{
+        .name = "Tree",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Leaf",
+                    .tag = 0,
+                    .field_count = 1,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i32" },
+                    },
+                },
+                .{
+                    .name = "Node",
+                    .tag = 1,
+                    .field_count = 3,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i32" },
+                        .{ .name = "_1", .index = 1, .type_name = "Tree" },
+                        .{ .name = "_2", .index = 2, .type_name = "Tree" },
+                    },
+                },
+            },
+        } },
+    });
+
+    // Tree field in Tree is recursive
+    try std.testing.expect(isRecursiveField("Tree", "Tree", &module));
+    // i32 field in Tree is not recursive
+    try std.testing.expect(!isRecursiveField("Tree", "i32", &module));
+}
+
+test "isRecursiveField detects indirect cycle (A → B → A)" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type A = { b: B, x: i32 }
+    _ = try module.addTypeDecl(.{
+        .name = "A",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "b", .index = 0, .type_name = "B" },
+                .{ .name = "x", .index = 1, .type_name = "i32" },
+            },
+        } },
+    });
+
+    // type B = { a: A, y: i32 }
+    _ = try module.addTypeDecl(.{
+        .name = "B",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "a", .index = 0, .type_name = "A" },
+                .{ .name = "y", .index = 1, .type_name = "i32" },
+            },
+        } },
+    });
+
+    // B field in A is recursive (B contains A)
+    try std.testing.expect(isRecursiveField("A", "B", &module));
+    // A field in B is recursive (A contains B)
+    try std.testing.expect(isRecursiveField("B", "A", &module));
+    // i32 is not recursive in either
+    try std.testing.expect(!isRecursiveField("A", "i32", &module));
+    try std.testing.expect(!isRecursiveField("B", "i32", &module));
+}
+
+test "generateHeader uses pointer indirection for direct recursive type" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Tree = Leaf(i32) | Node(i32, Tree, Tree)
+    _ = try module.addTypeDecl(.{
+        .name = "Tree",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Leaf",
+                    .tag = 0,
+                    .field_count = 1,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i32" },
+                    },
+                },
+                .{
+                    .name = "Node",
+                    .tag = 1,
+                    .field_count = 3,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i32" },
+                        .{ .name = "_1", .index = 1, .type_name = "Tree" },
+                        .{ .name = "_2", .index = 2, .type_name = "Tree" },
+                    },
+                },
+            },
+        } },
+    });
+
+    const header = try generateHeader(allocator, &module, "trees");
+    defer allocator.free(header);
+
+    // Leaf variant: non-recursive field stays inline
+    try std.testing.expect(std.mem.indexOf(u8, header, "int32_t _0;") != null);
+
+    // Node variant: recursive Tree fields should use pointer indirection
+    try std.testing.expect(std.mem.indexOf(u8, header, "struct kira_Tree* _1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "struct kira_Tree* _2;") != null);
+
+    // Main struct uses named format for forward reference
+    try std.testing.expect(std.mem.indexOf(u8, header, "typedef struct kira_Tree {") != null);
+}
+
+test "generateHeader uses pointer indirection for indirect recursive types" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type A = { b: B, x: i32 }
+    _ = try module.addTypeDecl(.{
+        .name = "A",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "b", .index = 0, .type_name = "B" },
+                .{ .name = "x", .index = 1, .type_name = "i32" },
+            },
+        } },
+    });
+
+    // type B = { a: A, y: i32 }
+    _ = try module.addTypeDecl(.{
+        .name = "B",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "a", .index = 0, .type_name = "A" },
+                .{ .name = "y", .index = 1, .type_name = "i32" },
+            },
+        } },
+    });
+
+    const header = try generateHeader(allocator, &module, "indirect");
+    defer allocator.free(header);
+
+    // A.b should use pointer (B contains A)
+    try std.testing.expect(std.mem.indexOf(u8, header, "struct kira_B* b;") != null);
+    // B.a should use pointer (A contains B)
+    try std.testing.expect(std.mem.indexOf(u8, header, "struct kira_A* a;") != null);
+    // Non-recursive fields stay inline
+    try std.testing.expect(std.mem.indexOf(u8, header, "int32_t x;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "int32_t y;") != null);
+}
+
+test "generateKlarExternBlock uses Ptr for recursive fields" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Tree = Leaf(i32) | Node(i32, Tree, Tree)
+    _ = try module.addTypeDecl(.{
+        .name = "Tree",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Leaf",
+                    .tag = 0,
+                    .field_count = 1,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i32" },
+                    },
+                },
+                .{
+                    .name = "Node",
+                    .tag = 1,
+                    .field_count = 3,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "i32" },
+                        .{ .name = "_1", .index = 1, .type_name = "Tree" },
+                        .{ .name = "_2", .index = 2, .type_name = "Tree" },
+                    },
+                },
+            },
+        } },
+    });
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    // Recursive fields in Klar use Ptr type
+    try std.testing.expect(std.mem.indexOf(u8, block, "_1: Ptr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "_2: Ptr") != null);
+    // Non-recursive field stays typed
+    try std.testing.expect(std.mem.indexOf(u8, block, "_0: i32") != null);
+}
+
+// --- Size-based pointer optimization tests ---
+
+test "computeCompositeByteSize for product type" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Point = { x: f64, y: f64 }  →  16 bytes
+    _ = try module.addTypeDecl(.{
+        .name = "Point",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "x", .index = 0, .type_name = "f64" },
+                .{ .name = "y", .index = 1, .type_name = "f64" },
+            },
+        } },
+    });
+
+    try std.testing.expectEqual(@as(u64, 16), computeCompositeByteSize("Point", &module, 0));
+}
+
+test "computeCompositeByteSize for sum type" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type Shape = Circle(f64) | Rectangle(f64, f64)  →  4 (tag) + 16 (max payload) = 20
+    _ = try module.addTypeDecl(.{
+        .name = "Shape",
+        .kind = .{ .sum_type = .{
+            .variants = &[_]ir.VariantDecl{
+                .{
+                    .name = "Circle",
+                    .tag = 0,
+                    .field_count = 1,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                    },
+                },
+                .{
+                    .name = "Rectangle",
+                    .tag = 1,
+                    .field_count = 2,
+                    .field_types = &[_]ir.FieldDecl{
+                        .{ .name = "_0", .index = 0, .type_name = "f64" },
+                        .{ .name = "_1", .index = 1, .type_name = "f64" },
+                    },
+                },
+            },
+        } },
+    });
+
+    try std.testing.expectEqual(@as(u64, 20), computeCompositeByteSize("Shape", &module, 0));
+}
+
+test "shouldPassByPointer for large type" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    // type BigStruct with 9 f64 fields = 72 bytes > 64 threshold
+    _ = try module.addTypeDecl(.{
+        .name = "BigStruct",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "a", .index = 0, .type_name = "f64" },
+                .{ .name = "b", .index = 1, .type_name = "f64" },
+                .{ .name = "c", .index = 2, .type_name = "f64" },
+                .{ .name = "d", .index = 3, .type_name = "f64" },
+                .{ .name = "e", .index = 4, .type_name = "f64" },
+                .{ .name = "f", .index = 5, .type_name = "f64" },
+                .{ .name = "g", .index = 6, .type_name = "f64" },
+                .{ .name = "h", .index = 7, .type_name = "f64" },
+                .{ .name = "i", .index = 8, .type_name = "f64" },
+            },
+        } },
+    });
+
+    // 72 bytes > 64 threshold
+    try std.testing.expect(shouldPassByPointer("BigStruct", &module));
+    // Primitives never pass by pointer
+    try std.testing.expect(!shouldPassByPointer("i32", &module));
+    try std.testing.expect(!shouldPassByPointer("f64", &module));
+}
+
+test "generateHeader uses void* for large type in function signatures" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // type BigStruct with 9 f64 fields = 72 bytes
+    _ = try module.addTypeDecl(.{
+        .name = "BigStruct",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "a", .index = 0, .type_name = "f64" },
+                .{ .name = "b", .index = 1, .type_name = "f64" },
+                .{ .name = "c", .index = 2, .type_name = "f64" },
+                .{ .name = "d", .index = 3, .type_name = "f64" },
+                .{ .name = "e", .index = 4, .type_name = "f64" },
+                .{ .name = "f", .index = 5, .type_name = "f64" },
+                .{ .name = "g", .index = 6, .type_name = "f64" },
+                .{ .name = "h", .index = 7, .type_name = "f64" },
+                .{ .name = "i", .index = 8, .type_name = "f64" },
+            },
+        } },
+    });
+
+    // fn process(data: BigStruct) -> BigStruct
+    var func = ir.Function.init(arena);
+    func.name = "process";
+    func.return_type_name = "BigStruct";
+    const p = try arena.alloc(ir.Function.Param, 1);
+    p[0] = .{ .name = "data", .value_ref = 0, .type_name = "BigStruct" };
+    func.params = p;
+    try module.functions.append(arena, func);
+
+    const header = try generateHeader(allocator, &module, "big");
+    defer allocator.free(header);
+
+    // Function signature should use void* for BigStruct
+    try std.testing.expect(std.mem.indexOf(u8, header, "void* process(void* data)") != null);
+
+    // Type declaration should still be emitted with all fields
+    try std.testing.expect(std.mem.indexOf(u8, header, "} kira_BigStruct;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, header, "double a;") != null);
+}
+
+test "generateKlarExternBlock uses Ptr for large type in function signatures" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // type BigStruct with 9 f64 fields = 72 bytes
+    _ = try module.addTypeDecl(.{
+        .name = "BigStruct",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "a", .index = 0, .type_name = "f64" },
+                .{ .name = "b", .index = 1, .type_name = "f64" },
+                .{ .name = "c", .index = 2, .type_name = "f64" },
+                .{ .name = "d", .index = 3, .type_name = "f64" },
+                .{ .name = "e", .index = 4, .type_name = "f64" },
+                .{ .name = "f", .index = 5, .type_name = "f64" },
+                .{ .name = "g", .index = 6, .type_name = "f64" },
+                .{ .name = "h", .index = 7, .type_name = "f64" },
+                .{ .name = "i", .index = 8, .type_name = "f64" },
+            },
+        } },
+    });
+
+    // fn process(data: BigStruct) -> BigStruct
+    var func = ir.Function.init(arena);
+    func.name = "process";
+    func.return_type_name = "BigStruct";
+    const p = try arena.alloc(ir.Function.Param, 1);
+    p[0] = .{ .name = "data", .value_ref = 0, .type_name = "BigStruct" };
+    func.params = p;
+    try module.functions.append(arena, func);
+
+    const block = try generateKlarExternBlock(allocator, &module);
+    defer allocator.free(block);
+
+    // Function should use Ptr for large type
+    try std.testing.expect(std.mem.indexOf(u8, block, "fn process(data: Ptr) -> Ptr") != null);
+}
+
+test "generateLibraryWrappers uses void* for large type" {
+    const allocator = std.testing.allocator;
+    var module = ir.Module.init(allocator);
+    defer module.deinit();
+
+    const arena = module.arena.allocator();
+
+    // type BigStruct with 9 f64 fields = 72 bytes
+    _ = try module.addTypeDecl(.{
+        .name = "BigStruct",
+        .kind = .{ .product_type = .{
+            .fields = &[_]ir.FieldDecl{
+                .{ .name = "a", .index = 0, .type_name = "f64" },
+                .{ .name = "b", .index = 1, .type_name = "f64" },
+                .{ .name = "c", .index = 2, .type_name = "f64" },
+                .{ .name = "d", .index = 3, .type_name = "f64" },
+                .{ .name = "e", .index = 4, .type_name = "f64" },
+                .{ .name = "f", .index = 5, .type_name = "f64" },
+                .{ .name = "g", .index = 6, .type_name = "f64" },
+                .{ .name = "h", .index = 7, .type_name = "f64" },
+                .{ .name = "i", .index = 8, .type_name = "f64" },
+            },
+        } },
+    });
+
+    // fn process(data: BigStruct) -> BigStruct
+    var func = ir.Function.init(arena);
+    func.name = "process";
+    func.return_type_name = "BigStruct";
+    const p = try arena.alloc(ir.Function.Param, 1);
+    p[0] = .{ .name = "data", .value_ref = 0, .type_name = "BigStruct" };
+    func.params = p;
+    try module.functions.append(arena, func);
+
+    const wrappers = try generateLibraryWrappers(allocator, &module);
+    defer allocator.free(wrappers);
+
+    // Wrapper should use void* in signature
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "void* process(void* data)") != null);
+    // Body should use intptr_t cast for pointer arg
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "(kira_int)(intptr_t)data") != null);
+    // Return should use void* cast
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "return (void*)(intptr_t)_r;") != null);
 }
