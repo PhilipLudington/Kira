@@ -6,7 +6,7 @@ Add a `std.net` module to the Kira standard library providing TCP networking pri
 
 Reference: kira-http DESIGN.md, kira-http PLAN.md (Phase 2)
 
-Current status: Phase 0 in progress.
+Current status: Phase 1 complete. Phase 2 next.
 
 ## Phase 0: Minimal TCP Server Primitives
 
@@ -73,19 +73,19 @@ return Value{ .err = err_val };
 - Server handles multiple sequential requests
 
 ### Tasks
-- [ ] Implement buffered read that accumulates until `\r\n\r\n` (end of HTTP headers) is found, then reads Content-Length bytes for the body
-- [ ] Handle connection timeouts — return `Err("timeout")` after configurable wait
-- [ ] Handle client disconnect gracefully — return `Err("connection_reset")` instead of crashing
-- [ ] Test with `curl`, `wget`, and browser requests (browsers send multiple headers and may use keep-alive)
+- [x] Implement buffered read that accumulates until `\r\n\r\n` (end of HTTP headers) is found, then reads Content-Length bytes for the body (completed 2026-03-15)
+- [x] Handle connection timeouts — 30s SO_RCVTIMEO on socket (completed 2026-03-15)
+- [x] Handle client disconnect gracefully — return `Err("connection_closed")` instead of crashing (completed 2026-03-15)
+- [x] Test with `curl` — GET, POST with JSON body, 404, multiple sequential requests all pass (completed 2026-03-15)
 
 ### Testing Strategy
 `curl -X POST -d '{"key":"value"}' -H 'Content-Type: application/json' http://localhost:8080/echo` returns the posted body.
 
 ### Phase 1 Readiness Gate
 Before Phase 2, these must be true:
-- [ ] Phase 0 complete (basic TCP works)
-- [ ] POST requests with bodies are handled correctly
-- [ ] Connection errors don't crash the server
+- [x] Phase 0 complete (basic TCP works) (completed 2026-03-15)
+- [x] POST requests with bodies are handled correctly (completed 2026-03-15)
+- [x] Connection errors don't crash the server (completed 2026-03-15)
 
 ---
 

@@ -127,7 +127,9 @@ fn netAccept(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
 }
 
 /// read(conn) -> Result[string, string]
-/// Reads available data from a connection. Returns Ok(string) or Err(string).
+/// Reads an HTTP request from a connection using buffered accumulation.
+/// Reads until \r\n\r\n (end of headers), then reads Content-Length body bytes.
+/// Returns Ok(string) with the complete request, or Err(string) on failure.
 fn netRead(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
     if (args.len != 1) return error.ArityMismatch;
 
@@ -146,20 +148,98 @@ fn netRead(ctx: BuiltinContext, args: []const Value) InterpreterError!Value {
         return makeError(ctx.allocator, "invalid connection handle");
     };
 
-    var buf: [8192]u8 = undefined;
-    const n = stream.read(&buf) catch |err| {
-        return makeError(ctx.allocator, @errorName(err));
-    };
+    // Set a read timeout (30 seconds) to avoid blocking forever
+    const timeout = std.posix.timeval{ .sec = 30, .usec = 0 };
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
 
-    if (n == 0) {
-        return makeError(ctx.allocator, "connection_closed");
+    // Accumulate data into a dynamic buffer
+    var accum = std.ArrayListUnmanaged(u8){};
+    defer accum.deinit(ctx.allocator);
+
+    var buf: [4096]u8 = undefined;
+
+    // Phase 1: Read until we find \r\n\r\n (end of HTTP headers)
+    var header_end: ?usize = null;
+    while (header_end == null) {
+        const n = stream.read(&buf) catch |err| {
+            if (accum.items.len == 0) {
+                return makeError(ctx.allocator, @errorName(err));
+            }
+            // Return what we have so far
+            break;
+        };
+
+        if (n == 0) {
+            if (accum.items.len == 0) {
+                return makeError(ctx.allocator, "connection_closed");
+            }
+            break; // Client closed, return what we have
+        }
+
+        accum.appendSlice(ctx.allocator, buf[0..n]) catch return error.OutOfMemory;
+
+        // Check for \r\n\r\n in the accumulated data
+        if (accum.items.len >= 4) {
+            const search_start = if (accum.items.len > n + 3) accum.items.len - n - 3 else 0;
+            if (std.mem.indexOfPos(u8, accum.items, search_start, "\r\n\r\n")) |pos| {
+                header_end = pos + 4;
+            }
+        }
+
+        // Safety limit: 1MB max request
+        if (accum.items.len > 1024 * 1024) {
+            return makeError(ctx.allocator, "request_too_large");
+        }
     }
 
-    const data = ctx.allocator.dupe(u8, buf[0..n]) catch return error.OutOfMemory;
+    // Phase 2: If we found headers, check for Content-Length and read body
+    if (header_end) |hend| {
+        const headers = accum.items[0..hend];
+        if (parseContentLength(headers)) |content_length| {
+            const total_needed = hend + content_length;
+            while (accum.items.len < total_needed) {
+                const n = stream.read(&buf) catch break;
+                if (n == 0) break;
+                accum.appendSlice(ctx.allocator, buf[0..n]) catch return error.OutOfMemory;
+            }
+        }
+    }
+
+    const data = ctx.allocator.dupe(u8, accum.items) catch return error.OutOfMemory;
 
     const result = ctx.allocator.create(Value) catch return error.OutOfMemory;
     result.* = Value{ .string = data };
     return Value{ .ok = result };
+}
+
+/// Parse Content-Length from HTTP headers.
+fn parseContentLength(headers: []const u8) ?usize {
+    var pos: usize = 0;
+    while (pos < headers.len) {
+        const line_end = std.mem.indexOfPos(u8, headers, pos, "\r\n") orelse break;
+        const line = headers[pos..line_end];
+        pos = line_end + 2;
+
+        // Case-insensitive match for "Content-Length:"
+        if (line.len > 16 and matchHeaderName(line[0..16], "content-length: ")) {
+            const val_str = std.mem.trim(u8, line[16..], " ");
+            return std.fmt.parseInt(usize, val_str, 10) catch null;
+        }
+        if (line.len > 15 and matchHeaderName(line[0..15], "content-length:")) {
+            const val_str = std.mem.trim(u8, line[15..], " ");
+            return std.fmt.parseInt(usize, val_str, 10) catch null;
+        }
+    }
+    return null;
+}
+
+/// Case-insensitive header name match.
+fn matchHeaderName(actual: []const u8, expected: []const u8) bool {
+    if (actual.len != expected.len) return false;
+    for (actual, expected) |a, e| {
+        if (std.ascii.toLower(a) != std.ascii.toLower(e)) return false;
+    }
+    return true;
 }
 
 /// write(conn, data: string) -> Result[bool, string]
