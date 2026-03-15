@@ -48,6 +48,8 @@ pub const CCodeGen = struct {
     current_module: ?*const Module,
     /// SSA values known to hold string values (for string comparison via strcmp).
     string_values: std.AutoArrayHashMapUnmanaged(ValueRef, void),
+    /// SSA values known to hold boolean values (for bool-to-string in interpolation).
+    bool_values: std.AutoArrayHashMapUnmanaged(ValueRef, void),
 
     pub fn init(allocator: Allocator) CCodeGen {
         return .{
@@ -56,12 +58,14 @@ pub const CCodeGen = struct {
             .indent_level = 0,
             .current_module = null,
             .string_values = .{},
+            .bool_values = .{},
         };
     }
 
     pub fn deinit(self: *CCodeGen) void {
         self.output.deinit(self.allocator);
         self.string_values.deinit(self.allocator);
+        self.bool_values.deinit(self.allocator);
     }
 
     /// Get the generated C source code.
@@ -551,20 +555,25 @@ pub const CCodeGen = struct {
     // ----------------------------------------------------------------
 
     fn emitFunction(self: *CCodeGen, func: *const Function) CodeGenError!void {
-        // Clear per-function string tracking
+        // Clear per-function type tracking
         self.string_values.clearRetainingCapacity();
-        // Pre-scan: mark string-typed params
+        self.bool_values.clearRetainingCapacity();
+        // Pre-scan: mark typed params
         for (func.params) |p| {
             if (std.mem.eql(u8, p.type_name, "string")) {
                 self.string_values.put(self.allocator, p.value_ref, {}) catch {};
+            } else if (std.mem.eql(u8, p.type_name, "bool")) {
+                self.bool_values.put(self.allocator, p.value_ref, {}) catch {};
             }
         }
-        // Pre-scan: mark string-producing instructions
+        // Pre-scan: mark string-producing and bool-producing instructions
         for (func.instructions.items, 0..) |inst, idx| {
             const ref: ValueRef = @intCast(idx);
             switch (inst.op) {
                 .const_string => self.string_values.put(self.allocator, ref, {}) catch {},
                 .str_concat => self.string_values.put(self.allocator, ref, {}) catch {},
+                .to_string => self.string_values.put(self.allocator, ref, {}) catch {},
+                .const_bool => self.bool_values.put(self.allocator, ref, {}) catch {},
                 .call_builtin => |cb| {
                     if (std.mem.eql(u8, cb.name, "int_to_string") or
                         std.mem.eql(u8, cb.name, "float_to_string") or
@@ -894,8 +903,16 @@ pub const CCodeGen = struct {
             .int_to_float => |v| try self.writeFmt("{{ kira_float _f = (kira_float)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ v, ref }),
             .float_to_int => |v| try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)_f; }}\n", .{ v, ref }),
             .to_string => |v| {
-                // Convert integer to string via snprintf
-                try self.writeFmt("{{ char* _s = (char*)KIRA_ALLOC(32); snprintf(_s, 32, \"%lld\", (long long)v{d}); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ v, ref });
+                if (self.string_values.contains(v)) {
+                    // Already a string — pass through
+                    try self.writeFmt("v{d} = v{d};\n", .{ ref, v });
+                } else if (self.bool_values.contains(v)) {
+                    // Bool to string: "true" or "false"
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)(v{d} ? \"true\" : \"false\");\n", .{ ref, v });
+                } else {
+                    // Convert integer to string via snprintf
+                    try self.writeFmt("{{ char* _s = (char*)KIRA_ALLOC(32); snprintf(_s, 32, \"%lld\", (long long)v{d}); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ v, ref });
+                }
             },
             .alloc_var => |a| {
                 if (a.init_value) |iv| {

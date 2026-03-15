@@ -621,6 +621,75 @@ test "e2e: simple_parser example" {
     );
 }
 
+// ============================================================
+// String Interpolation E2E Tests
+// ============================================================
+
+test "e2e: simple string interpolation" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let name: string = "world"
+        \\    std.io.println("hello ${name}")
+        \\}
+    );
+}
+
+test "e2e: interpolation with multiple expressions" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let a: i32 = 3
+        \\    let b: i32 = 4
+        \\    std.io.println("${a} + ${b} = ${a + b}")
+        \\}
+    );
+}
+
+test "e2e: escaped dollar sign" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    std.io.println("\${literal}")
+        \\}
+    );
+}
+
+test "e2e: interpolation with adjacent parts" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let x: i32 = 1
+        \\    let y: i32 = 2
+        \\    std.io.println("${x}${y}")
+        \\}
+    );
+}
+
+test "e2e: interpolation with only expression" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let msg: string = "hello"
+        \\    std.io.println("${msg}")
+        \\}
+    );
+}
+
+test "e2e: interpolation with boolean value" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let flag: bool = true
+        \\    std.io.println("flag is ${flag}")
+        \\}
+    );
+}
+
+test "e2e: interpolation mixed types" {
+    try assertE2E(
+        \\effect fn main() -> void {
+        \\    let name: string = "Kira"
+        \\    let version: i32 = 1
+        \\    std.io.println("${name} v${version}")
+        \\}
+    );
+}
+
 test "e2e: list_map, list_filter, list_length with closures" {
     try assertE2E(
         \\fn count_words(text: string) -> i64 {
