@@ -10,6 +10,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("../ast/root.zig");
 const ir = @import("ir.zig");
+const lexer = @import("../lexer/root.zig");
+const Span = lexer.Span;
 
 const log = std.log.scoped(.ir_lower);
 
@@ -55,6 +57,13 @@ pub const Lowerer = struct {
     float_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
     /// ValueRefs known to produce string values.
     string_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
+    /// Diagnostic context for the most recent error (set before returning an error).
+    error_context: ?ErrorContext = null,
+
+    pub const ErrorContext = struct {
+        message: []const u8,
+        span: Span,
+    };
 
     const Scope = std.StringArrayHashMapUnmanaged(ValueRef);
 
@@ -367,7 +376,7 @@ pub const Lowerer = struct {
         switch (stmt.kind) {
             .let_binding => |*lb| try self.lowerLetBinding(lb),
             .var_binding => |*vb| try self.lowerVarBinding(vb),
-            .assignment => |*a| try self.lowerAssignment(a),
+            .assignment => |*a| try self.lowerAssignment(a, stmt.span),
             .expression_statement => |expr| {
                 _ = try self.lowerExpression(expr);
             },
@@ -421,11 +430,14 @@ pub const Lowerer = struct {
         try self.defineVar(vb.name, slot);
     }
 
-    fn lowerAssignment(self: *Lowerer, a: *const Statement.Assignment) LowerError!void {
+    fn lowerAssignment(self: *Lowerer, a: *const Statement.Assignment, span: Span) LowerError!void {
         const val = try self.lowerExpression(a.value);
         switch (a.target) {
             .identifier => |name| {
-                const slot = self.lookupVar(name) orelse return LowerError.UndefinedVariable;
+                const slot = self.lookupVar(name) orelse {
+                    self.setErrorContext(name, span);
+                    return LowerError.UndefinedVariable;
+                };
                 _ = try self.emit(.{ .store_var = .{ .target = slot, .value = val } });
             },
             .field_access => |ft| {
@@ -804,6 +816,7 @@ pub const Lowerer = struct {
                         };
                     }
                 }
+                self.setErrorContext(id.name, expr.span);
                 return LowerError.UndefinedVariable;
             },
             .binary => |*bin| self.lowerBinaryOp(bin),
@@ -1423,27 +1436,46 @@ pub const Lowerer = struct {
     }
 
     fn lowerMatchExpr(self: *Lowerer, me: *const Expression.MatchExpr) LowerError!ValueRef {
-        // For now, lower match expressions similarly to a chain of if-else
-        // comparing patterns. This is a simplified lowering that handles
-        // the common case; full pattern matching compilation can come later.
         const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const subject = try self.lowerExpression(me.subject);
 
+        const context_type = inferTypeFromArms(me.arms) orelse self.inferTypeFromSubject(subject);
+
         const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
         var incoming = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
 
-        for (me.arms) |arm| {
-            _ = subject;
-            // For each arm, emit the body in a new block
+        for (me.arms) |*arm| {
             const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
             const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
 
-            // Jump unconditionally to arm block (pattern matching not fully lowered yet)
-            self.setTerminator(.{ .jump = arm_blk });
-            self.current_block = arm_blk;
+            // Generate condition check for this arm's pattern
+            const matches = try self.lowerPatternCheck(arm.pattern, subject, context_type);
 
+            // Apply guard if present
+            const final_cond = if (arm.guard) |guard| blk: {
+                const guard_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+                self.setTerminator(.{ .branch = .{
+                    .condition = matches,
+                    .then_block = guard_blk,
+                    .else_block = next_blk,
+                } });
+                self.current_block = guard_blk;
+                const guard_val = try self.lowerExpression(guard);
+                break :blk guard_val;
+            } else matches;
+
+            self.setTerminator(.{ .branch = .{
+                .condition = final_cond,
+                .then_block = arm_blk,
+                .else_block = next_blk,
+            } });
+
+            // Arm body
+            self.current_block = arm_blk;
             try self.pushScope();
+            errdefer self.popScope();
+            try self.lowerPatternBindings(arm.pattern, subject);
             const arm_val = try self.lowerMatchBody(&arm.body);
             self.popScope();
             const arm_end = self.current_block;
@@ -1453,7 +1485,7 @@ pub const Lowerer = struct {
             self.current_block = next_blk;
         }
 
-        // Default: void
+        // Default: void (unreachable if match is exhaustive)
         const default_val = try self.emit(.{ .const_void = {} });
         const default_end = self.current_block;
         try incoming.append(alloc, .{ .block = default_end, .value = default_val });
@@ -2087,6 +2119,20 @@ pub const Lowerer = struct {
             if (self.scope_stack.items[i].get(name)) |ref| return ref;
         }
         return null;
+    }
+
+    /// Store diagnostic context before returning an error.
+    fn setErrorContext(self: *Lowerer, name: []const u8, span: Span) void {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "undefined variable '{s}'", .{name}) catch "undefined variable";
+        // Copy message into arena so it outlives the stack frame
+        const owned_msg = self.irAlloc().dupe(u8, msg) catch msg;
+        self.error_context = .{ .message = owned_msg, .span = span };
+    }
+
+    /// Return the error context from the most recent failure, if any.
+    pub fn getErrorContext(self: *const Lowerer) ?ErrorContext {
+        return self.error_context;
     }
 
     // ----------------------------------------------------------------
@@ -2836,6 +2882,56 @@ test "lowerPatternCheck char literal" {
     const check_inst = f.getInstruction(check_ref);
     try std.testing.expect(check_inst.op == .cmp);
     try std.testing.expectEqual(Instruction.CmpKind.eq, check_inst.op.cmp.op);
+
+    lowerer.popScope();
+}
+
+test "lowerMatchExpr binds pattern variables" {
+    const backing = std.testing.allocator;
+    var lowerer = Lowerer.init(backing);
+    defer lowerer.deinit();
+    const alloc = lowerer.irAlloc();
+
+    var func = Function.init(alloc);
+    func.name = "test_match_expr";
+    const func_idx = lowerer.module.addFunction(func) catch unreachable;
+    lowerer.current_func_idx = func_idx;
+    const blk = lowerer.currentFunc().?.addBlock(alloc) catch unreachable;
+    lowerer.current_block = blk;
+    lowerer.pushScope() catch unreachable;
+
+    const span = Span{
+        .start = .{ .line = 1, .column = 1, .offset = 0 },
+        .end = .{ .line = 1, .column = 10, .offset = 9 },
+    };
+
+    // Build: match subject { x => x }
+    // subject is an integer literal 42
+    var subject_expr = Expression.init(.{ .integer_literal = .{ .value = 42, .suffix = null } }, span);
+
+    // Arm body: identifier expression "x" — uses the pattern-bound variable
+    var body_expr = Expression.init(.{ .identifier = .{ .name = "x", .generic_args = null } }, span);
+
+    // Pattern: identifier "x"
+    var pat = Pattern.identifier("x", span);
+
+    var arms = [_]Expression.MatchExprArm{
+        .{
+            .pattern = &pat,
+            .guard = null,
+            .body = .{ .expression = &body_expr },
+            .span = span,
+        },
+    };
+    var match_expr = Expression.init(.{ .match_expr = .{
+        .subject = &subject_expr,
+        .arms = &arms,
+    } }, span);
+
+    // This should NOT return UndefinedVariable — the pattern "x" must be
+    // bound before the body "x" is evaluated.
+    const result = lowerer.lowerExpression(&match_expr);
+    try std.testing.expect(result != error.UndefinedVariable);
 
     lowerer.popScope();
 }

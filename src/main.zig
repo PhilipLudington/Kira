@@ -1249,9 +1249,17 @@ fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const
     defer lowerer.deinit();
 
     var ir_module = lowerer.lower(&program) catch |err| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "error[ir]: IR lowering failed: {}\n", .{err}) catch "error[ir]: IR lowering failed\n";
-        stderr.writeAll(msg) catch {};
+        if (lowerer.getErrorContext()) |ctx| {
+            renderer.render(stderr, .{
+                .message = ctx.message,
+                .span = ctx.span,
+                .severity = .err,
+            }) catch {};
+        } else {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error[ir]: IR lowering failed: {}\n", .{err}) catch "error[ir]: IR lowering failed\n";
+            stderr.writeAll(msg) catch {};
+        }
         return error.CompileError;
     };
     defer ir_module.deinit();
