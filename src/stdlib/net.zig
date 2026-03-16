@@ -467,15 +467,32 @@ fn netHttpRequest(ctx: BuiltinContext, args: []const Value) InterpreterError!Val
         return makeHttpError(ctx.allocator, "InvalidUrl", "Could not parse URL");
     };
 
+    // Extract timeout (Option[i32], in milliseconds)
+    const timeout_ms: i64 = blk: {
+        const timeout_val = req_rec.fields.get("timeout") orelse break :blk 30000;
+        switch (timeout_val) {
+            .some => |ptr| switch (ptr.*) {
+                .integer => |i| break :blk @intCast(i),
+                else => break :blk 30000,
+            },
+            .none => break :blk 30000,
+            else => break :blk 30000,
+        }
+    };
+
     // Connect to remote host
     const stream = std.net.tcpConnectToHost(ctx.allocator, parsed.host, parsed.port) catch |err| {
         return makeHttpError(ctx.allocator, "ConnectionFailed", @errorName(err));
     };
     defer stream.close();
 
-    // Set read timeout (30 seconds)
-    const timeout = std.posix.timeval{ .sec = 30, .usec = 0 };
-    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    // Set read timeout from request (default 30s)
+    if (timeout_ms > 0) {
+        const timeout_sec: i64 = @divTrunc(timeout_ms, 1000);
+        const timeout_usec: i64 = @mod(timeout_ms, 1000) * 1000;
+        const timeout = std.posix.timeval{ .sec = @intCast(timeout_sec), .usec = @intCast(timeout_usec) };
+        std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    }
 
     // Build HTTP request into buffer
     var req_buf = std.ArrayListUnmanaged(u8){};
@@ -712,6 +729,8 @@ fn statusCodeToVariant(allocator: Allocator, code: u16) !Value {
         301 => "MovedPermanently",
         302 => "Found",
         304 => "NotModified",
+        307 => "TemporaryRedirect",
+        308 => "PermanentRedirect",
         400 => "BadRequest",
         401 => "Unauthorized",
         403 => "Forbidden",
