@@ -474,6 +474,8 @@ pub const TypeChecker = struct {
 
             .if_expr => |ie| try self.checkIfExpr(ie, expr.span),
 
+            .match_expr => |me| try self.checkMatchExpr(me, expr.span),
+
             .tuple_literal => |tl| {
                 const type_alloc = self.typeAllocator();
                 var element_types = std.ArrayListUnmanaged(ResolvedType){};
@@ -2244,6 +2246,54 @@ pub const TypeChecker = struct {
         }
 
         return then_type;
+    }
+
+    /// Check match expression
+    fn checkMatchExpr(self: *TypeChecker, me: Expression.MatchExpr, span: Span) TypeCheckError!ResolvedType {
+        const subject_type = try self.checkExpression(me.subject);
+
+        var result_type: ?ResolvedType = null;
+
+        for (me.arms) |arm| {
+            _ = try self.symbol_table.enterScope(.block);
+            errdefer self.scopeCleanup();
+
+            try self.checkPattern(arm.pattern, subject_type);
+            try self.addPatternBindings(arm.pattern, null, subject_type, false);
+
+            if (arm.guard) |guard| {
+                const guard_type = try self.checkExpression(guard);
+                if (!guard_type.isBool()) {
+                    try self.addDiagnostic(try errors_mod.simpleError(
+                        self.allocator,
+                        "match guard must be a boolean expression",
+                        guard.span,
+                    ));
+                }
+            }
+
+            const arm_type = switch (arm.body) {
+                .expression => |e| try self.checkExpression(e),
+                .block => |block| try self.checkBlockExpressionType(block, span),
+            };
+
+            if (result_type) |rt| {
+                if (!self.typesMatch(rt, arm_type)) {
+                    try self.addDiagnostic(try errors_mod.typeMismatch(
+                        self.allocator,
+                        rt,
+                        arm_type,
+                        arm.span,
+                    ));
+                }
+            } else {
+                result_type = arm_type;
+            }
+
+            try self.scopeLeave();
+        }
+
+        return result_type orelse ResolvedType.voidType(span);
     }
 
     /// Check record literal

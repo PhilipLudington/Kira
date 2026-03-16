@@ -1150,6 +1150,25 @@ pub const Resolver = struct {
                 }
                 try self.table.leaveScope();
             },
+            .match_expr => |me| {
+                try self.resolveExpression(me.subject);
+                for (me.arms) |arm| {
+                    _ = try self.table.enterScope(.block);
+                    try self.resolvePattern(arm.pattern, null, false);
+                    if (arm.guard) |guard| {
+                        try self.resolveExpression(guard);
+                    }
+                    switch (arm.body) {
+                        .expression => |e| try self.resolveExpression(e),
+                        .block => |block| {
+                            for (block) |*stmt| {
+                                try self.resolveStatement(stmt);
+                            }
+                        },
+                    }
+                    try self.table.leaveScope();
+                }
+            },
             .tuple_literal => |tl| {
                 for (tl.elements) |elem| {
                     try self.resolveExpression(elem);

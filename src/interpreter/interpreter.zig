@@ -799,6 +799,9 @@ pub const Interpreter = struct {
             // If expression
             .if_expr => |ie| self.evalIfExpr(ie, env),
 
+            // Match expression
+            .match_expr => |me| self.evalMatchExpr(me, env),
+
             // Composite literals
             .tuple_literal => |t| self.evalTupleLiteral(t, env),
             .array_literal => |a| self.evalArrayLiteral(a, env),
@@ -1559,7 +1562,59 @@ pub const Interpreter = struct {
         };
     }
 
-    /// Evaluate a match expression
+    /// Evaluate a match expression (match used as a value)
+    fn evalMatchExpr(self: *Interpreter, me: Expression.MatchExpr, env: *Environment) InterpreterError!Value {
+        const subject = try self.evalExpression(me.subject, env);
+
+        for (me.arms) |arm| {
+            const arm_env = try self.arenaAlloc().create(Environment);
+            arm_env.* = Environment.initWithParent(self.arenaAlloc(), env);
+
+            if (try self.matchPattern(arm.pattern, subject, arm_env)) {
+                // Check guard if present
+                if (arm.guard) |guard| {
+                    const guard_val = try self.evalExpression(guard, arm_env);
+                    if (!guard_val.isTruthy()) continue;
+                }
+
+                // Evaluate body and return result
+                return switch (arm.body) {
+                    .expression => |e| self.evalExpression(e, arm_env),
+                    .block => |stmts| {
+                        const block_env = try self.arenaAlloc().create(Environment);
+                        block_env.* = Environment.initWithParent(self.arenaAlloc(), arm_env);
+
+                        if (stmts.len > 0) {
+                            // Execute all but last statement
+                            for (stmts[0 .. stmts.len - 1]) |stmt| {
+                                self.evalStatement(&stmt, block_env) catch |err| {
+                                    if (err == error.ReturnEncountered) {
+                                        return self.return_value orelse Value{ .void = {} };
+                                    }
+                                    return err;
+                                };
+                            }
+                            // Last statement: if expression_statement, use as value
+                            const last = &stmts[stmts.len - 1];
+                            if (last.kind == .expression_statement) {
+                                return self.evalExpression(last.kind.expression_statement, block_env);
+                            }
+                            self.evalStatement(last, block_env) catch |err| {
+                                if (err == error.ReturnEncountered) {
+                                    return self.return_value orelse Value{ .void = {} };
+                                }
+                                return err;
+                            };
+                        }
+                        return Value{ .void = {} };
+                    },
+                };
+            }
+        }
+
+        return error.MatchFailed;
+    }
+
     /// Evaluate an if expression
     fn evalIfExpr(self: *Interpreter, if_e: Expression.IfExpr, env: *Environment) InterpreterError!Value {
         const cond = try self.evalExpression(if_e.condition, env);

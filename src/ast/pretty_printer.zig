@@ -231,6 +231,12 @@ pub const PrettyPrinter = struct {
                 try self.writeFmt("body: {d} statements", .{cl.body.len});
                 self.dedent();
             },
+            .if_expr => {
+                try self.write("IfExpr");
+            },
+            .match_expr => |me| {
+                try self.writeFmt("MatchExpr({d} arms)", .{me.arms.len});
+            },
             .tuple_literal => |tl| {
                 try self.writeFmt("TupleLiteral({d} elements)", .{tl.elements.len});
             },

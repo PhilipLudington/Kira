@@ -50,6 +50,9 @@ pub const Expression = struct {
         // If expression (if used as value)
         if_expr: IfExpr,
 
+        // Match expression (match used as value)
+        match_expr: MatchExpr,
+
         // Composite literals
         tuple_literal: TupleLiteral,
         array_literal: ArrayLiteral,
@@ -249,6 +252,21 @@ pub const Expression = struct {
         condition: *Expression,
         then_branch: MatchBody,
         else_branch: MatchBody,
+    };
+
+    /// Match expression (match used as value)
+    /// All arms must have the same type
+    pub const MatchExpr = struct {
+        subject: *Expression,
+        arms: []MatchExprArm,
+    };
+
+    /// Arm of a match expression
+    pub const MatchExprArm = struct {
+        pattern: *Pattern,
+        guard: ?*Expression,
+        body: MatchBody,
+        span: Span,
     };
 
     /// Tuple literal (e.g., `(1, "hello", true)`)

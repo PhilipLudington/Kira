@@ -26,40 +26,25 @@ Changes in `src/main.zig` (runFile, testFile, benchFile):
 
 ---
 
-## [ ] Bug 2: `let x: RecordType = match ... { ... }` causes runtime TypeMismatch
+## [x] Bug 2: `let x: RecordType = match ... { ... }` causes runtime TypeMismatch
 
-**Status:** Blocked (Kira v0.12.0 runtime bug)
+**Status:** Fixed
 
-**Description:** Using a `match` expression (not statement) to assign a record type value causes a runtime `error.TypeMismatch`. This only affects record types — `string`, `bool`, `i64` work fine as match expression results.
+**Description:** Using `match` as an expression (to assign a value) was previously rejected by the parser as a workaround for runtime TypeMismatch errors. The real fix was to implement proper match expressions as a first-class expression type, alongside the existing match statement.
 
-**Steps to reproduce:**
-1. Create a file with a match expression assigning to a record type:
+**Fix:** Added `match_expr` as a new expression kind throughout the compiler pipeline:
+- **AST** (`expression.zig`): Added `MatchExpr` and `MatchExprArm` types using existing `MatchBody` union
+- **Parser** (`parser.zig`): Replaced the error-on-match-in-expression with `parseMatchExpr()` which parses match arms with `MatchBody` (expression or block) bodies
+- **Interpreter** (`interpreter.zig`): Added `evalMatchExpr` that pattern-matches the subject, evaluates the matching arm's body, and returns the value. Block bodies use the last expression_statement as the return value.
+- **Type checker** (`checker.zig`): Added `checkMatchExpr` that validates pattern types, guards, and ensures all arms return the same type
+- **Resolver** (`resolver.zig`): Added scope management for match expression arms
+- **Formatter, pretty printer, IR lower**: Added `match_expr` handling
+
+Match expressions now work for all types including records:
 ```kira
-module tests.test_match_record
-import logic.parser.lexer
-
-pub effect fn main() -> IO[void] {
-    let tokens: List[LocatedToken] = tokenize("foo.") |> unwrap
-    let pos: Position = match tokens {
-        Cons(t, _) => { t.position }
-        Nil => { Position { line: 1_i64, column: 1_i64, offset: 0_i64 } }
-    }
-    std.io.println("line: " + std.string.from_int(pos.line))
-}
-```
-2. Run it: `kira run tests/test_match_record.ki`
-3. Observe `Runtime error: error.TypeMismatch`
-
-**Expected:** `pos` is assigned the `Position` from the first token.
-
-**Actual:** Runtime `error.TypeMismatch` at the match expression.
-
-**Workaround:** Use `var` with a match statement instead:
-```kira
-var pos: Position = Position { line: 1_i64, column: 1_i64, offset: 0_i64 }
-match tokens {
-    Cons(t, _) => { pos = t.position }
-    Nil => { }
+let pos: Position = match tokens {
+    Cons(t, _) => { t.position }
+    Nil => { Position { line: 1, column: 1, offset: 0 } }
 }
 ```
 

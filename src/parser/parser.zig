@@ -1757,13 +1757,9 @@ pub const Parser = struct {
             return self.parseClosure();
         }
 
-        // Match is a statement, not an expression.
-        // Use `var` with assignment inside match arms instead of `let x = match ...`.
+        // Match expression: match subject { pattern => expr, ... }
         if (self.check(.match)) {
-            return self.reportError(
-                "'match' cannot be used as an expression; use a variable with assignment inside match arms instead",
-                null,
-            );
+            return self.parseMatchExpr();
         }
 
         // If expression
@@ -2025,6 +2021,51 @@ pub const Parser = struct {
             .condition = condition,
             .then_branch = then_branch,
             .else_branch = else_branch,
+        } }, self.makeSpan(start.start));
+    }
+
+    /// Parse a match expression (match used as a value)
+    fn parseMatchExpr(self: *Parser) ParseError!Expression {
+        const start = self.peek().span;
+        _ = self.advance(); // consume 'match'
+
+        const subject = try self.allocExpr(try self.parseExpression());
+
+        try self.consume(.left_brace, "expected '{' after match subject");
+        self.skipNewlines();
+
+        var arms = std.ArrayListUnmanaged(Expression.MatchExprArm){};
+        errdefer arms.deinit(self.allocator);
+
+        while (!self.check(.right_brace) and !self.isAtEnd()) {
+            const arm_start = self.peek().span;
+            const pattern = try self.allocPattern(try self.parsePattern());
+
+            var guard: ?*Expression = null;
+            if (self.match(.if_keyword)) {
+                guard = try self.allocExpr(try self.parseExpression());
+            }
+
+            try self.consume(.fat_arrow, "expected '=>' after pattern");
+            try self.consume(.left_brace, "expected '{' after '=>'");
+            self.skipNewlines();
+
+            const body = try self.parseIfExprBody();
+
+            try arms.append(self.allocator, .{
+                .pattern = pattern,
+                .guard = guard,
+                .body = body,
+                .span = self.makeSpan(arm_start.start),
+            });
+            self.skipNewlines();
+        }
+
+        try self.consume(.right_brace, "expected '}' after match arms");
+
+        return Expression.init(.{ .match_expr = .{
+            .subject = subject,
+            .arms = try arms.toOwnedSlice(self.allocator),
         } }, self.makeSpan(start.start));
     }
 
@@ -2907,11 +2948,11 @@ test "parse binary expression" {
     try std.testing.expect(expr.kind.binary.operator == .add);
 }
 
-test "match in expression position is rejected" {
+test "match expression parses correctly" {
     const source =
         \\match x {
-        \\    Some(v) => v
-        \\    None => 0
+        \\    Some(v) => { v }
+        \\    None => { 0 }
         \\}
     ;
     var lex = lexer.Lexer.init(source);
@@ -2924,16 +2965,9 @@ test "match in expression position is rejected" {
     var parser = Parser.init(alloc, tokens.items);
     defer parser.deinit();
 
-    const result = parser.parseExpression();
-    try std.testing.expectError(ParseError.UnexpectedToken, result);
-
-    // Verify the error message is helpful
-    const errors = parser.getErrors();
-    try std.testing.expect(errors.len > 0);
-    try std.testing.expectEqualStrings(
-        "'match' cannot be used as an expression; use a variable with assignment inside match arms instead",
-        errors[0].message,
-    );
+    const expr = try parser.parseExpression();
+    try std.testing.expect(expr.kind == .match_expr);
+    try std.testing.expectEqual(@as(usize, 2), expr.kind.match_expr.arms.len);
 }
 
 test "parse program" {

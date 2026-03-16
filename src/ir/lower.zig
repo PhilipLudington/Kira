@@ -819,6 +819,7 @@ pub const Lowerer = struct {
             .variant_constructor => |*vc| self.lowerVariantConstructor(vc),
             .closure => |*cl| self.lowerClosure(cl),
             .if_expr => |*ie| self.lowerIfExpr(ie),
+            .match_expr => |*me| self.lowerMatchExpr(me),
             .interpolated_string => |*is| self.lowerInterpolatedString(is),
             .grouped => |inner| self.lowerExpression(inner),
             .try_expr => |inner| self.lowerTryExpr(inner),
@@ -1421,6 +1422,49 @@ pub const Lowerer = struct {
         return self.emit(.{ .phi = .{ .incoming = incoming } });
     }
 
+    fn lowerMatchExpr(self: *Lowerer, me: *const Expression.MatchExpr) LowerError!ValueRef {
+        // For now, lower match expressions similarly to a chain of if-else
+        // comparing patterns. This is a simplified lowering that handles
+        // the common case; full pattern matching compilation can come later.
+        const func = self.currentFunc().?;
+        const alloc = self.irAlloc();
+        const subject = try self.lowerExpression(me.subject);
+
+        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        var incoming = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
+
+        for (me.arms) |arm| {
+            _ = subject;
+            // For each arm, emit the body in a new block
+            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+            const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+
+            // Jump unconditionally to arm block (pattern matching not fully lowered yet)
+            self.setTerminator(.{ .jump = arm_blk });
+            self.current_block = arm_blk;
+
+            try self.pushScope();
+            const arm_val = try self.lowerMatchBody(&arm.body);
+            self.popScope();
+            const arm_end = self.current_block;
+            try incoming.append(alloc, .{ .block = arm_end, .value = arm_val });
+            self.setTerminator(.{ .jump = merge_blk });
+
+            self.current_block = next_blk;
+        }
+
+        // Default: void
+        const default_val = try self.emit(.{ .const_void = {} });
+        const default_end = self.current_block;
+        try incoming.append(alloc, .{ .block = default_end, .value = default_val });
+        self.setTerminator(.{ .jump = merge_blk });
+
+        self.current_block = merge_blk;
+        return self.emit(.{ .phi = .{
+            .incoming = incoming.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+        } });
+    }
+
     fn lowerMatchBody(self: *Lowerer, body: *const Expression.MatchBody) LowerError!ValueRef {
         return switch (body.*) {
             .expression => |expr| self.lowerExpression(expr),
@@ -1926,6 +1970,13 @@ pub const Lowerer = struct {
                 try self.collectFreeVarsInExpr(ie.condition, names, refs, alloc);
                 try self.collectFreeVarsInMatchBody(&ie.then_branch, names, refs, alloc);
                 try self.collectFreeVarsInMatchBody(&ie.else_branch, names, refs, alloc);
+            },
+            .match_expr => |*me| {
+                try self.collectFreeVarsInExpr(me.subject, names, refs, alloc);
+                for (me.arms) |arm| {
+                    if (arm.guard) |guard| try self.collectFreeVarsInExpr(guard, names, refs, alloc);
+                    try self.collectFreeVarsInMatchBody(&arm.body, names, refs, alloc);
+                }
             },
             .closure => |*cl| {
                 // When recursing into a nested closure, any identifier that matches

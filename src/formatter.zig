@@ -890,6 +890,26 @@ pub const Formatter = struct {
                 try self.write(" else ");
                 try self.formatMatchBody(ie.else_branch);
             },
+            .match_expr => |me| {
+                try self.write("match ");
+                try self.formatExpression(me.subject.*);
+                try self.write(" {\n");
+                self.indent();
+                for (me.arms) |arm| {
+                    try self.writeIndent();
+                    try self.formatPattern(arm.pattern.*);
+                    if (arm.guard) |guard| {
+                        try self.write(" if ");
+                        try self.formatExpression(guard.*);
+                    }
+                    try self.write(" => ");
+                    try self.formatMatchBody(arm.body);
+                    try self.writeByte('\n');
+                }
+                self.dedent();
+                try self.writeIndent();
+                try self.writeByte('}');
+            },
             .tuple_literal => |tl| {
                 try self.writeByte('(');
                 for (tl.elements, 0..) |elem, i| {
