@@ -339,6 +339,7 @@ pub const Interpreter = struct {
         self: *Interpreter,
         module_path: []const u8,
         declarations: []const Declaration,
+        module_env: ?*Environment,
     ) InterpreterError!void {
         var exports = std.StringHashMapUnmanaged(Value){};
 
@@ -352,7 +353,7 @@ pub const Interpreter = struct {
                             .name = f.name,
                             .parameters = self.extractParamNames(f.parameters) catch continue,
                             .body = if (f.body) |body| .{ .ast_body = body } else continue,
-                            .captured_env = &self.global_env,
+                            .captured_env = module_env orelse &self.global_env,
                             .is_effect = f.is_effect,
                             .is_memoized = f.is_memoized,
                         },
@@ -418,7 +419,7 @@ pub const Interpreter = struct {
     }
 
     /// Process an import declaration and create bindings for imported items
-    fn processImport(self: *Interpreter, import_decl: *const Declaration.ImportDecl, env: *Environment) InterpreterError!void {
+    pub fn processImport(self: *Interpreter, import_decl: *const Declaration.ImportDecl, env: *Environment) InterpreterError!void {
         // Build the module path from the import path segments
         // e.g., ["mytool", "core"] -> "mytool.core"
         var path_builder = std.ArrayListUnmanaged(u8){};

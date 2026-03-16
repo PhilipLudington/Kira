@@ -915,73 +915,100 @@ fn runFile(allocator: Allocator, path: []const u8, silent: bool, user_args: []co
         }
     }
 
-    // Register declarations from loaded modules first
-    // Create module namespace structures so qualified names like `src.json.X` work
-    var modules_iter = loader.loadedModulesIterator();
-    while (modules_iter.next()) |entry| {
-        if (entry.value_ptr.program) |mod_program| {
-            const module_key = entry.key_ptr.*;
+    // Register declarations from loaded modules with per-module environments.
+    // Each module gets its own environment (child of global_env) so that:
+    //   - Module functions resolve symbols through their own import chain
+    //   - Name collisions between modules don't cause silent overwrites
+    //   - Transitive imports work correctly at runtime
+    const Environment = Kira.interpreter_mod.Environment;
+    const arena_alloc2 = interp.arenaAlloc();
 
-            // Register module exports for import resolution
-            // This allows `import module.{ item }` to find the item
-            interp.registerModuleExports(
-                module_key,
-                mod_program.declarations,
-            ) catch |err| {
-                var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register exports for module '{s}': {}\n", .{ module_key, err }) catch "Warning: Module export registration failed\n";
-                stderr.writeAll(msg) catch {};
-            };
+    // Map from module key to its per-module environment
+    var module_envs = std.StringHashMapUnmanaged(*Environment){};
 
-            // Parse module path from the key (e.g., "src.json" -> ["src", "json"])
-            var path_segments = std.ArrayListUnmanaged([]const u8){};
-            defer path_segments.deinit(allocator);
+    // Pass 1: Create per-module environments, register declarations and exports.
+    // All modules must have exports registered before processing any imports.
+    {
+        var modules_iter = loader.loadedModulesIterator();
+        while (modules_iter.next()) |entry| {
+            if (entry.value_ptr.program) |mod_program| {
+                const module_key = entry.key_ptr.*;
 
-            var path_iter = std.mem.splitScalar(u8, module_key, '.');
-            while (path_iter.next()) |segment| {
-                path_segments.append(allocator, segment) catch {
-                    var buf: [256]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf, "Warning: Out of memory parsing module path '{s}'\n", .{module_key}) catch "Warning: Module path parsing failed\n";
-                    stderr.writeAll(msg) catch {};
-                    break;
-                };
-            }
+                // Create per-module environment as child of global_env
+                const module_env = arena_alloc2.create(Environment) catch continue;
+                module_env.* = Environment.initWithParent(arena_alloc2, &interp.global_env);
+                module_envs.put(arena_alloc2, module_key, module_env) catch continue;
 
-            // Register the module namespace with its proper path
-            if (path_segments.items.len > 0) {
-                interp.registerModuleNamespace(
-                    path_segments.items,
-                    mod_program.declarations,
-                    &interp.global_env,
-                ) catch |err| {
-                    var buf: [512]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register namespace for module '{s}': {}\n", .{ module_key, err }) catch "Warning: Module namespace registration failed\n";
-                    stderr.writeAll(msg) catch {};
-                };
-            }
-
-            // Also register declarations directly for backward compatibility
-            // (allows using imported items without qualification if explicitly imported)
-            for (mod_program.declarations) |*mod_decl| {
-                // Skip module/import declarations and imported "main" functions —
-                // only the target file's main should be the entry point
-                if (mod_decl.kind == .function_decl) {
-                    if (mod_decl.name()) |decl_name| {
-                        if (std.mem.eql(u8, decl_name, "main")) continue;
+                // Register declarations in the module environment.
+                // Functions get captured_env = module_env, so they resolve
+                // symbols through the module's own scope chain.
+                for (mod_program.declarations) |*mod_decl| {
+                    if (mod_decl.kind == .function_decl) {
+                        if (mod_decl.name()) |decl_name| {
+                            if (std.mem.eql(u8, decl_name, "main")) continue;
+                        }
+                    }
+                    if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
+                        interp.registerDeclaration(mod_decl, module_env) catch {};
                     }
                 }
-                if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
-                    interp.registerDeclaration(mod_decl, &interp.global_env) catch |err| {
-                        var buf: [512]u8 = undefined;
-                        const decl_name = switch (mod_decl.kind) {
-                            .function_decl => |f| f.name,
-                            .const_decl => |c| c.name,
-                            .type_decl => |t| t.name,
-                            else => "<unknown>",
-                        };
-                        const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register declaration '{s}' from module '{s}': {}\n", .{ decl_name, module_key, err }) catch "Warning: Declaration registration failed\n";
-                        stderr.writeAll(msg) catch {};
-                    };
+
+                // Register module exports for import resolution (with module_env
+                // as captured_env so imported functions use the correct scope)
+                interp.registerModuleExports(
+                    module_key,
+                    mod_program.declarations,
+                    module_env,
+                ) catch |err| {
+                    var buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Warning: Failed to register exports for module '{s}': {}\n", .{ module_key, err }) catch "Warning: Module export registration failed\n";
+                    stderr.writeAll(msg) catch {};
+                };
+
+                // Register the module namespace with its proper path
+                var path_segments = std.ArrayListUnmanaged([]const u8){};
+                defer path_segments.deinit(allocator);
+
+                var path_iter = std.mem.splitScalar(u8, module_key, '.');
+                while (path_iter.next()) |segment| {
+                    path_segments.append(allocator, segment) catch break;
+                }
+
+                if (path_segments.items.len > 0) {
+                    interp.registerModuleNamespace(
+                        path_segments.items,
+                        mod_program.declarations,
+                        module_env,
+                    ) catch {};
+                }
+
+                // Backward compat: copy bindings to global_env so the main
+                // program can access module symbols without explicit imports.
+                // The function values retain captured_env = module_env.
+                var binding_iter = module_env.bindings.iterator();
+                while (binding_iter.next()) |b_entry| {
+                    interp.global_env.define(
+                        b_entry.key_ptr.*,
+                        b_entry.value_ptr.value,
+                        b_entry.value_ptr.is_mutable,
+                    ) catch {};
+                }
+            }
+        }
+    }
+
+    // Pass 2: Process each module's imports in its own environment.
+    // Now that all module exports are registered, import resolution works
+    // across module boundaries (including transitive imports).
+    {
+        var modules_iter = loader.loadedModulesIterator();
+        while (modules_iter.next()) |entry| {
+            if (entry.value_ptr.program) |mod_program| {
+                const module_key = entry.key_ptr.*;
+                if (module_envs.get(module_key)) |module_env| {
+                    for (mod_program.imports) |import_decl| {
+                        interp.processImport(&import_decl, module_env) catch {};
+                    }
                 }
             }
         }
@@ -1545,22 +1572,60 @@ fn testFile(allocator: Allocator, path: []const u8, user_args: []const []const u
         }
     }
 
-    // Register declarations from loaded modules
-    var modules_iter = loader.loadedModulesIterator();
-    while (modules_iter.next()) |entry| {
-        if (entry.value_ptr.program) |mod_program| {
-            var path_segments = std.ArrayListUnmanaged([]const u8){};
-            defer path_segments.deinit(allocator);
-            var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
-            while (path_iter.next()) |segment| {
-                path_segments.append(allocator, segment) catch continue;
+    // Register declarations from loaded modules with per-module environments
+    const TestEnv = Kira.interpreter_mod.Environment;
+    const test_arena = interp.arenaAlloc();
+
+    var test_module_envs = std.StringHashMapUnmanaged(*TestEnv){};
+
+    // Pass 1: Create per-module environments and register declarations + exports
+    {
+        var modules_iter = loader.loadedModulesIterator();
+        while (modules_iter.next()) |entry| {
+            if (entry.value_ptr.program) |mod_program| {
+                const module_key = entry.key_ptr.*;
+
+                const module_env = test_arena.create(TestEnv) catch continue;
+                module_env.* = TestEnv.initWithParent(test_arena, &interp.global_env);
+                test_module_envs.put(test_arena, module_key, module_env) catch continue;
+
+                for (mod_program.declarations) |*mod_decl| {
+                    if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
+                        interp.registerDeclaration(mod_decl, module_env) catch {};
+                    }
+                }
+
+                interp.registerModuleExports(module_key, mod_program.declarations, module_env) catch {};
+
+                var path_segments = std.ArrayListUnmanaged([]const u8){};
+                defer path_segments.deinit(allocator);
+                var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
+                while (path_iter.next()) |segment| {
+                    path_segments.append(allocator, segment) catch continue;
+                }
+                if (path_segments.items.len > 0) {
+                    interp.registerModuleNamespace(path_segments.items, mod_program.declarations, module_env) catch {};
+                }
+
+                // Backward compat: copy to global_env
+                var binding_iter = module_env.bindings.iterator();
+                while (binding_iter.next()) |b_entry| {
+                    interp.global_env.define(b_entry.key_ptr.*, b_entry.value_ptr.value, b_entry.value_ptr.is_mutable) catch {};
+                }
             }
-            if (path_segments.items.len > 0) {
-                interp.registerModuleNamespace(path_segments.items, mod_program.declarations, &interp.global_env) catch {};
-            }
-            for (mod_program.declarations) |*mod_decl| {
-                if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
-                    interp.registerDeclaration(mod_decl, &interp.global_env) catch {};
+        }
+    }
+
+    // Pass 2: Process module imports
+    {
+        var modules_iter = loader.loadedModulesIterator();
+        while (modules_iter.next()) |entry| {
+            if (entry.value_ptr.program) |mod_program| {
+                const module_key = entry.key_ptr.*;
+                if (test_module_envs.get(module_key)) |module_env| {
+                    for (mod_program.imports) |import_decl| {
+                        interp.processImport(&import_decl, module_env) catch {};
+                    }
                 }
             }
         }
@@ -1791,22 +1856,60 @@ fn benchFile(allocator: Allocator, path: []const u8, json_output: bool, requeste
     try Kira.interpreter_mod.registerStdlib(arena_alloc, &interp.global_env);
     interp.registerBuiltinMethods();
 
-    // Register declarations from loaded modules
-    var modules_iter = loader.loadedModulesIterator();
-    while (modules_iter.next()) |entry| {
-        if (entry.value_ptr.program) |mod_program| {
-            var path_segments = std.ArrayListUnmanaged([]const u8){};
-            defer path_segments.deinit(allocator);
-            var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
-            while (path_iter.next()) |segment| {
-                path_segments.append(allocator, segment) catch continue;
+    // Register declarations from loaded modules with per-module environments
+    const BenchEnv = Kira.interpreter_mod.Environment;
+    const bench_arena = interp.arenaAlloc();
+
+    var bench_module_envs = std.StringHashMapUnmanaged(*BenchEnv){};
+
+    // Pass 1: Create per-module environments and register declarations + exports
+    {
+        var modules_iter = loader.loadedModulesIterator();
+        while (modules_iter.next()) |entry| {
+            if (entry.value_ptr.program) |mod_program| {
+                const module_key = entry.key_ptr.*;
+
+                const module_env = bench_arena.create(BenchEnv) catch continue;
+                module_env.* = BenchEnv.initWithParent(bench_arena, &interp.global_env);
+                bench_module_envs.put(bench_arena, module_key, module_env) catch continue;
+
+                for (mod_program.declarations) |*mod_decl| {
+                    if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
+                        interp.registerDeclaration(mod_decl, module_env) catch {};
+                    }
+                }
+
+                interp.registerModuleExports(module_key, mod_program.declarations, module_env) catch {};
+
+                var path_segments = std.ArrayListUnmanaged([]const u8){};
+                defer path_segments.deinit(allocator);
+                var path_iter = std.mem.splitScalar(u8, entry.key_ptr.*, '.');
+                while (path_iter.next()) |segment| {
+                    path_segments.append(allocator, segment) catch continue;
+                }
+                if (path_segments.items.len > 0) {
+                    interp.registerModuleNamespace(path_segments.items, mod_program.declarations, module_env) catch {};
+                }
+
+                // Backward compat: copy to global_env
+                var binding_iter = module_env.bindings.iterator();
+                while (binding_iter.next()) |b_entry| {
+                    interp.global_env.define(b_entry.key_ptr.*, b_entry.value_ptr.value, b_entry.value_ptr.is_mutable) catch {};
+                }
             }
-            if (path_segments.items.len > 0) {
-                interp.registerModuleNamespace(path_segments.items, mod_program.declarations, &interp.global_env) catch {};
-            }
-            for (mod_program.declarations) |*mod_decl| {
-                if (mod_decl.kind != .module_decl and mod_decl.kind != .import_decl) {
-                    interp.registerDeclaration(mod_decl, &interp.global_env) catch {};
+        }
+    }
+
+    // Pass 2: Process module imports
+    {
+        var modules_iter = loader.loadedModulesIterator();
+        while (modules_iter.next()) |entry| {
+            if (entry.value_ptr.program) |mod_program| {
+                const module_key = entry.key_ptr.*;
+                if (bench_module_envs.get(module_key)) |module_env| {
+                    for (mod_program.imports) |import_decl| {
+                        interp.processImport(&import_decl, module_env) catch {};
+                    }
                 }
             }
         }
