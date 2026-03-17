@@ -639,6 +639,98 @@ pub const CCodeGen = struct {
         try self.write("    return kira_builder_append(sb_val, buf);\n");
         try self.write("}\n\n");
 
+        // --- Map operations (array-of-pairs: [count, key0, val0, key1, val1, ...]) ---
+        try self.write("/* Map: immutable key-value store with string keys */\n");
+        try self.write("static kira_int kira_map_new(void) {\n");
+        try self.write("    kira_int* m = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int));\n");
+        try self.write("    m[0] = 0;\n");
+        try self.write("    return (kira_int)(intptr_t)m;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_put(kira_int map_val, kira_string key, kira_int value) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = old[0];\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) {\n");
+        try self.write("        if (strcmp((const char*)(intptr_t)old[1 + i * 2], key) == 0) {\n");
+        try self.write("            kira_int* m = (kira_int*)KIRA_ALLOC((1 + count * 2) * sizeof(kira_int));\n");
+        try self.write("            memcpy(m, old, (1 + count * 2) * sizeof(kira_int));\n");
+        try self.write("            m[1 + i * 2 + 1] = value;\n");
+        try self.write("            return (kira_int)(intptr_t)m;\n");
+        try self.write("        }\n");
+        try self.write("    }\n");
+        try self.write("    kira_int* m = (kira_int*)KIRA_ALLOC((1 + (count + 1) * 2) * sizeof(kira_int));\n");
+        try self.write("    memcpy(m, old, (1 + count * 2) * sizeof(kira_int));\n");
+        try self.write("    m[0] = count + 1;\n");
+        try self.write("    m[1 + count * 2] = (kira_int)(intptr_t)key;\n");
+        try self.write("    m[1 + count * 2 + 1] = value;\n");
+        try self.write("    return (kira_int)(intptr_t)m;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_get(kira_int map_val, kira_string key) {\n");
+        try self.write("    kira_int* m = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = m[0];\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) {\n");
+        try self.write("        if (strcmp((const char*)(intptr_t)m[1 + i * 2], key) == 0) return kira_make_some(m[1 + i * 2 + 1]);\n");
+        try self.write("    }\n");
+        try self.write("    return kira_make_none();\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_contains(kira_int map_val, kira_string key) {\n");
+        try self.write("    kira_int* m = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = m[0];\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) {\n");
+        try self.write("        if (strcmp((const char*)(intptr_t)m[1 + i * 2], key) == 0) return 1;\n");
+        try self.write("    }\n");
+        try self.write("    return 0;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_remove(kira_int map_val, kira_string key) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = old[0];\n");
+        try self.write("    kira_int found = -1;\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) {\n");
+        try self.write("        if (strcmp((const char*)(intptr_t)old[1 + i * 2], key) == 0) { found = i; break; }\n");
+        try self.write("    }\n");
+        try self.write("    if (found == -1) {\n");
+        try self.write("        kira_int* m = (kira_int*)KIRA_ALLOC((1 + count * 2) * sizeof(kira_int));\n");
+        try self.write("        memcpy(m, old, (1 + count * 2) * sizeof(kira_int));\n");
+        try self.write("        return (kira_int)(intptr_t)m;\n");
+        try self.write("    }\n");
+        try self.write("    kira_int nc = count - 1;\n");
+        try self.write("    kira_int* m = (kira_int*)KIRA_ALLOC((1 + nc * 2) * sizeof(kira_int));\n");
+        try self.write("    m[0] = nc; kira_int dst = 0;\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) {\n");
+        try self.write("        if (i != found) { m[1+dst*2] = old[1+i*2]; m[1+dst*2+1] = old[1+i*2+1]; dst++; }\n");
+        try self.write("    }\n");
+        try self.write("    return (kira_int)(intptr_t)m;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_keys(kira_int map_val) {\n");
+        try self.write("    kira_int* m = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = m[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((count + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = count;\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) arr[i + 1] = m[1 + i * 2];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_values(kira_int map_val) {\n");
+        try self.write("    kira_int* m = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = m[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((count + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = count;\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) arr[i + 1] = m[1 + i * 2 + 1];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_entries(kira_int map_val) {\n");
+        try self.write("    kira_int* m = (kira_int*)(intptr_t)map_val;\n");
+        try self.write("    kira_int count = m[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((count + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = count;\n");
+        try self.write("    for (kira_int i = 0; i < count; i++) {\n");
+        try self.write("        kira_int* pair = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int));\n");
+        try self.write("        pair[0] = m[1 + i * 2]; pair[1] = m[1 + i * 2 + 1];\n");
+        try self.write("        arr[i + 1] = (kira_int)(intptr_t)pair;\n");
+        try self.write("    }\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_map_size(kira_int map_val) { return ((kira_int*)(intptr_t)map_val)[0]; }\n");
+        try self.write("static kira_int kira_map_is_empty(kira_int map_val) { return ((kira_int*)(intptr_t)map_val)[0] == 0 ? 1 : 0; }\n\n");
+
         // --- String extras ---
         try self.write("static kira_int kira_string_concat(kira_string a, kira_string b) {\n");
         try self.write("    size_t al = strlen(a), bl = strlen(b);\n");
@@ -698,6 +790,121 @@ pub const CCodeGen = struct {
 
         // --- Time extras ---
         try self.write("static kira_int kira_time_elapsed(kira_int start, kira_int end) { return end - start; }\n\n");
+
+        // --- Net operations (POSIX sockets) ---
+        try self.write("#ifdef _WIN32\n");
+        try self.write("#include <winsock2.h>\n#include <ws2tcpip.h>\n");
+        try self.write("#pragma comment(lib, \"ws2_32.lib\")\n");
+        try self.write("#define KIRA_CLOSE_SOCKET(s) closesocket(s)\n");
+        try self.write("#else\n");
+        try self.write("#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <unistd.h>\n#include <netdb.h>\n#include <errno.h>\n");
+        try self.write("#define KIRA_CLOSE_SOCKET(s) close(s)\n");
+        try self.write("#endif\n");
+        // tcp_listen(port) -> Result[handle, string]
+        try self.write("static kira_int kira_net_tcp_listen(kira_int port) {\n");
+        try self.write("    int fd = socket(AF_INET, SOCK_STREAM, 0);\n");
+        try self.write("    if (fd < 0) return kira_make_err(\"socket failed\");\n");
+        try self.write("    int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));\n");
+        try self.write("    struct sockaddr_in addr; memset(&addr, 0, sizeof(addr));\n");
+        try self.write("    addr.sin_family = AF_INET; addr.sin_addr.s_addr = INADDR_ANY; addr.sin_port = htons((uint16_t)port);\n");
+        try self.write("    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { KIRA_CLOSE_SOCKET(fd); return kira_make_err(\"bind failed\"); }\n");
+        try self.write("    if (listen(fd, 128) < 0) { KIRA_CLOSE_SOCKET(fd); return kira_make_err(\"listen failed\"); }\n");
+        try self.write("    return kira_make_ok((kira_int)fd);\n");
+        try self.write("}\n");
+        // accept(listener_handle) -> Result[conn_handle, string]
+        try self.write("static kira_int kira_net_accept(kira_int listener) {\n");
+        try self.write("    struct sockaddr_in client; socklen_t len = sizeof(client);\n");
+        try self.write("    int fd = accept((int)listener, (struct sockaddr*)&client, &len);\n");
+        try self.write("    if (fd < 0) return kira_make_err(\"accept failed\");\n");
+        try self.write("    return kira_make_ok((kira_int)fd);\n");
+        try self.write("}\n");
+        // read(conn_handle) -> Result[string, string]
+        try self.write("static kira_int kira_net_read(kira_int conn) {\n");
+        try self.write("    char* buf = (char*)KIRA_ALLOC(65536);\n");
+        try self.write("    ssize_t total = 0;\n");
+        try self.write("    ssize_t n = recv((int)conn, buf, 65535, 0);\n");
+        try self.write("    if (n < 0) return kira_make_err(\"read failed\");\n");
+        try self.write("    if (n == 0) return kira_make_err(\"connection_closed\");\n");
+        try self.write("    total = n; buf[total] = '\\0';\n");
+        try self.write("    return kira_make_ok((kira_int)(intptr_t)buf);\n");
+        try self.write("}\n");
+        // write(conn_handle, data) -> Result[bool, string]
+        try self.write("static kira_int kira_net_write(kira_int conn, kira_string data) {\n");
+        try self.write("    ssize_t len = strlen(data);\n");
+        try self.write("    ssize_t sent = 0;\n");
+        try self.write("    while (sent < len) {\n");
+        try self.write("        ssize_t n = send((int)conn, data + sent, len - sent, 0);\n");
+        try self.write("        if (n < 0) return kira_make_err(\"write failed\");\n");
+        try self.write("        sent += n;\n");
+        try self.write("    }\n");
+        try self.write("    return kira_make_ok(1);\n");
+        try self.write("}\n");
+        // close(conn_handle) -> Result[bool, string]
+        try self.write("static kira_int kira_net_close(kira_int conn) {\n");
+        try self.write("    KIRA_CLOSE_SOCKET((int)conn);\n");
+        try self.write("    return kira_make_ok(1);\n");
+        try self.write("}\n");
+        // close_listener(listener_handle) -> Result[bool, string]
+        try self.write("static kira_int kira_net_close_listener(kira_int listener) {\n");
+        try self.write("    KIRA_CLOSE_SOCKET((int)listener);\n");
+        try self.write("    return kira_make_ok(1);\n");
+        try self.write("}\n");
+        // http_request(request_record) -> Result[response_record, string]
+        // Simplified: takes a record with method/url/body fields, returns result
+        try self.write("static kira_int kira_net_http_request(kira_int req) {\n");
+        try self.write("    /* Simplified HTTP/1.1 client over plain TCP */\n");
+        try self.write("    kira_int* r = (kira_int*)(intptr_t)req;\n");
+        try self.write("    /* Expect record layout: [method_variant, url_string, body_option, headers_list, timeout, follow_redirects] */\n");
+        try self.write("    kira_string url = (kira_string)(intptr_t)r[1];\n");
+        try self.write("    /* Parse URL: skip http:// */\n");
+        try self.write("    const char* host_start = url;\n");
+        try self.write("    int use_port = 80;\n");
+        try self.write("    if (strncmp(url, \"http://\", 7) == 0) host_start = url + 7;\n");
+        try self.write("    else if (strncmp(url, \"https://\", 8) == 0) { host_start = url + 8; use_port = 443; }\n");
+        try self.write("    const char* path_start = strchr(host_start, '/');\n");
+        try self.write("    const char* path = path_start ? path_start : \"/\";\n");
+        try self.write("    size_t host_len = path_start ? (size_t)(path_start - host_start) : strlen(host_start);\n");
+        try self.write("    /* Check for port in host */\n");
+        try self.write("    char host_buf[256]; if (host_len >= 256) return kira_make_err(\"host too long\");\n");
+        try self.write("    memcpy(host_buf, host_start, host_len); host_buf[host_len] = '\\0';\n");
+        try self.write("    char* colon = strchr(host_buf, ':');\n");
+        try self.write("    if (colon) { use_port = atoi(colon + 1); *colon = '\\0'; }\n");
+        try self.write("    /* Resolve and connect */\n");
+        try self.write("    struct addrinfo hints, *res;\n");
+        try self.write("    memset(&hints, 0, sizeof(hints)); hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;\n");
+        try self.write("    char port_str[8]; snprintf(port_str, 8, \"%d\", use_port);\n");
+        try self.write("    if (getaddrinfo(host_buf, port_str, &hints, &res) != 0) return kira_make_err(\"DNS lookup failed\");\n");
+        try self.write("    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);\n");
+        try self.write("    if (fd < 0) { freeaddrinfo(res); return kira_make_err(\"socket failed\"); }\n");
+        try self.write("    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) { KIRA_CLOSE_SOCKET(fd); freeaddrinfo(res); return kira_make_err(\"connect failed\"); }\n");
+        try self.write("    freeaddrinfo(res);\n");
+        try self.write("    /* Build and send request */\n");
+        try self.write("    char req_buf[4096];\n");
+        try self.write("    int req_len = snprintf(req_buf, 4096, \"GET %s HTTP/1.1\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n\", path, host_buf);\n");
+        try self.write("    send(fd, req_buf, req_len, 0);\n");
+        try self.write("    /* Read response */\n");
+        try self.write("    size_t cap = 65536; char* resp = (char*)KIRA_ALLOC(cap); size_t total = 0;\n");
+        try self.write("    while (1) {\n");
+        try self.write("        ssize_t n = recv(fd, resp + total, cap - total - 1, 0);\n");
+        try self.write("        if (n <= 0) break;\n");
+        try self.write("        total += n;\n");
+        try self.write("        if (total >= cap - 1) { size_t nc = cap * 2; char* nr = (char*)KIRA_ALLOC(nc); memcpy(nr, resp, total); resp = nr; cap = nc; }\n");
+        try self.write("    }\n");
+        try self.write("    resp[total] = '\\0';\n");
+        try self.write("    KIRA_CLOSE_SOCKET(fd);\n");
+        try self.write("    /* Parse status code and split headers/body */\n");
+        try self.write("    int status = 0;\n");
+        try self.write("    if (total > 12 && strncmp(resp, \"HTTP/1.\", 7) == 0) status = atoi(resp + 9);\n");
+        try self.write("    const char* body_start = strstr(resp, \"\\r\\n\\r\\n\");\n");
+        try self.write("    kira_string body = body_start ? body_start + 4 : \"\";\n");
+        try self.write("    /* Build response record: [status, body, headers_empty_list] */\n");
+        try self.write("    kira_int* resp_rec = (kira_int*)KIRA_ALLOC(3 * sizeof(kira_int));\n");
+        try self.write("    resp_rec[0] = (kira_int)status;\n");
+        try self.write("    resp_rec[1] = (kira_int)(intptr_t)body;\n");
+        try self.write("    kira_int* empty = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); empty[0] = 0;\n");
+        try self.write("    resp_rec[2] = (kira_int)(intptr_t)empty;\n");
+        try self.write("    return kira_make_ok((kira_int)(intptr_t)resp_rec);\n");
+        try self.write("}\n\n");
 
         // --- Assert extras ---
         try self.write("static void kira_assert_true(kira_int v) { if (!v) { fprintf(stderr, \"Assertion failed: assert_true\\n\"); abort(); } }\n");
@@ -2002,6 +2209,25 @@ const builtin_registry = std.StaticStringMap(BuiltinSpec).initComptime(.{
     .{ "result_map", BuiltinSpec{ .emit =makeCallEmitter("kira_result_map", 0, false) } },
     .{ "result_map_err", BuiltinSpec{ .emit =makeCallEmitter("kira_result_map_err", 0, false) } },
     .{ "result_and_then", BuiltinSpec{ .emit =makeCallEmitter("kira_result_and_then", 0, false) } },
+    // Net operations
+    .{ "net_tcp_listen", BuiltinSpec{ .emit =makeCallEmitter("kira_net_tcp_listen", 0, false) } },
+    .{ "net_accept", BuiltinSpec{ .emit =makeCallEmitter("kira_net_accept", 0, false) } },
+    .{ "net_read", BuiltinSpec{ .emit =makeCallEmitter("kira_net_read", 0, false) } },
+    .{ "net_write", BuiltinSpec{ .emit =makeCallEmitter("kira_net_write", 0b010, false) } },
+    .{ "net_close", BuiltinSpec{ .emit =makeCallEmitter("kira_net_close", 0, false) } },
+    .{ "net_close_listener", BuiltinSpec{ .emit =makeCallEmitter("kira_net_close_listener", 0, false) } },
+    .{ "net_http_request", BuiltinSpec{ .emit =makeCallEmitter("kira_net_http_request", 0, false) } },
+    // Map operations
+    .{ "map_new", BuiltinSpec{ .emit =makeCallEmitter("kira_map_new", 0, false) } },
+    .{ "map_put", BuiltinSpec{ .emit =makeCallEmitter("kira_map_put", 0b010, false) } },
+    .{ "map_get", BuiltinSpec{ .emit =makeCallEmitter("kira_map_get", 0b010, false) } },
+    .{ "map_contains", BuiltinSpec{ .emit =makeCallEmitter("kira_map_contains", 0b010, false) } },
+    .{ "map_remove", BuiltinSpec{ .emit =makeCallEmitter("kira_map_remove", 0b010, false) } },
+    .{ "map_keys", BuiltinSpec{ .emit =makeCallEmitter("kira_map_keys", 0, false) } },
+    .{ "map_values", BuiltinSpec{ .emit =makeCallEmitter("kira_map_values", 0, false) } },
+    .{ "map_entries", BuiltinSpec{ .emit =makeCallEmitter("kira_map_entries", 0, false) } },
+    .{ "map_size", BuiltinSpec{ .emit =makeCallEmitter("kira_map_size", 0, false) } },
+    .{ "map_is_empty", BuiltinSpec{ .emit =makeCallEmitter("kira_map_is_empty", 0, false) } },
     // Builder operations
     .{ "builder_new", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_new", 0, false) } },
     .{ "builder_append", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_append", 0b010, false) } },

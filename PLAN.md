@@ -2,7 +2,7 @@
 
 ## Overview
 Complete the compiler backend so `kira build` can compile programs that use standard library functions and cross-module imports.
-Current status: Phase 0 complete, Phase 1 next.
+Current status: Phase 1 complete, Phase 2 next.
 
 ## Phase 0: Audit & Complete std.* Builtin Coverage ✅
 **Status:** Complete (2026-03-16)
@@ -39,13 +39,14 @@ Current status: Phase 0 complete, Phase 1 next.
 - [x] Test: `kira build` on kira-test library module — **builds successfully**
 
 ### What's Still Missing (deferred)
-- std.map codegen: lowerer resolves the names but C runtime hash map not yet implemented (emits `/* unknown builtin */`)
-- std.net codegen: lowerer resolves names but C runtime TCP/HTTP not yet implemented
+- std.net HTTPS: http_request works over plain HTTP only (no TLS/SSL support yet)
+- std.net record fields: tcp_listen/accept return integer handles; field access like `.port` on listener records not yet supported in compiled output
 - std.bytes: not yet added (low priority — no downstream project uses it)
 
 ---
 
-## Phase 1: Refactor Builtin Dispatch to Table-Driven
+## Phase 1: Refactor Builtin Dispatch to Table-Driven ✅
+**Status:** Complete (2026-03-16)
 
 **Goal:** Replace the hardcoded if-else chains in the codegen `call_builtin` handler with a single registry table. The lowerer already has a unified `resolveStdBuiltin()` but codegen still has ~100 `else if` branches.
 
@@ -60,8 +61,9 @@ Current status: Phase 0 complete, Phase 1 next.
 - [x] Create a codegen builtin registry mapping canonical name → C code template
 - [x] Refactor codegen `call_builtin` to dispatch via the registry
 - [x] Extract C runtime helpers into a dedicated `emitRuntimeHelpers` section (already partially done)
-- [ ] Implement C runtime for std.map (simple open-addressing hash table)
-- [ ] Implement C runtime for std.net (socket wrappers)
+- [x] Implement C runtime for std.map (array-of-pairs with string keys, all 10 operations)
+- [x] Implement C runtime for std.net (POSIX socket wrappers: tcp_listen, accept, read, write, close, close_listener, http_request)
+- [x] Fix Option type tag mismatch (Some=0/None=1 runtime convention now matches type declarations)
 - [x] Verify all existing tests still pass
 - [x] Verify downstream projects still build identically
 
@@ -71,7 +73,7 @@ Diff the generated `.c` files before and after refactor — output should be ide
 ### Phase 1 Readiness Gate
 Before Phase 2, these must be true:
 - [x] All builtins dispatched via registry, no hardcoded names in codegen
-- [ ] std.map and std.net have working C runtime implementations
+- [x] std.map and std.net have working C runtime implementations
 - [x] All 685+ Kira compiler tests pass
 
 ---
@@ -149,6 +151,7 @@ For each project: `kira build`, `cc` the output, run the binary, diff output aga
 
 ## Timeline
 - Phase 0: **Complete**
+- Phase 1: **Complete**
 - Phase 1 → Phase 2: sequential (Phase 2 needs clean builtin infrastructure)
 - Phase 2 → Phase 3: sequential (Phase 3 validates Phase 2)
 - Remaining: ~6-10 days of focused work
