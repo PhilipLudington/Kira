@@ -127,16 +127,15 @@ pub const Lowerer = struct {
     /// when scoped by type_name.
     fn registerBuiltinTypes(self: *Lowerer) LowerError!void {
         const alloc = self.irAlloc();
-        // Option = | Some(T) | None — Some=0, None=1
-        // Tag convention matches runtime helpers (kira_make_some/kira_make_none)
-        // and list_head/list_find which all use tag 0 for Some, tag 1 for None.
+        // Option = | None | Some(T) — None=0, Some=1
+        // None=0 means "nothing" (falsy), Some=1 means "has value" (truthy).
         _ = self.module.addTypeDecl(.{
             .name = "Option",
             .kind = .{ .sum_type = .{
                 .variants = blk: {
                     var v = std.ArrayListUnmanaged(ir.VariantDecl){};
-                    v.append(alloc, .{ .name = "Some", .tag = 0, .field_count = 1 }) catch return LowerError.OutOfMemory;
-                    v.append(alloc, .{ .name = "None", .tag = 1, .field_count = 0 }) catch return LowerError.OutOfMemory;
+                    v.append(alloc, .{ .name = "None", .tag = 0, .field_count = 0 }) catch return LowerError.OutOfMemory;
+                    v.append(alloc, .{ .name = "Some", .tag = 1, .field_count = 1 }) catch return LowerError.OutOfMemory;
                     break :blk v.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
                 },
             } },

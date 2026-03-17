@@ -404,11 +404,11 @@ pub const CCodeGen = struct {
         try self.write("    for (kira_int i = 0; i < len; i++) arr[i + 2] = old[i + 1];\n");
         try self.write("    return (kira_int)(intptr_t)arr;\n");
         try self.write("}\n");
-        // head -> Option[T]: Some(tag=0,payload) or None(tag=1)
+        // head -> Option[T]: None(tag=0) or Some(tag=1,payload)
         try self.write("static kira_int kira_list_head(kira_int list_val) {\n");
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
-        try self.write("    if (arr[0] == 0) { kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0] = 1; return (kira_int)(intptr_t)n; }\n");
-        try self.write("    kira_int* s = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); s[0] = 0; s[1] = arr[1]; return (kira_int)(intptr_t)s;\n");
+        try self.write("    if (arr[0] == 0) { kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0] = 0; return (kira_int)(intptr_t)n; }\n");
+        try self.write("    kira_int* s = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); s[0] = 1; s[1] = arr[1]; return (kira_int)(intptr_t)s;\n");
         try self.write("}\n");
         // tail -> List[T] (empty list if input is empty)
         try self.write("static kira_int kira_list_tail(kira_int list_val) {\n");
@@ -452,9 +452,9 @@ pub const CCodeGen = struct {
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
         try self.write("    for (kira_int i = 0; i < len; i++) {\n");
-        try self.write("        if (fn(arr[i + 1])) { kira_int* s = (kira_int*)KIRA_ALLOC(2*sizeof(kira_int)); s[0]=0; s[1]=arr[i+1]; return (kira_int)(intptr_t)s; }\n");
+        try self.write("        if (fn(arr[i + 1])) { kira_int* s = (kira_int*)KIRA_ALLOC(2*sizeof(kira_int)); s[0]=1; s[1]=arr[i+1]; return (kira_int)(intptr_t)s; }\n");
         try self.write("    }\n");
-        try self.write("    kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0]=1; return (kira_int)(intptr_t)n;\n");
+        try self.write("    kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0]=0; return (kira_int)(intptr_t)n;\n");
         try self.write("}\n");
         try self.write("static kira_int kira_list_any(kira_int list_val, kira_int fn_val) {\n");
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
@@ -530,31 +530,31 @@ pub const CCodeGen = struct {
         try self.write("    return (kira_int)(intptr_t)arr;\n");
         try self.write("}\n\n");
 
-        // --- Option operations (Some=tag 0 with payload, None=tag 1) ---
+        // --- Option operations (None=tag 0, Some=tag 1 with payload) ---
         try self.write("static kira_int kira_make_some(kira_int val) {\n");
         try self.write("    kira_int* v = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int));\n");
-        try self.write("    v[0] = 0; v[1] = val; return (kira_int)(intptr_t)v;\n");
+        try self.write("    v[0] = 1; v[1] = val; return (kira_int)(intptr_t)v;\n");
         try self.write("}\n");
         try self.write("static kira_int kira_make_none(void) {\n");
         try self.write("    kira_int* v = (kira_int*)KIRA_ALLOC(sizeof(kira_int));\n");
-        try self.write("    v[0] = 1; return (kira_int)(intptr_t)v;\n");
+        try self.write("    v[0] = 0; return (kira_int)(intptr_t)v;\n");
         try self.write("}\n");
-        try self.write("static kira_int kira_option_is_some(kira_int opt) { return ((kira_int*)(intptr_t)opt)[0] == 0 ? 1 : 0; }\n");
-        try self.write("static kira_int kira_option_is_none(kira_int opt) { return ((kira_int*)(intptr_t)opt)[0] != 0 ? 1 : 0; }\n");
+        try self.write("static kira_int kira_option_is_some(kira_int opt) { return ((kira_int*)(intptr_t)opt)[0] != 0 ? 1 : 0; }\n");
+        try self.write("static kira_int kira_option_is_none(kira_int opt) { return ((kira_int*)(intptr_t)opt)[0] == 0 ? 1 : 0; }\n");
         try self.write("static kira_int kira_option_unwrap_or(kira_int opt, kira_int def) {\n");
         try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
-        try self.write("    return v[0] == 0 ? v[1] : def;\n");
+        try self.write("    return v[0] != 0 ? v[1] : def;\n");
         try self.write("}\n");
         try self.write("static kira_int kira_option_map(kira_int opt, kira_int fn_val) {\n");
         try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
-        try self.write("    if (v[0] != 0) return opt;\n");
+        try self.write("    if (v[0] == 0) return opt;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
         try self.write("    return kira_make_some(fn(v[1]));\n");
         try self.write("}\n");
         try self.write("static kira_int kira_option_and_then(kira_int opt, kira_int fn_val) {\n");
         try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
-        try self.write("    if (v[0] != 0) return opt;\n");
+        try self.write("    if (v[0] == 0) return opt;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
         try self.write("    return fn(v[1]);\n");
