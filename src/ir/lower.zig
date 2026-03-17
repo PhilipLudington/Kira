@@ -107,6 +107,10 @@ pub const Lowerer = struct {
         // for Option[T] and Result[T, E] even when programs don't explicitly declare them.
         try self.registerBuiltinTypes();
 
+        // Forward-declaration pass: register all function and let-bound closure names
+        // so that forward references resolve correctly regardless of declaration order.
+        try self.registerForwardDeclarations(program);
+
         for (program.declarations) |*decl| {
             try self.lowerDeclaration(decl);
         }
@@ -150,6 +154,29 @@ pub const Lowerer = struct {
         }) catch return LowerError.OutOfMemory;
     }
 
+    /// Pre-register all function names (fn decls and let-bound closures) so that
+    /// forward references work regardless of declaration order. The actual function
+    /// bodies are lowered later by lowerDeclaration; this pass only creates
+    /// placeholder entries in the module's function_map.
+    fn registerForwardDeclarations(self: *Lowerer, program: *const Program) LowerError!void {
+        const alloc = self.irAlloc();
+        for (program.declarations) |*decl| {
+            const name: ?[]const u8 = switch (decl.kind) {
+                .function_decl => |*fd| if (fd.body != null) fd.name else null,
+                .let_decl => |*ld| if (ld.value.kind == .closure) ld.name else null,
+                else => null,
+            };
+            if (name) |n| {
+                // Only register if not already present (registerBuiltinTypes may have added some)
+                if (self.module.function_map.get(n) == null) {
+                    var func = Function.init(alloc);
+                    func.name = n;
+                    _ = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------------------
     // Declarations
     // ----------------------------------------------------------------
@@ -173,14 +200,21 @@ pub const Lowerer = struct {
         const body = fd.body orelse return; // Signature-only (trait method) — skip
         const alloc = self.irAlloc();
 
-        var func = Function.init(alloc);
-        func.name = fd.name;
-        func.is_effect = fd.is_effect;
-        func.is_memoized = fd.is_memoized;
-
-        // Add to module first; all subsequent mutations go through the stored copy
-        // via currentFunc(), which is safe even if the functions list reallocates.
-        const func_idx = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        // Reuse pre-registered placeholder if it exists (from registerForwardDeclarations),
+        // otherwise create a new entry.
+        const func_idx = if (self.module.function_map.get(fd.name)) |idx| blk: {
+            self.module.functions.items[idx] = Function.init(alloc);
+            self.module.functions.items[idx].name = fd.name;
+            self.module.functions.items[idx].is_effect = fd.is_effect;
+            self.module.functions.items[idx].is_memoized = fd.is_memoized;
+            break :blk idx;
+        } else blk: {
+            var func = Function.init(alloc);
+            func.name = fd.name;
+            func.is_effect = fd.is_effect;
+            func.is_memoized = fd.is_memoized;
+            break :blk self.module.addFunction(func) catch return LowerError.OutOfMemory;
+        };
         self.current_func_idx = func_idx;
         errdefer self.current_func_idx = null;
 
@@ -295,9 +329,68 @@ pub const Lowerer = struct {
         }) catch return LowerError.OutOfMemory;
     }
 
-    fn lowerLetDecl(_: *Lowerer, _: *const Declaration.LetDecl) LowerError!void {
-        // Top-level let declarations with closures become functions
-        // For now, a no-op (lowered as function wrapping in a future pass)
+    fn lowerLetDecl(self: *Lowerer, ld: *const Declaration.LetDecl) LowerError!void {
+        // If the value is a closure, emit it as a named IR function so that
+        // other functions can reference it via the module's function_map.
+        if (ld.value.kind == .closure) {
+            const cl = &ld.value.kind.closure;
+            const alloc = self.irAlloc();
+
+            // Reuse pre-registered placeholder if it exists
+            const func_idx = if (self.module.function_map.get(ld.name)) |idx| blk: {
+                self.module.functions.items[idx] = Function.init(alloc);
+                self.module.functions.items[idx].name = ld.name;
+                self.module.functions.items[idx].is_effect = cl.is_effect;
+                break :blk idx;
+            } else blk: {
+                var func = Function.init(alloc);
+                func.name = ld.name;
+                func.is_effect = cl.is_effect;
+                break :blk self.module.addFunction(func) catch return LowerError.OutOfMemory;
+            };
+            self.current_func_idx = func_idx;
+            errdefer self.current_func_idx = null;
+
+            self.float_refs.clearRetainingCapacity();
+            self.string_refs.clearRetainingCapacity();
+
+            self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+
+            var params = std.ArrayListUnmanaged(Function.Param){};
+            try self.pushScope();
+            errdefer self.popScope();
+
+            for (cl.parameters, 0..) |param, i| {
+                const vref = try self.emit(.{ .param = @intCast(i) });
+                if (isAstTypeFloat(param.param_type)) try self.markFloat(vref);
+                params.append(alloc, .{
+                    .name = param.name,
+                    .value_ref = vref,
+                    .type_name = astTypeToName(param.param_type),
+                }) catch return LowerError.OutOfMemory;
+                try self.defineVar(param.name, vref);
+            }
+            self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+            self.currentFunc().?.return_type_name = astTypeToName(cl.return_type);
+
+            try self.lowerStatements(cl.body);
+
+            if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
+                const void_ref = try self.emit(.{ .const_void = {} });
+                self.setTerminator(.{ .ret = void_ref });
+            }
+
+            self.popScope();
+            self.current_func_idx = null;
+        } else {
+            // Non-closure: try to evaluate as a compile-time constant
+            if (self.tryConstExpr(ld.value)) |cv| {
+                _ = self.module.addConstant(.{
+                    .name = ld.name,
+                    .value = cv,
+                }) catch return LowerError.OutOfMemory;
+            }
+        }
     }
 
     fn lowerTestDecl(self: *Lowerer, td: *const Declaration.TestDecl) LowerError!void {
@@ -1038,14 +1131,8 @@ pub const Lowerer = struct {
             }
         }
 
-        // std.list.* builtins
-        if (std.mem.eql(u8, module_name, "list")) {
-            if (std.mem.eql(u8, method, "map")) return "list_map";
-            if (std.mem.eql(u8, method, "filter")) return "list_filter";
-            if (std.mem.eql(u8, method, "length")) return "list_length";
-        }
-
-        return null;
+        // Delegate to the shared builtin table (covers all std.* modules)
+        return resolveStdBuiltin(module_name, method);
     }
 
     /// Check if an expression is a direct reference to a known function.
@@ -1073,15 +1160,7 @@ pub const Lowerer = struct {
                 .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
             } });
             // Mark string-returning builtins
-            if (std.mem.eql(u8, builtin_name, "int_to_string") or
-                std.mem.eql(u8, builtin_name, "float_to_string") or
-                std.mem.eql(u8, builtin_name, "string_trim") or
-                std.mem.eql(u8, builtin_name, "string_substring") or
-                std.mem.eql(u8, builtin_name, "string_to_upper") or
-                std.mem.eql(u8, builtin_name, "string_to_lower") or
-                std.mem.eql(u8, builtin_name, "string_replace") or
-                std.mem.eql(u8, builtin_name, "read_line"))
-            {
+            if (isStringReturningBuiltin(builtin_name)) {
                 try self.markString(ref);
             }
             return ref;
@@ -1112,109 +1191,210 @@ pub const Lowerer = struct {
         if (fa.object.kind != .identifier) return null;
         if (!std.mem.eql(u8, fa.object.kind.identifier.name, "std")) return null;
 
-        // std.io builtins
-        if (std.mem.eql(u8, module_name, "io")) {
-            if (std.mem.eql(u8, method, "println") or
-                std.mem.eql(u8, method, "print") or
-                std.mem.eql(u8, method, "eprintln") or
-                std.mem.eql(u8, method, "eprint") or
-                std.mem.eql(u8, method, "read_line"))
-            {
-                return method;
-            }
-        }
+        return resolveStdBuiltin(module_name, method);
+    }
 
-        // std.int builtins
-        if (std.mem.eql(u8, module_name, "int")) {
-            if (std.mem.eql(u8, method, "to_string")) return "int_to_string";
-            if (std.mem.eql(u8, method, "abs")) return "int_abs";
-            if (std.mem.eql(u8, method, "min")) return "int_min";
-            if (std.mem.eql(u8, method, "max")) return "int_max";
-            if (std.mem.eql(u8, method, "sign")) return "int_sign";
-            if (std.mem.eql(u8, method, "parse")) return "int_parse";
-        }
+    /// Check if a builtin returns a string value (for codegen type tracking).
+    fn isStringReturningBuiltin(name: []const u8) bool {
+        const eql = std.mem.eql;
+        return eql(u8, name, "int_to_string") or eql(u8, name, "float_to_string") or
+            eql(u8, name, "string_trim") or eql(u8, name, "string_substring") or
+            eql(u8, name, "string_to_upper") or eql(u8, name, "string_to_lower") or
+            eql(u8, name, "string_replace") or eql(u8, name, "string_concat") or
+            eql(u8, name, "string_from_bool") or eql(u8, name, "builder_build") or
+            eql(u8, name, "read_line");
+    }
 
-        // std.float builtins
-        if (std.mem.eql(u8, module_name, "float")) {
-            if (std.mem.eql(u8, method, "to_string")) return "float_to_string";
-            if (std.mem.eql(u8, method, "abs")) return "float_abs";
-            if (std.mem.eql(u8, method, "floor")) return "float_floor";
-            if (std.mem.eql(u8, method, "ceil")) return "float_ceil";
-            if (std.mem.eql(u8, method, "round")) return "float_round";
-            if (std.mem.eql(u8, method, "sqrt")) return "float_sqrt";
-            if (std.mem.eql(u8, method, "min")) return "float_min";
-            if (std.mem.eql(u8, method, "max")) return "float_max";
-            if (std.mem.eql(u8, method, "is_nan")) return "float_is_nan";
-            if (std.mem.eql(u8, method, "is_infinite")) return "float_is_infinite";
-            if (std.mem.eql(u8, method, "from_int")) return "float_from_int";
-            if (std.mem.eql(u8, method, "parse")) return "float_parse";
+    /// Unified lookup for std.<module>.<method> → canonical builtin name.
+    /// Single source of truth for all std.* builtin resolution.
+    fn resolveStdBuiltin(module_name: []const u8, method: []const u8) ?[]const u8 {
+        const eql = std.mem.eql;
+        // std.io
+        if (eql(u8, module_name, "io")) {
+            if (eql(u8, method, "println") or eql(u8, method, "print") or
+                eql(u8, method, "eprintln") or eql(u8, method, "eprint") or
+                eql(u8, method, "read_line")) return method;
         }
-
-        // std.string builtins
-        if (std.mem.eql(u8, module_name, "string")) {
-            if (std.mem.eql(u8, method, "length")) return "string_length";
-            if (std.mem.eql(u8, method, "char_at")) return "string_char_at";
-            if (std.mem.eql(u8, method, "split")) return "string_split";
-            if (std.mem.eql(u8, method, "trim")) return "string_trim";
-            if (std.mem.eql(u8, method, "contains")) return "string_contains";
-            if (std.mem.eql(u8, method, "starts_with")) return "string_starts_with";
-            if (std.mem.eql(u8, method, "ends_with")) return "string_ends_with";
-            if (std.mem.eql(u8, method, "substring")) return "string_substring";
-            if (std.mem.eql(u8, method, "index_of")) return "string_index_of";
-            if (std.mem.eql(u8, method, "equals")) return "string_equals";
-            if (std.mem.eql(u8, method, "to_upper")) return "string_to_upper";
-            if (std.mem.eql(u8, method, "to_lower")) return "string_to_lower";
-            if (std.mem.eql(u8, method, "replace")) return "string_replace";
-            if (std.mem.eql(u8, method, "parse_int")) return "string_parse_int";
-            if (std.mem.eql(u8, method, "parse_float")) return "string_parse_float";
+        // std.int
+        if (eql(u8, module_name, "int")) {
+            if (eql(u8, method, "to_string")) return "int_to_string";
+            if (eql(u8, method, "abs")) return "int_abs";
+            if (eql(u8, method, "min")) return "int_min";
+            if (eql(u8, method, "max")) return "int_max";
+            if (eql(u8, method, "sign")) return "int_sign";
+            if (eql(u8, method, "parse")) return "int_parse";
+            if (eql(u8, method, "to_i64")) return "int_to_i64";
+            if (eql(u8, method, "to_i32")) return "int_to_i32";
         }
-
-        // std.char builtins
-        if (std.mem.eql(u8, module_name, "char")) {
-            if (std.mem.eql(u8, method, "to_i")) return "char_to_int";
-            if (std.mem.eql(u8, method, "to_i32")) return "char_to_int";
-            if (std.mem.eql(u8, method, "from_i32")) return "char_from_int";
+        // std.float
+        if (eql(u8, module_name, "float")) {
+            if (eql(u8, method, "to_string")) return "float_to_string";
+            if (eql(u8, method, "abs")) return "float_abs";
+            if (eql(u8, method, "floor")) return "float_floor";
+            if (eql(u8, method, "ceil")) return "float_ceil";
+            if (eql(u8, method, "round")) return "float_round";
+            if (eql(u8, method, "sqrt")) return "float_sqrt";
+            if (eql(u8, method, "min")) return "float_min";
+            if (eql(u8, method, "max")) return "float_max";
+            if (eql(u8, method, "is_nan")) return "float_is_nan";
+            if (eql(u8, method, "is_infinite")) return "float_is_infinite";
+            if (eql(u8, method, "from_int")) return "float_from_int";
+            if (eql(u8, method, "parse")) return "float_parse";
         }
-
-        // std.math builtins
-        if (std.mem.eql(u8, module_name, "math")) {
-            if (std.mem.eql(u8, method, "trunc_to_i64")) return "math_trunc_to_i64";
+        // std.string
+        if (eql(u8, module_name, "string")) {
+            if (eql(u8, method, "length")) return "string_length";
+            if (eql(u8, method, "byte_length")) return "string_byte_length";
+            if (eql(u8, method, "char_at")) return "string_char_at";
+            if (eql(u8, method, "split")) return "string_split";
+            if (eql(u8, method, "trim")) return "string_trim";
+            if (eql(u8, method, "concat")) return "string_concat";
+            if (eql(u8, method, "contains")) return "string_contains";
+            if (eql(u8, method, "starts_with")) return "string_starts_with";
+            if (eql(u8, method, "ends_with")) return "string_ends_with";
+            if (eql(u8, method, "substring")) return "string_substring";
+            if (eql(u8, method, "index_of")) return "string_index_of";
+            if (eql(u8, method, "equals")) return "string_equals";
+            if (eql(u8, method, "to_upper")) return "string_to_upper";
+            if (eql(u8, method, "to_lower")) return "string_to_lower";
+            if (eql(u8, method, "replace")) return "string_replace";
+            if (eql(u8, method, "parse_int")) return "string_parse_int";
+            if (eql(u8, method, "parse_float")) return "string_parse_float";
+            if (eql(u8, method, "is_valid_utf8")) return "string_is_valid_utf8";
+            if (eql(u8, method, "chars")) return "string_chars";
+            if (eql(u8, method, "from_int") or eql(u8, method, "from_i32") or
+                eql(u8, method, "from_i64")) return "int_to_string";
+            if (eql(u8, method, "from_float") or eql(u8, method, "from_f32") or
+                eql(u8, method, "from_f64")) return "float_to_string";
+            if (eql(u8, method, "from_bool")) return "string_from_bool";
         }
-
-        // std.fs builtins (Tier 5)
-        if (std.mem.eql(u8, module_name, "fs")) {
-            if (std.mem.eql(u8, method, "read_file")) return "fs_read_file";
-            if (std.mem.eql(u8, method, "write_file")) return "fs_write_file";
-            if (std.mem.eql(u8, method, "exists")) return "fs_exists";
-            if (std.mem.eql(u8, method, "remove")) return "fs_remove";
-            if (std.mem.eql(u8, method, "append_file")) return "fs_append_file";
+        // std.char
+        if (eql(u8, module_name, "char")) {
+            if (eql(u8, method, "to_i") or eql(u8, method, "to_i32")) return "char_to_int";
+            if (eql(u8, method, "from_i32")) return "char_from_int";
         }
-
-        // std.time builtins (Tier 5)
-        if (std.mem.eql(u8, module_name, "time")) {
-            if (std.mem.eql(u8, method, "now")) return "time_now";
-            if (std.mem.eql(u8, method, "sleep")) return "time_sleep";
+        // std.math
+        if (eql(u8, module_name, "math")) {
+            if (eql(u8, method, "trunc_to_i64")) return "math_trunc_to_i64";
         }
-
-        // std.list builtins
-        if (std.mem.eql(u8, module_name, "list")) {
-            if (std.mem.eql(u8, method, "map")) return "list_map";
-            if (std.mem.eql(u8, method, "filter")) return "list_filter";
-            if (std.mem.eql(u8, method, "length")) return "list_length";
+        // std.list
+        if (eql(u8, module_name, "list")) {
+            if (eql(u8, method, "empty")) return "list_empty";
+            if (eql(u8, method, "singleton")) return "list_singleton";
+            if (eql(u8, method, "cons")) return "list_cons";
+            if (eql(u8, method, "head")) return "list_head";
+            if (eql(u8, method, "tail")) return "list_tail";
+            if (eql(u8, method, "length")) return "list_length";
+            if (eql(u8, method, "map")) return "list_map";
+            if (eql(u8, method, "filter")) return "list_filter";
+            if (eql(u8, method, "fold")) return "list_fold";
+            if (eql(u8, method, "fold_right")) return "list_fold_right";
+            if (eql(u8, method, "foreach")) return "list_foreach";
+            if (eql(u8, method, "find")) return "list_find";
+            if (eql(u8, method, "any")) return "list_any";
+            if (eql(u8, method, "all")) return "list_all";
+            if (eql(u8, method, "reverse")) return "list_reverse";
+            if (eql(u8, method, "append")) return "list_append";
+            if (eql(u8, method, "concat")) return "list_concat";
+            if (eql(u8, method, "flatten")) return "list_flatten";
+            if (eql(u8, method, "take")) return "list_take";
+            if (eql(u8, method, "drop")) return "list_drop";
+            if (eql(u8, method, "zip")) return "list_zip";
+            if (eql(u8, method, "parallel_map")) return "list_map";
+            if (eql(u8, method, "parallel_filter")) return "list_filter";
+            if (eql(u8, method, "parallel_fold")) return "list_fold";
         }
-
-        // std.env builtins (Tier 5)
-        if (std.mem.eql(u8, module_name, "env")) {
-            if (std.mem.eql(u8, method, "args")) return "env_args";
+        // std.option
+        if (eql(u8, module_name, "option")) {
+            if (eql(u8, method, "map")) return "option_map";
+            if (eql(u8, method, "and_then")) return "option_and_then";
+            if (eql(u8, method, "unwrap_or")) return "option_unwrap_or";
+            if (eql(u8, method, "is_some")) return "option_is_some";
+            if (eql(u8, method, "is_none")) return "option_is_none";
         }
-
-        // std.assert builtins (Tier 5)
-        if (std.mem.eql(u8, module_name, "assert")) {
-            if (std.mem.eql(u8, method, "assert_eq")) return "assert_eq";
-            if (std.mem.eql(u8, method, "assert_not_eq")) return "assert_not_eq";
-            if (std.mem.eql(u8, method, "assert_contains")) return "assert_contains";
+        // std.result
+        if (eql(u8, module_name, "result")) {
+            if (eql(u8, method, "map")) return "result_map";
+            if (eql(u8, method, "map_err")) return "result_map_err";
+            if (eql(u8, method, "and_then")) return "result_and_then";
+            if (eql(u8, method, "unwrap_or")) return "result_unwrap_or";
+            if (eql(u8, method, "is_ok")) return "result_is_ok";
+            if (eql(u8, method, "is_err")) return "result_is_err";
         }
-
+        // std.map
+        if (eql(u8, module_name, "map")) {
+            if (eql(u8, method, "new")) return "map_new";
+            if (eql(u8, method, "put")) return "map_put";
+            if (eql(u8, method, "get")) return "map_get";
+            if (eql(u8, method, "contains")) return "map_contains";
+            if (eql(u8, method, "remove")) return "map_remove";
+            if (eql(u8, method, "keys")) return "map_keys";
+            if (eql(u8, method, "values")) return "map_values";
+            if (eql(u8, method, "entries")) return "map_entries";
+            if (eql(u8, method, "size")) return "map_size";
+            if (eql(u8, method, "is_empty")) return "map_is_empty";
+        }
+        // std.fs
+        if (eql(u8, module_name, "fs")) {
+            if (eql(u8, method, "read_file")) return "fs_read_file";
+            if (eql(u8, method, "write_file")) return "fs_write_file";
+            if (eql(u8, method, "exists")) return "fs_exists";
+            if (eql(u8, method, "remove")) return "fs_remove";
+            if (eql(u8, method, "append_file")) return "fs_append_file";
+            if (eql(u8, method, "read_dir")) return "fs_read_dir";
+            if (eql(u8, method, "is_file")) return "fs_is_file";
+            if (eql(u8, method, "is_dir")) return "fs_is_dir";
+            if (eql(u8, method, "create_dir")) return "fs_create_dir";
+        }
+        // std.time
+        if (eql(u8, module_name, "time")) {
+            if (eql(u8, method, "now")) return "time_now";
+            if (eql(u8, method, "sleep")) return "time_sleep";
+            if (eql(u8, method, "elapsed")) return "time_elapsed";
+        }
+        // std.env
+        if (eql(u8, module_name, "env")) {
+            if (eql(u8, method, "args")) return "env_args";
+        }
+        // std.assert
+        if (eql(u8, module_name, "assert")) {
+            if (eql(u8, method, "assert_eq")) return "assert_eq";
+            if (eql(u8, method, "assert_not_eq")) return "assert_not_eq";
+            if (eql(u8, method, "assert_contains")) return "assert_contains";
+            if (eql(u8, method, "assert_true") or eql(u8, method, "assert")) return "assert_true";
+            if (eql(u8, method, "assert_false")) return "assert_false";
+            if (eql(u8, method, "fail")) return "assert_fail";
+        }
+        // std.convert
+        if (eql(u8, module_name, "convert")) {
+            if (eql(u8, method, "i32_to_i64") or eql(u8, method, "int_to_i64")) return "int_to_i64";
+            if (eql(u8, method, "i64_to_i32") or eql(u8, method, "int_to_i32")) return "int_to_i32";
+            if (eql(u8, method, "int_to_float") or eql(u8, method, "i64_to_f64")) return "float_from_int";
+            if (eql(u8, method, "float_to_int") or eql(u8, method, "f64_to_i64")) return "math_trunc_to_i64";
+            if (eql(u8, method, "int_to_string")) return "int_to_string";
+            if (eql(u8, method, "float_to_string")) return "float_to_string";
+        }
+        // std.builder
+        if (eql(u8, module_name, "builder")) {
+            if (eql(u8, method, "new")) return "builder_new";
+            if (eql(u8, method, "append")) return "builder_append";
+            if (eql(u8, method, "append_char")) return "builder_append_char";
+            if (eql(u8, method, "append_int")) return "builder_append_int";
+            if (eql(u8, method, "append_float")) return "builder_append_float";
+            if (eql(u8, method, "build")) return "builder_build";
+            if (eql(u8, method, "clear")) return "builder_clear";
+            if (eql(u8, method, "length")) return "builder_length";
+        }
+        // std.net
+        if (eql(u8, module_name, "net")) {
+            if (eql(u8, method, "tcp_listen")) return "net_tcp_listen";
+            if (eql(u8, method, "accept")) return "net_accept";
+            if (eql(u8, method, "read")) return "net_read";
+            if (eql(u8, method, "write")) return "net_write";
+            if (eql(u8, method, "close")) return "net_close";
+            if (eql(u8, method, "close_listener")) return "net_close_listener";
+            if (eql(u8, method, "http_request")) return "net_http_request";
+        }
         return null;
     }
 
