@@ -385,6 +385,325 @@ pub const CCodeGen = struct {
         try self.write("    return (kira_int)(intptr_t)tmp;\n");
         try self.write("}\n\n");
 
+        // --- Additional list operations ---
+        try self.write("static kira_int kira_list_empty(void) {\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int));\n");
+        try self.write("    arr[0] = 0;\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_singleton(kira_int val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int));\n");
+        try self.write("    arr[0] = 1; arr[1] = val;\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_cons(kira_int val, kira_int list_val) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = old[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((len + 2) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = len + 1; arr[1] = val;\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) arr[i + 2] = old[i + 1];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        // head -> Option[T]: Some(tag=0,payload) or None(tag=1)
+        try self.write("static kira_int kira_list_head(kira_int list_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    if (arr[0] == 0) { kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0] = 1; return (kira_int)(intptr_t)n; }\n");
+        try self.write("    kira_int* s = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); s[0] = 0; s[1] = arr[1]; return (kira_int)(intptr_t)s;\n");
+        try self.write("}\n");
+        // tail -> List[T] (empty list if input is empty)
+        try self.write("static kira_int kira_list_tail(kira_int list_val) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = old[0];\n");
+        try self.write("    if (len <= 1) return kira_list_empty();\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC(len * sizeof(kira_int));\n");
+        try self.write("    arr[0] = len - 1;\n");
+        try self.write("    for (kira_int i = 1; i < len; i++) arr[i] = old[i + 1];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("typedef kira_int (*_kira_fn2)(kira_int, kira_int);\n");
+        try self.write("static kira_int kira_list_fold(kira_int list_val, kira_int init, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = arr[0];\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn2 fn = (_kira_fn2)(intptr_t)cl[0];\n");
+        try self.write("    kira_int acc = init;\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) acc = fn(acc, arr[i + 1]);\n");
+        try self.write("    return acc;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_fold_right(kira_int list_val, kira_int init, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = arr[0];\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn2 fn = (_kira_fn2)(intptr_t)cl[0];\n");
+        try self.write("    kira_int acc = init;\n");
+        try self.write("    for (kira_int i = len; i > 0; i--) acc = fn(arr[i], acc);\n");
+        try self.write("    return acc;\n");
+        try self.write("}\n");
+        try self.write("static void kira_list_foreach(kira_int list_val, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = arr[0];\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) fn(arr[i + 1]);\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_find(kira_int list_val, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = arr[0];\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) {\n");
+        try self.write("        if (fn(arr[i + 1])) { kira_int* s = (kira_int*)KIRA_ALLOC(2*sizeof(kira_int)); s[0]=0; s[1]=arr[i+1]; return (kira_int)(intptr_t)s; }\n");
+        try self.write("    }\n");
+        try self.write("    kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0]=1; return (kira_int)(intptr_t)n;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_any(kira_int list_val, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    for (kira_int i = 0; i < arr[0]; i++) if (fn(arr[i+1])) return 1;\n");
+        try self.write("    return 0;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_all(kira_int list_val, kira_int fn_val) {\n");
+        try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    for (kira_int i = 0; i < arr[0]; i++) if (!fn(arr[i+1])) return 0;\n");
+        try self.write("    return 1;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_reverse(kira_int list_val) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = old[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = len;\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) arr[i + 1] = old[len - i];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_append(kira_int a_val, kira_int b_val) {\n");
+        try self.write("    kira_int* a = (kira_int*)(intptr_t)a_val;\n");
+        try self.write("    kira_int* b = (kira_int*)(intptr_t)b_val;\n");
+        try self.write("    kira_int total = a[0] + b[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((total + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = total;\n");
+        try self.write("    for (kira_int i = 0; i < a[0]; i++) arr[i + 1] = a[i + 1];\n");
+        try self.write("    for (kira_int i = 0; i < b[0]; i++) arr[a[0] + i + 1] = b[i + 1];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_take(kira_int list_val, kira_int n) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int len = old[0] < n ? old[0] : n;\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = len;\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) arr[i + 1] = old[i + 1];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_drop(kira_int list_val, kira_int n) {\n");
+        try self.write("    kira_int* old = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int skip = n < old[0] ? n : old[0];\n");
+        try self.write("    kira_int len = old[0] - skip;\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = len;\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) arr[i + 1] = old[skip + i + 1];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_list_zip(kira_int a_val, kira_int b_val) {\n");
+        try self.write("    kira_int* a = (kira_int*)(intptr_t)a_val;\n");
+        try self.write("    kira_int* b = (kira_int*)(intptr_t)b_val;\n");
+        try self.write("    kira_int len = a[0] < b[0] ? a[0] : b[0];\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = len;\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) {\n");
+        try self.write("        kira_int* pair = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int));\n");
+        try self.write("        pair[0] = a[i + 1]; pair[1] = b[i + 1];\n");
+        try self.write("        arr[i + 1] = (kira_int)(intptr_t)pair;\n");
+        try self.write("    }\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n");
+        // list_concat = list_append (alias)
+        // list_flatten: takes list of lists, concatenates them
+        try self.write("static kira_int kira_list_flatten(kira_int list_val) {\n");
+        try self.write("    kira_int* outer = (kira_int*)(intptr_t)list_val;\n");
+        try self.write("    kira_int total = 0;\n");
+        try self.write("    for (kira_int i = 0; i < outer[0]; i++) { kira_int* inner = (kira_int*)(intptr_t)outer[i+1]; total += inner[0]; }\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((total + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = total; kira_int pos = 1;\n");
+        try self.write("    for (kira_int i = 0; i < outer[0]; i++) { kira_int* inner = (kira_int*)(intptr_t)outer[i+1]; for (kira_int j = 0; j < inner[0]; j++) arr[pos++] = inner[j+1]; }\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n\n");
+
+        // --- Option operations (Some=tag 0 with payload, None=tag 1) ---
+        try self.write("static kira_int kira_make_some(kira_int val) {\n");
+        try self.write("    kira_int* v = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int));\n");
+        try self.write("    v[0] = 0; v[1] = val; return (kira_int)(intptr_t)v;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_make_none(void) {\n");
+        try self.write("    kira_int* v = (kira_int*)KIRA_ALLOC(sizeof(kira_int));\n");
+        try self.write("    v[0] = 1; return (kira_int)(intptr_t)v;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_option_is_some(kira_int opt) { return ((kira_int*)(intptr_t)opt)[0] == 0 ? 1 : 0; }\n");
+        try self.write("static kira_int kira_option_is_none(kira_int opt) { return ((kira_int*)(intptr_t)opt)[0] != 0 ? 1 : 0; }\n");
+        try self.write("static kira_int kira_option_unwrap_or(kira_int opt, kira_int def) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
+        try self.write("    return v[0] == 0 ? v[1] : def;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_option_map(kira_int opt, kira_int fn_val) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
+        try self.write("    if (v[0] != 0) return opt;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    return kira_make_some(fn(v[1]));\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_option_and_then(kira_int opt, kira_int fn_val) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
+        try self.write("    if (v[0] != 0) return opt;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    return fn(v[1]);\n");
+        try self.write("}\n\n");
+
+        // --- Result operations (Ok=tag 0, Err=tag 1) ---
+        try self.write("static kira_int kira_result_is_ok(kira_int r) { return ((kira_int*)(intptr_t)r)[0] == 0 ? 1 : 0; }\n");
+        try self.write("static kira_int kira_result_is_err(kira_int r) { return ((kira_int*)(intptr_t)r)[0] != 0 ? 1 : 0; }\n");
+        try self.write("static kira_int kira_result_unwrap_or(kira_int r, kira_int def) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)r;\n");
+        try self.write("    return v[0] == 0 ? v[1] : def;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_result_map(kira_int r, kira_int fn_val) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)r;\n");
+        try self.write("    if (v[0] != 0) return r;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    return kira_make_ok(fn(v[1]));\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_result_map_err(kira_int r, kira_int fn_val) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)r;\n");
+        try self.write("    if (v[0] == 0) return r;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    return kira_make_err((kira_string)(intptr_t)fn(v[1]));\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_result_and_then(kira_int r, kira_int fn_val) {\n");
+        try self.write("    kira_int* v = (kira_int*)(intptr_t)r;\n");
+        try self.write("    if (v[0] != 0) return r;\n");
+        try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
+        try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
+        try self.write("    return fn(v[1]);\n");
+        try self.write("}\n\n");
+
+        // --- StringBuilder operations ---
+        try self.write("/* StringBuilder: [capacity, length, char_data...] stored as kira_int pointer */\n");
+        try self.write("static kira_int kira_builder_new(void) {\n");
+        try self.write("    char* buf = (char*)KIRA_ALLOC(256);\n");
+        try self.write("    buf[0] = '\\0';\n");
+        try self.write("    kira_int* sb = (kira_int*)KIRA_ALLOC(3 * sizeof(kira_int));\n");
+        try self.write("    sb[0] = 256; sb[1] = 0; sb[2] = (kira_int)(intptr_t)buf;\n");
+        try self.write("    return (kira_int)(intptr_t)sb;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_builder_append(kira_int sb_val, kira_string s) {\n");
+        try self.write("    kira_int* sb = (kira_int*)(intptr_t)sb_val;\n");
+        try self.write("    size_t slen = strlen(s);\n");
+        try self.write("    size_t new_len = sb[1] + slen;\n");
+        try self.write("    if ((kira_int)new_len >= sb[0]) {\n");
+        try self.write("        kira_int new_cap = sb[0] * 2; while ((kira_int)new_len >= new_cap) new_cap *= 2;\n");
+        try self.write("        char* new_buf = (char*)KIRA_ALLOC(new_cap);\n");
+        try self.write("        memcpy(new_buf, (char*)(intptr_t)sb[2], sb[1]);\n");
+        try self.write("        sb[0] = new_cap; sb[2] = (kira_int)(intptr_t)new_buf;\n");
+        try self.write("    }\n");
+        try self.write("    memcpy((char*)(intptr_t)sb[2] + sb[1], s, slen + 1);\n");
+        try self.write("    sb[1] = new_len;\n");
+        try self.write("    return sb_val;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_builder_build(kira_int sb_val) {\n");
+        try self.write("    kira_int* sb = (kira_int*)(intptr_t)sb_val;\n");
+        try self.write("    size_t len = sb[1];\n");
+        try self.write("    char* r = (char*)KIRA_ALLOC(len + 1);\n");
+        try self.write("    memcpy(r, (char*)(intptr_t)sb[2], len + 1);\n");
+        try self.write("    return (kira_int)(intptr_t)r;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_builder_length(kira_int sb_val) { return ((kira_int*)(intptr_t)sb_val)[1]; }\n");
+        try self.write("static kira_int kira_builder_clear(kira_int sb_val) {\n");
+        try self.write("    kira_int* sb = (kira_int*)(intptr_t)sb_val;\n");
+        try self.write("    sb[1] = 0; ((char*)(intptr_t)sb[2])[0] = '\\0';\n");
+        try self.write("    return sb_val;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_builder_append_int(kira_int sb_val, kira_int n) {\n");
+        try self.write("    char buf[32]; snprintf(buf, 32, \"%lld\", (long long)n);\n");
+        try self.write("    return kira_builder_append(sb_val, buf);\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_builder_append_float(kira_int sb_val, kira_int f_val) {\n");
+        try self.write("    kira_float f; memcpy(&f, &f_val, sizeof(kira_float));\n");
+        try self.write("    char buf[32]; snprintf(buf, 32, \"%g\", f);\n");
+        try self.write("    return kira_builder_append(sb_val, buf);\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_builder_append_char(kira_int sb_val, kira_int ch) {\n");
+        try self.write("    char buf[2]; buf[0] = (char)ch; buf[1] = '\\0';\n");
+        try self.write("    return kira_builder_append(sb_val, buf);\n");
+        try self.write("}\n\n");
+
+        // --- String extras ---
+        try self.write("static kira_int kira_string_concat(kira_string a, kira_string b) {\n");
+        try self.write("    size_t al = strlen(a), bl = strlen(b);\n");
+        try self.write("    char* r = (char*)KIRA_ALLOC(al + bl + 1);\n");
+        try self.write("    memcpy(r, a, al); memcpy(r + al, b, bl + 1);\n");
+        try self.write("    return (kira_int)(intptr_t)r;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_string_from_bool(kira_int b) {\n");
+        try self.write("    return (kira_int)(intptr_t)(b ? \"true\" : \"false\");\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_string_is_valid_utf8(kira_string s) {\n");
+        try self.write("    while (*s) { unsigned char c = *s; if (c < 0x80) { s++; } else if ((c >> 5) == 0x6) { if ((s[1] >> 6) != 2) return 0; s+=2; } else if ((c >> 4) == 0xe) { if ((s[1]>>6)!=2||(s[2]>>6)!=2) return 0; s+=3; } else if ((c >> 3) == 0x1e) { if ((s[1]>>6)!=2||(s[2]>>6)!=2||(s[3]>>6)!=2) return 0; s+=4; } else return 0; }\n");
+        try self.write("    return 1;\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_string_byte_length(kira_string s) { return (kira_int)strlen(s); }\n");
+        try self.write("static kira_int kira_string_chars(kira_string s) {\n");
+        try self.write("    size_t len = strlen(s);\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((len + 1) * sizeof(kira_int));\n");
+        try self.write("    arr[0] = (kira_int)len;\n");
+        try self.write("    for (size_t i = 0; i < len; i++) arr[i + 1] = (kira_int)(unsigned char)s[i];\n");
+        try self.write("    return (kira_int)(intptr_t)arr;\n");
+        try self.write("}\n\n");
+
+        // --- Filesystem extras ---
+        try self.write("#include <sys/stat.h>\n");
+        try self.write("#include <dirent.h>\n");
+        try self.write("static kira_int kira_fs_is_file(kira_string path) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_is_file\");\n");
+        try self.write("    struct stat st; if (stat(path, &st) != 0) return kira_make_err(\"StatError\");\n");
+        try self.write("    return kira_make_ok(S_ISREG(st.st_mode) ? 1 : 0);\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_fs_is_dir(kira_string path) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_is_dir\");\n");
+        try self.write("    struct stat st; if (stat(path, &st) != 0) return kira_make_err(\"StatError\");\n");
+        try self.write("    return kira_make_ok(S_ISDIR(st.st_mode) ? 1 : 0);\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_fs_create_dir(kira_string path) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_create_dir\");\n");
+        try self.write("    if (mkdir(path, 0755) == 0) return kira_make_ok(0);\n");
+        try self.write("    return kira_make_err(\"MkdirError\");\n");
+        try self.write("}\n");
+        try self.write("static kira_int kira_fs_read_dir(kira_string path) {\n");
+        try self.write("    KIRA_ASSERT_EFFECT(\"fs_read_dir\");\n");
+        try self.write("    DIR* d = opendir(path); if (!d) return kira_make_err(\"OpenDirError\");\n");
+        try self.write("    kira_int cap = 64; kira_int count = 0;\n");
+        try self.write("    kira_int* arr = (kira_int*)KIRA_ALLOC((cap + 1) * sizeof(kira_int));\n");
+        try self.write("    struct dirent* e;\n");
+        try self.write("    while ((e = readdir(d)) != NULL) {\n");
+        try self.write("        if (e->d_name[0] == '.' && (e->d_name[1] == '\\0' || (e->d_name[1] == '.' && e->d_name[2] == '\\0'))) continue;\n");
+        try self.write("        if (count >= cap) { cap *= 2; kira_int* n = (kira_int*)KIRA_ALLOC((cap+1)*sizeof(kira_int)); memcpy(n, arr, (count+1)*sizeof(kira_int)); arr = n; }\n");
+        try self.write("        size_t nl = strlen(e->d_name); char* s = (char*)KIRA_ALLOC(nl+1); memcpy(s, e->d_name, nl+1);\n");
+        try self.write("        arr[count + 1] = (kira_int)(intptr_t)s; count++;\n");
+        try self.write("    }\n");
+        try self.write("    closedir(d); arr[0] = count;\n");
+        try self.write("    return kira_make_ok((kira_int)(intptr_t)arr);\n");
+        try self.write("}\n\n");
+
+        // --- Time extras ---
+        try self.write("static kira_int kira_time_elapsed(kira_int start, kira_int end) { return end - start; }\n\n");
+
+        // --- Assert extras ---
+        try self.write("static void kira_assert_true(kira_int v) { if (!v) { fprintf(stderr, \"Assertion failed: assert_true\\n\"); abort(); } }\n");
+        try self.write("static void kira_assert_false(kira_int v) { if (v) { fprintf(stderr, \"Assertion failed: assert_false\\n\"); abort(); } }\n");
+        try self.write("static void kira_assert_fail(kira_string msg) { fprintf(stderr, \"Assertion failed: %s\\n\", msg); abort(); }\n\n");
+
         // Memoization cache support (general case: linked-list cache)
         try self.write("/* Memoization cache */\n");
         try self.write("#define KIRA_MEMO_ARRAY_SIZE 4096\n");
@@ -575,16 +894,10 @@ pub const CCodeGen = struct {
                 .to_string => self.string_values.put(self.allocator, ref, {}) catch {},
                 .const_bool => self.bool_values.put(self.allocator, ref, {}) catch {},
                 .call_builtin => |cb| {
-                    if (std.mem.eql(u8, cb.name, "int_to_string") or
-                        std.mem.eql(u8, cb.name, "float_to_string") or
-                        std.mem.eql(u8, cb.name, "string_trim") or
-                        std.mem.eql(u8, cb.name, "string_substring") or
-                        std.mem.eql(u8, cb.name, "string_to_upper") or
-                        std.mem.eql(u8, cb.name, "string_to_lower") or
-                        std.mem.eql(u8, cb.name, "string_replace") or
-                        std.mem.eql(u8, cb.name, "read_line"))
-                    {
-                        self.string_values.put(self.allocator, ref, {}) catch {};
+                    if (builtin_registry.get(cb.name)) |spec| {
+                        if (spec.returns_string) {
+                            self.string_values.put(self.allocator, ref, {}) catch {};
+                        }
                     }
                 },
                 else => {},
@@ -983,159 +1296,9 @@ pub const CCodeGen = struct {
                 }
             },
             .call_builtin => |c| {
-                // Runtime builtin calls
-                if (std.mem.eql(u8, c.name, "println")) {
-                    if (c.args.len > 0) {
-                        try self.writeFmt("printf(\"%s\\n\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
-                    } else {
-                        try self.writeFmt("printf(\"\\n\"); v{d} = 0;\n", .{ref});
-                    }
-                } else if (std.mem.eql(u8, c.name, "print")) {
-                    if (c.args.len > 0) {
-                        try self.writeFmt("printf(\"%s\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
-                    } else {
-                        try self.writeFmt("v{d} = 0;\n", .{ref});
-                    }
-                } else if (std.mem.eql(u8, c.name, "eprintln")) {
-                    if (c.args.len > 0) {
-                        try self.writeFmt("fprintf(stderr, \"%s\\n\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
-                    } else {
-                        try self.writeFmt("fprintf(stderr, \"\\n\"); v{d} = 0;\n", .{ref});
-                    }
-                } else if (std.mem.eql(u8, c.name, "int_to_string")) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_int_to_string(v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "float_to_string")) {
-                    try self.writeFmt("{{ char* _s = (char*)KIRA_ALLOC(32); kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); snprintf(_s, 32, \"%g\", _f); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "string_length")) {
-                    try self.writeFmt("v{d} = (kira_int)strlen((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-
-                    // --- Tier 1: already lowered, now codegen'd ---
-                } else if (std.mem.eql(u8, c.name, "string_char_at")) {
-                    try self.writeFmt("v{d} = (kira_int)((const char*)(intptr_t)v{d})[v{d}];\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "string_trim")) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_trim((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "string_split")) {
-                    try self.writeFmt("v{d} = kira_string_split((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "char_to_int")) {
-                    try self.writeFmt("v{d} = v{d};\n", .{ ref, c.args[0] });
-
-                    // --- Tier 2: string operations ---
-                } else if (std.mem.eql(u8, c.name, "string_contains")) {
-                    try self.writeFmt("v{d} = (strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) != NULL) ? 1 : 0;\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "string_starts_with")) {
-                    try self.writeFmt("v{d} = (strncmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}, strlen((const char*)(intptr_t)v{d})) == 0) ? 1 : 0;\n", .{ ref, c.args[0], c.args[1], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "string_ends_with")) {
-                    try self.writeFmt("{{ const char* _s = (const char*)(intptr_t)v{d}; const char* _sfx = (const char*)(intptr_t)v{d}; size_t _sl = strlen(_s), _xl = strlen(_sfx); v{d} = (_sl >= _xl && strcmp(_s + _sl - _xl, _sfx) == 0) ? 1 : 0; }}\n", .{ c.args[0], c.args[1], ref });
-                } else if (std.mem.eql(u8, c.name, "string_substring")) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_substring((const char*)(intptr_t)v{d}, v{d}, v{d});\n", .{ ref, c.args[0], c.args[1], c.args[2] });
-                } else if (std.mem.eql(u8, c.name, "string_index_of")) {
-                    try self.writeFmt("{{ const char* _p = strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}); v{d} = _p ? (kira_int)(_p - (const char*)(intptr_t)v{d}) : -1; }}\n", .{ c.args[0], c.args[1], ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "string_equals")) {
-                    try self.writeFmt("v{d} = (strcmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) == 0) ? 1 : 0;\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "string_to_upper")) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_to_upper((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "string_to_lower")) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_to_lower((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "string_replace")) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_string_replace((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1], c.args[2] });
-                } else if (std.mem.eql(u8, c.name, "string_parse_int")) {
-                    // Returns Option[i64] encoded as variant: tag=0 (None) or tag=1,payload (Some)
-                    try self.writeFmt("{{ char* _end; long long _v = strtoll((const char*)(intptr_t)v{d}, &_end, 10); ", .{c.args[0]});
-                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); _opt[0] = 1; _opt[1] = (kira_int)_v; v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
-                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
-                } else if (std.mem.eql(u8, c.name, "string_parse_float")) {
-                    try self.writeFmt("{{ char* _end; double _v = strtod((const char*)(intptr_t)v{d}, &_end); ", .{c.args[0]});
-                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); _opt[0] = 1; memcpy(&_opt[1], &_v, sizeof(double)); v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
-                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
-
-                    // --- Tier 3: numeric builtins ---
-                } else if (std.mem.eql(u8, c.name, "int_abs")) {
-                    try self.writeFmt("v{d} = (v{d} < 0) ? -v{d} : v{d};\n", .{ ref, c.args[0], c.args[0], c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "int_min")) {
-                    try self.writeFmt("v{d} = (v{d} < v{d}) ? v{d} : v{d};\n", .{ ref, c.args[0], c.args[1], c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "int_max")) {
-                    try self.writeFmt("v{d} = (v{d} > v{d}) ? v{d} : v{d};\n", .{ ref, c.args[0], c.args[1], c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "int_sign")) {
-                    try self.writeFmt("v{d} = (v{d} > 0) - (v{d} < 0);\n", .{ ref, c.args[0], c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "int_parse")) {
-                    // Same as string_parse_int
-                    try self.writeFmt("{{ char* _end; long long _v = strtoll((const char*)(intptr_t)v{d}, &_end, 10); ", .{c.args[0]});
-                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); _opt[0] = 1; _opt[1] = (kira_int)_v; v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
-                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
-                } else if (std.mem.eql(u8, c.name, "float_abs")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = fabs(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_floor")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = floor(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_ceil")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = ceil(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_round")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = round(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_sqrt")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = sqrt(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_min")) {
-                    try self.writeFmt("{{ kira_float _a, _b; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _a = fmin(_a, _b); memcpy(&v{d}, &_a, sizeof(kira_float)); }}\n", .{ c.args[0], c.args[1], ref });
-                } else if (std.mem.eql(u8, c.name, "float_max")) {
-                    try self.writeFmt("{{ kira_float _a, _b; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _a = fmax(_a, _b); memcpy(&v{d}, &_a, sizeof(kira_float)); }}\n", .{ c.args[0], c.args[1], ref });
-                } else if (std.mem.eql(u8, c.name, "float_is_nan")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = isnan(_f) ? 1 : 0; }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_is_infinite")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = isinf(_f) ? 1 : 0; }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_from_int")) {
-                    try self.writeFmt("{{ kira_float _f = (double)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ c.args[0], ref });
-                } else if (std.mem.eql(u8, c.name, "float_parse")) {
-                    try self.writeFmt("{{ char* _end; double _v = strtod((const char*)(intptr_t)v{d}, &_end); ", .{c.args[0]});
-                    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); _opt[0] = 1; memcpy(&_opt[1], &_v, sizeof(double)); v{d} = (kira_int)(intptr_t)_opt; }}", .{ c.args[0], ref });
-                    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
-                } else if (std.mem.eql(u8, c.name, "char_from_int")) {
-                    try self.writeFmt("v{d} = v{d};\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "math_trunc_to_i64")) {
-                    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)trunc(_f); }}\n", .{ c.args[0], ref });
-
-                    // --- Tier 4: IO builtins ---
-                } else if (std.mem.eql(u8, c.name, "eprint")) {
-                    if (c.args.len > 0) {
-                        try self.writeFmt("fprintf(stderr, \"%s\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ c.args[0], ref });
-                    } else {
-                        try self.writeFmt("v{d} = 0;\n", .{ref});
-                    }
-                } else if (std.mem.eql(u8, c.name, "read_line")) {
-                    // read_line returns Result[string, string]: Ok=tag 0, Err=tag 1
-                    try self.writeFmt("{{ char* _buf = (char*)KIRA_ALLOC(4096); if (fgets(_buf, 4096, stdin)) {{ size_t _l = strlen(_buf); if (_l > 0 && _buf[_l-1] == '\\n') _buf[_l-1] = '\\0'; v{d} = kira_make_ok((kira_int)(intptr_t)_buf); }} else {{ v{d} = kira_make_err(\"ReadError\"); }} }}\n", .{ ref, ref });
-
-                    // --- Tier 5: Filesystem builtins ---
-                } else if (std.mem.eql(u8, c.name, "fs_read_file")) {
-                    try self.writeFmt("v{d} = kira_fs_read_file((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "fs_write_file")) {
-                    try self.writeFmt("v{d} = kira_fs_write_file((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "fs_exists")) {
-                    try self.writeFmt("v{d} = kira_fs_exists((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "fs_remove")) {
-                    try self.writeFmt("v{d} = kira_fs_remove((const char*)(intptr_t)v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "fs_append_file")) {
-                    try self.writeFmt("v{d} = kira_fs_append_file((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d});\n", .{ ref, c.args[0], c.args[1] });
-
-                    // --- Tier 5: Time builtins ---
-                } else if (std.mem.eql(u8, c.name, "time_now")) {
-                    try self.writeFmt("v{d} = kira_time_now();\n", .{ref});
-                } else if (std.mem.eql(u8, c.name, "env_args")) {
-                    try self.writeFmt("v{d} = kira_env_args();\n", .{ref});
-                } else if (std.mem.eql(u8, c.name, "list_length")) {
-                    try self.writeFmt("v{d} = kira_list_length(v{d});\n", .{ ref, c.args[0] });
-                } else if (std.mem.eql(u8, c.name, "list_map")) {
-                    try self.writeFmt("v{d} = kira_list_map(v{d}, v{d});\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "list_filter")) {
-                    try self.writeFmt("v{d} = kira_list_filter(v{d}, v{d});\n", .{ ref, c.args[0], c.args[1] });
-                } else if (std.mem.eql(u8, c.name, "time_sleep")) {
-                    try self.writeFmt("kira_time_sleep(v{d}); v{d} = 0;\n", .{ c.args[0], ref });
-
-                    // --- Tier 5: Assert builtins ---
-                } else if (std.mem.eql(u8, c.name, "assert_eq")) {
-                    try self.writeFmt("if (v{d} != v{d}) {{ fprintf(stderr, \"Assertion failed: assert_eq\\n\"); abort(); }} v{d} = 0;\n", .{ c.args[0], c.args[1], ref });
-                } else if (std.mem.eql(u8, c.name, "assert_not_eq")) {
-                    try self.writeFmt("if (v{d} == v{d}) {{ fprintf(stderr, \"Assertion failed: assert_not_eq\\n\"); abort(); }} v{d} = 0;\n", .{ c.args[0], c.args[1], ref });
-                } else if (std.mem.eql(u8, c.name, "assert_contains")) {
-                    try self.writeFmt("if (strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) == NULL) {{ fprintf(stderr, \"Assertion failed: assert_contains\\n\"); abort(); }} v{d} = 0;\n", .{ c.args[0], c.args[1], ref });
-
+                // Dispatch via builtin registry (table-driven)
+                if (builtin_registry.get(c.name)) |spec| {
+                    try spec.emit(self, ref, c.args);
                 } else {
                     // Unknown builtin — emit as comment for debugging
                     try self.writeFmt("v{d} = 0; /* unknown builtin: {s} */\n", .{ ref, c.name });
@@ -1521,6 +1684,357 @@ pub const CCodeGen = struct {
         }
     }
 };
+
+// ================================================================
+// Builtin Registry — Table-driven dispatch for call_builtin
+// ================================================================
+
+/// Specification for a builtin function's codegen.
+const BuiltinSpec = struct {
+    /// Function to emit the C code for this builtin.
+    emit: *const fn (*CCodeGen, ValueRef, []const ValueRef) CodeGenError!void,
+    /// Whether this builtin returns a string value (for strcmp tracking).
+    returns_string: bool = false,
+};
+
+/// Check if argument at `index` should be string-cast based on bitmask.
+fn isStrCast(comptime mask: u8, index: usize) bool {
+    return switch (index) {
+        0 => mask & 0x01 != 0,
+        1 => mask & 0x02 != 0,
+        2 => mask & 0x04 != 0,
+        else => false,
+    };
+}
+
+/// Factory: emit `v{ref} = [cast]c_func([cast_args]...);`
+fn makeCallEmitter(
+    comptime c_func: []const u8,
+    comptime cast_mask: u8,
+    comptime cast_result: bool,
+) *const fn (*CCodeGen, ValueRef, []const ValueRef) CodeGenError!void {
+    return &struct {
+        fn emit(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+            if (cast_result) {
+                try self.writeFmt("v{d} = (kira_int)(intptr_t){s}(", .{ ref, c_func });
+            } else {
+                try self.writeFmt("v{d} = {s}(", .{ ref, c_func });
+            }
+            for (args, 0..) |a, i| {
+                if (i > 0) try self.write(", ");
+                if (isStrCast(cast_mask, i)) {
+                    try self.writeFmt("(const char*)(intptr_t)v{d}", .{a});
+                } else {
+                    try self.writeFmt("v{d}", .{a});
+                }
+            }
+            try self.write(");\n");
+        }
+    }.emit;
+}
+
+/// Factory: emit `c_func([args]...); v{ref} = 0;`
+fn makeVoidCallEmitter(
+    comptime c_func: []const u8,
+    comptime cast_mask: u8,
+) *const fn (*CCodeGen, ValueRef, []const ValueRef) CodeGenError!void {
+    return &struct {
+        fn emit(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+            try self.writeFmt("{s}(", .{c_func});
+            for (args, 0..) |a, i| {
+                if (i > 0) try self.write(", ");
+                if (isStrCast(cast_mask, i)) {
+                    try self.writeFmt("(const char*)(intptr_t)v{d}", .{a});
+                } else {
+                    try self.writeFmt("v{d}", .{a});
+                }
+            }
+            try self.writeFmt("); v{d} = 0;\n", .{ref});
+        }
+    }.emit;
+}
+
+/// Factory: emit float unary op `{ kira_float _f; memcpy(...); _f = cfunc(_f); memcpy(...); }`
+fn makeFloatUnaryEmitter(
+    comptime c_func: []const u8,
+) *const fn (*CCodeGen, ValueRef, []const ValueRef) CodeGenError!void {
+    return &struct {
+        fn emit(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+            try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); _f = {s}(_f); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ args[0], c_func, ref });
+        }
+    }.emit;
+}
+
+/// Factory: emit float binary op
+fn makeFloatBinaryEmitter(
+    comptime c_func: []const u8,
+) *const fn (*CCodeGen, ValueRef, []const ValueRef) CodeGenError!void {
+    return &struct {
+        fn emit(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+            try self.writeFmt("{{ kira_float _a, _b; memcpy(&_a, &v{d}, sizeof(kira_float)); memcpy(&_b, &v{d}, sizeof(kira_float)); _a = {s}(_a, _b); memcpy(&v{d}, &_a, sizeof(kira_float)); }}\n", .{ args[0], args[1], c_func, ref });
+        }
+    }.emit;
+}
+
+/// Factory: emit float predicate `{ kira_float _f; ...; v{ref} = cfunc(_f) ? 1 : 0; }`
+fn makeFloatPredicateEmitter(
+    comptime c_func: []const u8,
+) *const fn (*CCodeGen, ValueRef, []const ValueRef) CodeGenError!void {
+    return &struct {
+        fn emit(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+            try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = {s}(_f) ? 1 : 0; }}\n", .{ args[0], ref, c_func });
+        }
+    }.emit;
+}
+
+// --- Custom emitters for builtins with irregular codegen ---
+
+fn emitIdentity(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = v{d};\n", .{ ref, args[0] });
+}
+
+fn emitPrintln(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    if (args.len > 0) {
+        try self.writeFmt("printf(\"%s\\n\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ args[0], ref });
+    } else {
+        try self.writeFmt("printf(\"\\n\"); v{d} = 0;\n", .{ref});
+    }
+}
+
+fn emitPrint(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    if (args.len > 0) {
+        try self.writeFmt("printf(\"%s\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ args[0], ref });
+    } else {
+        try self.writeFmt("v{d} = 0;\n", .{ref});
+    }
+}
+
+fn emitEprintln(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    if (args.len > 0) {
+        try self.writeFmt("fprintf(stderr, \"%s\\n\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ args[0], ref });
+    } else {
+        try self.writeFmt("fprintf(stderr, \"\\n\"); v{d} = 0;\n", .{ref});
+    }
+}
+
+fn emitEprint(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    if (args.len > 0) {
+        try self.writeFmt("fprintf(stderr, \"%s\", (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ args[0], ref });
+    } else {
+        try self.writeFmt("v{d} = 0;\n", .{ref});
+    }
+}
+
+fn emitReadLine(self: *CCodeGen, ref: ValueRef, _: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ char* _buf = (char*)KIRA_ALLOC(4096); if (fgets(_buf, 4096, stdin)) {{ size_t _l = strlen(_buf); if (_l > 0 && _buf[_l-1] == '\\n') _buf[_l-1] = '\\0'; v{d} = kira_make_ok((kira_int)(intptr_t)_buf); }} else {{ v{d} = kira_make_err(\"ReadError\"); }} }}\n", .{ ref, ref });
+}
+
+fn emitFloatToString(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ char* _s = (char*)KIRA_ALLOC(32); kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); snprintf(_s, 32, \"%g\", _f); v{d} = (kira_int)(intptr_t)_s; }}\n", .{ args[0], ref });
+}
+
+fn emitStringLength(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (kira_int)strlen((const char*)(intptr_t)v{d});\n", .{ ref, args[0] });
+}
+
+fn emitStringCharAt(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (kira_int)((const char*)(intptr_t)v{d})[v{d}];\n", .{ ref, args[0], args[1] });
+}
+
+fn emitStringContains(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) != NULL) ? 1 : 0;\n", .{ ref, args[0], args[1] });
+}
+
+fn emitStringStartsWith(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (strncmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}, strlen((const char*)(intptr_t)v{d})) == 0) ? 1 : 0;\n", .{ ref, args[0], args[1], args[1] });
+}
+
+fn emitStringEndsWith(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ const char* _s = (const char*)(intptr_t)v{d}; const char* _sfx = (const char*)(intptr_t)v{d}; size_t _sl = strlen(_s), _xl = strlen(_sfx); v{d} = (_sl >= _xl && strcmp(_s + _sl - _xl, _sfx) == 0) ? 1 : 0; }}\n", .{ args[0], args[1], ref });
+}
+
+fn emitStringIndexOf(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ const char* _p = strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}); v{d} = _p ? (kira_int)(_p - (const char*)(intptr_t)v{d}) : -1; }}\n", .{ args[0], args[1], ref, args[0] });
+}
+
+fn emitStringEquals(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (strcmp((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) == 0) ? 1 : 0;\n", .{ ref, args[0], args[1] });
+}
+
+fn emitParseInt(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ char* _end; long long _v = strtoll((const char*)(intptr_t)v{d}, &_end, 10); ", .{args[0]});
+    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); _opt[0] = 1; _opt[1] = (kira_int)_v; v{d} = (kira_int)(intptr_t)_opt; }}", .{ args[0], ref });
+    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
+}
+
+fn emitParseFloat(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ char* _end; double _v = strtod((const char*)(intptr_t)v{d}, &_end); ", .{args[0]});
+    try self.writeFmt("if (*_end == '\\0' && _end != (const char*)(intptr_t)v{d}) {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(2 * sizeof(kira_int)); _opt[0] = 1; memcpy(&_opt[1], &_v, sizeof(double)); v{d} = (kira_int)(intptr_t)_opt; }}", .{ args[0], ref });
+    try self.writeFmt(" else {{ kira_int* _opt = (kira_int*)KIRA_ALLOC(1 * sizeof(kira_int)); _opt[0] = 0; v{d} = (kira_int)(intptr_t)_opt; }} }}\n", .{ref});
+}
+
+fn emitIntAbs(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (v{d} < 0) ? -v{d} : v{d};\n", .{ ref, args[0], args[0], args[0] });
+}
+
+fn emitIntMin(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (v{d} < v{d}) ? v{d} : v{d};\n", .{ ref, args[0], args[1], args[0], args[1] });
+}
+
+fn emitIntMax(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (v{d} > v{d}) ? v{d} : v{d};\n", .{ ref, args[0], args[1], args[0], args[1] });
+}
+
+fn emitIntSign(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("v{d} = (v{d} > 0) - (v{d} < 0);\n", .{ ref, args[0], args[0] });
+}
+
+fn emitFloatFromInt(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ kira_float _f = (double)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ args[0], ref });
+}
+
+fn emitMathTruncToI64(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)trunc(_f); }}\n", .{ args[0], ref });
+}
+
+fn emitAssertEq(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("if (v{d} != v{d}) {{ fprintf(stderr, \"Assertion failed: assert_eq\\n\"); abort(); }} v{d} = 0;\n", .{ args[0], args[1], ref });
+}
+
+fn emitAssertNotEq(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("if (v{d} == v{d}) {{ fprintf(stderr, \"Assertion failed: assert_not_eq\\n\"); abort(); }} v{d} = 0;\n", .{ args[0], args[1], ref });
+}
+
+fn emitAssertContains(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("if (strstr((const char*)(intptr_t)v{d}, (const char*)(intptr_t)v{d}) == NULL) {{ fprintf(stderr, \"Assertion failed: assert_contains\\n\"); abort(); }} v{d} = 0;\n", .{ args[0], args[1], ref });
+}
+
+// --- The registry ---
+
+const builtin_registry = std.StaticStringMap(BuiltinSpec).initComptime(.{
+    // IO
+    .{ "println", BuiltinSpec{ .emit =emitPrintln } },
+    .{ "print", BuiltinSpec{ .emit =emitPrint } },
+    .{ "eprintln", BuiltinSpec{ .emit =emitEprintln } },
+    .{ "eprint", BuiltinSpec{ .emit =emitEprint } },
+    .{ "read_line", BuiltinSpec{ .emit =emitReadLine, .returns_string = true } },
+    // Conversion
+    .{ "int_to_string", BuiltinSpec{ .emit =makeCallEmitter("kira_int_to_string", 0, true), .returns_string = true } },
+    .{ "float_to_string", BuiltinSpec{ .emit =emitFloatToString, .returns_string = true } },
+    // String operations
+    .{ "string_length", BuiltinSpec{ .emit =emitStringLength } },
+    .{ "string_char_at", BuiltinSpec{ .emit =emitStringCharAt } },
+    .{ "string_trim", BuiltinSpec{ .emit =makeCallEmitter("kira_string_trim", 0b001, true), .returns_string = true } },
+    .{ "string_split", BuiltinSpec{ .emit =makeCallEmitter("kira_string_split", 0b011, false) } },
+    .{ "string_contains", BuiltinSpec{ .emit =emitStringContains } },
+    .{ "string_starts_with", BuiltinSpec{ .emit =emitStringStartsWith } },
+    .{ "string_ends_with", BuiltinSpec{ .emit =emitStringEndsWith } },
+    .{ "string_substring", BuiltinSpec{ .emit =makeCallEmitter("kira_string_substring", 0b001, true), .returns_string = true } },
+    .{ "string_index_of", BuiltinSpec{ .emit =emitStringIndexOf } },
+    .{ "string_equals", BuiltinSpec{ .emit =emitStringEquals } },
+    .{ "string_to_upper", BuiltinSpec{ .emit =makeCallEmitter("kira_string_to_upper", 0b001, true), .returns_string = true } },
+    .{ "string_to_lower", BuiltinSpec{ .emit =makeCallEmitter("kira_string_to_lower", 0b001, true), .returns_string = true } },
+    .{ "string_replace", BuiltinSpec{ .emit =makeCallEmitter("kira_string_replace", 0b111, true), .returns_string = true } },
+    .{ "string_parse_int", BuiltinSpec{ .emit =emitParseInt } },
+    .{ "string_parse_float", BuiltinSpec{ .emit =emitParseFloat } },
+    .{ "string_concat", BuiltinSpec{ .emit =makeCallEmitter("kira_string_concat", 0b011, false) } },
+    .{ "string_from_bool", BuiltinSpec{ .emit =makeCallEmitter("kira_string_from_bool", 0, false) } },
+    .{ "string_is_valid_utf8", BuiltinSpec{ .emit =makeCallEmitter("kira_string_is_valid_utf8", 0b001, false) } },
+    .{ "string_byte_length", BuiltinSpec{ .emit =makeCallEmitter("kira_string_byte_length", 0b001, false) } },
+    .{ "string_chars", BuiltinSpec{ .emit =makeCallEmitter("kira_string_chars", 0b001, false) } },
+    // Char
+    .{ "char_to_int", BuiltinSpec{ .emit =emitIdentity } },
+    .{ "char_from_int", BuiltinSpec{ .emit =emitIdentity } },
+    // Int operations
+    .{ "int_abs", BuiltinSpec{ .emit =emitIntAbs } },
+    .{ "int_min", BuiltinSpec{ .emit =emitIntMin } },
+    .{ "int_max", BuiltinSpec{ .emit =emitIntMax } },
+    .{ "int_sign", BuiltinSpec{ .emit =emitIntSign } },
+    .{ "int_parse", BuiltinSpec{ .emit =emitParseInt } },
+    .{ "int_to_i64", BuiltinSpec{ .emit =emitIdentity } },
+    .{ "int_to_i32", BuiltinSpec{ .emit =emitIdentity } },
+    // Float operations
+    .{ "float_abs", BuiltinSpec{ .emit =makeFloatUnaryEmitter("fabs") } },
+    .{ "float_floor", BuiltinSpec{ .emit =makeFloatUnaryEmitter("floor") } },
+    .{ "float_ceil", BuiltinSpec{ .emit =makeFloatUnaryEmitter("ceil") } },
+    .{ "float_round", BuiltinSpec{ .emit =makeFloatUnaryEmitter("round") } },
+    .{ "float_sqrt", BuiltinSpec{ .emit =makeFloatUnaryEmitter("sqrt") } },
+    .{ "float_min", BuiltinSpec{ .emit =makeFloatBinaryEmitter("fmin") } },
+    .{ "float_max", BuiltinSpec{ .emit =makeFloatBinaryEmitter("fmax") } },
+    .{ "float_is_nan", BuiltinSpec{ .emit =makeFloatPredicateEmitter("isnan") } },
+    .{ "float_is_infinite", BuiltinSpec{ .emit =makeFloatPredicateEmitter("isinf") } },
+    .{ "float_from_int", BuiltinSpec{ .emit =emitFloatFromInt } },
+    .{ "float_parse", BuiltinSpec{ .emit =emitParseFloat } },
+    // Math
+    .{ "math_trunc_to_i64", BuiltinSpec{ .emit =emitMathTruncToI64 } },
+    // List operations
+    .{ "list_length", BuiltinSpec{ .emit =makeCallEmitter("kira_list_length", 0, false) } },
+    .{ "list_map", BuiltinSpec{ .emit =makeCallEmitter("kira_list_map", 0, false) } },
+    .{ "list_filter", BuiltinSpec{ .emit =makeCallEmitter("kira_list_filter", 0, false) } },
+    .{ "list_empty", BuiltinSpec{ .emit =makeCallEmitter("kira_list_empty", 0, false) } },
+    .{ "list_singleton", BuiltinSpec{ .emit =makeCallEmitter("kira_list_singleton", 0, false) } },
+    .{ "list_cons", BuiltinSpec{ .emit =makeCallEmitter("kira_list_cons", 0, false) } },
+    .{ "list_head", BuiltinSpec{ .emit =makeCallEmitter("kira_list_head", 0, false) } },
+    .{ "list_tail", BuiltinSpec{ .emit =makeCallEmitter("kira_list_tail", 0, false) } },
+    .{ "list_fold", BuiltinSpec{ .emit =makeCallEmitter("kira_list_fold", 0, false) } },
+    .{ "list_fold_right", BuiltinSpec{ .emit =makeCallEmitter("kira_list_fold_right", 0, false) } },
+    .{ "list_foreach", BuiltinSpec{ .emit =makeVoidCallEmitter("kira_list_foreach", 0) } },
+    .{ "list_find", BuiltinSpec{ .emit =makeCallEmitter("kira_list_find", 0, false) } },
+    .{ "list_any", BuiltinSpec{ .emit =makeCallEmitter("kira_list_any", 0, false) } },
+    .{ "list_all", BuiltinSpec{ .emit =makeCallEmitter("kira_list_all", 0, false) } },
+    .{ "list_reverse", BuiltinSpec{ .emit =makeCallEmitter("kira_list_reverse", 0, false) } },
+    .{ "list_append", BuiltinSpec{ .emit =makeCallEmitter("kira_list_append", 0, false) } },
+    .{ "list_concat", BuiltinSpec{ .emit =makeCallEmitter("kira_list_append", 0, false) } },
+    .{ "list_flatten", BuiltinSpec{ .emit =makeCallEmitter("kira_list_flatten", 0, false) } },
+    .{ "list_take", BuiltinSpec{ .emit =makeCallEmitter("kira_list_take", 0, false) } },
+    .{ "list_drop", BuiltinSpec{ .emit =makeCallEmitter("kira_list_drop", 0, false) } },
+    .{ "list_zip", BuiltinSpec{ .emit =makeCallEmitter("kira_list_zip", 0, false) } },
+    // Option operations
+    .{ "option_is_some", BuiltinSpec{ .emit =makeCallEmitter("kira_option_is_some", 0, false) } },
+    .{ "option_is_none", BuiltinSpec{ .emit =makeCallEmitter("kira_option_is_none", 0, false) } },
+    .{ "option_unwrap_or", BuiltinSpec{ .emit =makeCallEmitter("kira_option_unwrap_or", 0, false) } },
+    .{ "option_map", BuiltinSpec{ .emit =makeCallEmitter("kira_option_map", 0, false) } },
+    .{ "option_and_then", BuiltinSpec{ .emit =makeCallEmitter("kira_option_and_then", 0, false) } },
+    // Result operations
+    .{ "result_is_ok", BuiltinSpec{ .emit =makeCallEmitter("kira_result_is_ok", 0, false) } },
+    .{ "result_is_err", BuiltinSpec{ .emit =makeCallEmitter("kira_result_is_err", 0, false) } },
+    .{ "result_unwrap_or", BuiltinSpec{ .emit =makeCallEmitter("kira_result_unwrap_or", 0, false) } },
+    .{ "result_map", BuiltinSpec{ .emit =makeCallEmitter("kira_result_map", 0, false) } },
+    .{ "result_map_err", BuiltinSpec{ .emit =makeCallEmitter("kira_result_map_err", 0, false) } },
+    .{ "result_and_then", BuiltinSpec{ .emit =makeCallEmitter("kira_result_and_then", 0, false) } },
+    // Builder operations
+    .{ "builder_new", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_new", 0, false) } },
+    .{ "builder_append", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_append", 0b010, false) } },
+    .{ "builder_append_char", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_append_char", 0, false) } },
+    .{ "builder_append_int", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_append_int", 0, false) } },
+    .{ "builder_append_float", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_append_float", 0, false) } },
+    .{ "builder_build", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_build", 0, false) } },
+    .{ "builder_clear", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_clear", 0, false) } },
+    .{ "builder_length", BuiltinSpec{ .emit =makeCallEmitter("kira_builder_length", 0, false) } },
+    // Filesystem
+    .{ "fs_read_file", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_read_file", 0b001, false) } },
+    .{ "fs_write_file", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_write_file", 0b011, false) } },
+    .{ "fs_exists", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_exists", 0b001, false) } },
+    .{ "fs_remove", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_remove", 0b001, false) } },
+    .{ "fs_append_file", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_append_file", 0b011, false) } },
+    .{ "fs_read_dir", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_read_dir", 0b001, false) } },
+    .{ "fs_is_file", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_is_file", 0b001, false) } },
+    .{ "fs_is_dir", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_is_dir", 0b001, false) } },
+    .{ "fs_create_dir", BuiltinSpec{ .emit =makeCallEmitter("kira_fs_create_dir", 0b001, false) } },
+    // Time
+    .{ "time_now", BuiltinSpec{ .emit =makeCallEmitter("kira_time_now", 0, false) } },
+    .{ "time_sleep", BuiltinSpec{ .emit =makeVoidCallEmitter("kira_time_sleep", 0) } },
+    .{ "time_elapsed", BuiltinSpec{ .emit =makeCallEmitter("kira_time_elapsed", 0, false) } },
+    // Environment
+    .{ "env_args", BuiltinSpec{ .emit =makeCallEmitter("kira_env_args", 0, false) } },
+    // Assert
+    .{ "assert_eq", BuiltinSpec{ .emit =emitAssertEq } },
+    .{ "assert_not_eq", BuiltinSpec{ .emit =emitAssertNotEq } },
+    .{ "assert_contains", BuiltinSpec{ .emit =emitAssertContains } },
+    .{ "assert_true", BuiltinSpec{ .emit =makeVoidCallEmitter("kira_assert_true", 0) } },
+    .{ "assert_false", BuiltinSpec{ .emit =makeVoidCallEmitter("kira_assert_false", 0) } },
+    .{ "assert_fail", BuiltinSpec{ .emit =makeVoidCallEmitter("kira_assert_fail", 0b001) } },
+});
 
 // ============================================================
 // Tests
