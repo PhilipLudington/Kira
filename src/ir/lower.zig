@@ -60,9 +60,23 @@ pub const Lowerer = struct {
     /// Diagnostic context for the most recent error (set before returning an error).
     error_context: ?ErrorContext = null,
 
+    /// Maps local function names to qualified IR names for cross-module resolution.
+    /// Rebuilt for each module being lowered.
+    import_map: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+    /// Module prefix for the current module being lowered (null for entry module).
+    current_module_prefix: ?[]const u8 = null,
+
     pub const ErrorContext = struct {
         message: []const u8,
         span: Span,
+    };
+
+    /// Info about a loaded module for multi-module lowering.
+    pub const ModuleInfo = struct {
+        /// Dot-separated module path (e.g., "logic.repl")
+        module_path: []const u8,
+        /// The parsed program for this module
+        program: *const Program,
     };
 
     const Scope = std.StringArrayHashMapUnmanaged(ValueRef);
@@ -93,6 +107,7 @@ pub const Lowerer = struct {
         self.scope_stack.deinit(self.allocator);
         self.float_refs.deinit(self.allocator);
         self.string_refs.deinit(self.allocator);
+        self.import_map.deinit(self.allocator);
         self.module.deinit();
     }
 
@@ -101,7 +116,7 @@ pub const Lowerer = struct {
         return self.module.arena.allocator();
     }
 
-    /// Lower an entire program. Returns the IR Module (caller owns it).
+    /// Lower an entire program (single module, no imports). Returns the IR Module (caller owns it).
     pub fn lower(self: *Lowerer, program: *const Program) LowerError!Module {
         // Register built-in type declarations so lookupVariantTag resolves correctly
         // for Option[T] and Result[T, E] even when programs don't explicitly declare them.
@@ -118,6 +133,179 @@ pub const Lowerer = struct {
         const result = self.module;
         self.module = Module.init(self.allocator);
         return result;
+    }
+
+    /// Lower a program with its imported modules. All modules are combined into a
+    /// single IR Module. Functions from imported modules get qualified names
+    /// (e.g., "logic_repl__repl_main") to avoid collisions.
+    pub fn lowerWithModules(self: *Lowerer, entry: *const Program, modules: []const ModuleInfo) LowerError!Module {
+        try self.registerBuiltinTypes();
+
+        // Phase 1: Register forward declarations for ALL modules.
+        // Entry module functions keep their original names.
+        try self.registerForwardDeclarations(entry);
+        // Imported modules get qualified names (prefix__name).
+        for (modules) |mod| {
+            const prefix = self.modulePathToPrefix(mod.module_path) orelse return LowerError.OutOfMemory;
+            try self.registerForwardDeclarationsWithPrefix(mod.program, prefix);
+        }
+
+        // Phase 1b: Pre-register type declarations from all modules
+        // so variant tag lookups work regardless of lowering order.
+        for (modules) |mod| {
+            try self.registerTypeDecls(mod.program);
+        }
+        try self.registerTypeDecls(entry);
+
+        // Phase 1c: Pre-register compile-time constants from all modules
+        // so they're available regardless of lowering order.
+        for (modules) |mod| {
+            const prefix = self.modulePathToPrefix(mod.module_path) orelse return LowerError.OutOfMemory;
+            self.current_module_prefix = prefix;
+            try self.registerConstants(mod.program);
+        }
+        self.current_module_prefix = null;
+        try self.registerConstants(entry);
+
+        // Phase 2: Lower all imported module declarations (dependencies before entry).
+        for (modules) |mod| {
+            const prefix = self.modulePathToPrefix(mod.module_path) orelse return LowerError.OutOfMemory;
+            self.current_module_prefix = prefix;
+            try self.buildImportMap(mod.program, mod.module_path, modules);
+            for (mod.program.declarations) |*decl| {
+                try self.lowerDeclaration(decl);
+            }
+            self.import_map.clearRetainingCapacity();
+        }
+
+        // Phase 3: Lower entry module declarations.
+        self.current_module_prefix = null;
+        try self.buildImportMap(entry, null, modules);
+        for (entry.declarations) |*decl| {
+            try self.lowerDeclaration(decl);
+        }
+        self.import_map.clearRetainingCapacity();
+
+        // Transfer ownership
+        const result = self.module;
+        self.module = Module.init(self.allocator);
+        return result;
+    }
+
+    /// Convert a dot-separated module path to an underscore-separated prefix.
+    /// e.g., "logic.repl" → "logic_repl"
+    fn modulePathToPrefix(self: *Lowerer, module_path: []const u8) ?[]const u8 {
+        const alloc = self.irAlloc();
+        var buf = std.ArrayListUnmanaged(u8){};
+        buf.appendSlice(alloc, module_path) catch return null;
+        // Replace dots with underscores
+        for (buf.items) |*ch| {
+            if (ch.* == '.') ch.* = '_';
+        }
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    /// Create a qualified IR name: "prefix__name"
+    fn qualifiedName(self: *Lowerer, name: []const u8) []const u8 {
+        const prefix = self.current_module_prefix orelse return name;
+        const alloc = self.irAlloc();
+        var buf = std.ArrayListUnmanaged(u8){};
+        buf.appendSlice(alloc, prefix) catch return name;
+        buf.appendSlice(alloc, "__") catch return name;
+        buf.appendSlice(alloc, name) catch return name;
+        return buf.toOwnedSlice(alloc) catch name;
+    }
+
+    /// Build the import map for a module. Maps local names (functions, constants)
+    /// to qualified IR names for cross-module resolution.
+    fn buildImportMap(self: *Lowerer, program: *const Program, self_module_path: ?[]const u8, modules: []const ModuleInfo) LowerError!void {
+        self.import_map.clearRetainingCapacity();
+        const alloc = self.irAlloc();
+
+        // Process import declarations FIRST (imports get lower priority).
+        for (program.imports) |imp| {
+            const imp_path = joinModulePath(alloc, imp.path) orelse continue;
+            const imp_prefix = blk: {
+                var buf = std.ArrayListUnmanaged(u8){};
+                buf.appendSlice(alloc, imp_path) catch continue;
+                for (buf.items) |*ch| {
+                    if (ch.* == '.') ch.* = '_';
+                }
+                break :blk buf.toOwnedSlice(alloc) catch continue;
+            };
+
+            // Find the imported module's program
+            const imp_program = self.findModuleProgram(imp_path, modules) orelse continue;
+
+            if (imp.items) |items| {
+                // Selective import: map each imported item to its qualified name
+                for (items) |item| {
+                    const local_name = item.alias orelse item.name;
+                    const qualified = self.makeQualifiedName(alloc, imp_prefix, item.name) orelse continue;
+                    self.import_map.put(self.allocator, local_name, qualified) catch return LowerError.OutOfMemory;
+                }
+            } else {
+                // Whole-module import: map all declarations (functions, lets, consts)
+                for (imp_program.declarations) |*decl| {
+                    const name: ?[]const u8 = switch (decl.kind) {
+                        .function_decl => |*fd| if (fd.body != null) fd.name else null,
+                        .let_decl => |*ld| ld.name,
+                        .const_decl => |*cd| cd.name,
+                        else => null,
+                    };
+                    if (name) |n| {
+                        const qualified = self.makeQualifiedName(alloc, imp_prefix, n) orelse continue;
+                        self.import_map.put(self.allocator, n, qualified) catch return LowerError.OutOfMemory;
+                    }
+                }
+            }
+        }
+
+        // THEN add self-mappings (own declarations override imports).
+        // This ensures intra-module calls resolve to the module's own functions.
+        if (self_module_path != null) {
+            for (program.declarations) |*decl| {
+                const name: ?[]const u8 = switch (decl.kind) {
+                    .function_decl => |*fd| if (fd.body != null) fd.name else null,
+                    .let_decl => |*ld| ld.name,
+                    .const_decl => |*cd| cd.name,
+                    else => null,
+                };
+                if (name) |n| {
+                    const qname = self.qualifiedName(n);
+                    self.import_map.put(self.allocator, n, qname) catch return LowerError.OutOfMemory;
+                }
+            }
+        }
+    }
+
+    fn findModuleProgram(self: *Lowerer, module_path: []const u8, modules: []const ModuleInfo) ?*const Program {
+        _ = self;
+        for (modules) |mod| {
+            if (std.mem.eql(u8, mod.module_path, module_path)) {
+                return mod.program;
+            }
+        }
+        return null;
+    }
+
+    fn makeQualifiedName(self: *Lowerer, alloc: Allocator, prefix: []const u8, name: []const u8) ?[]const u8 {
+        _ = self;
+        var buf = std.ArrayListUnmanaged(u8){};
+        buf.appendSlice(alloc, prefix) catch return null;
+        buf.appendSlice(alloc, "__") catch return null;
+        buf.appendSlice(alloc, name) catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    fn joinModulePath(alloc: Allocator, path: [][]const u8) ?[]const u8 {
+        if (path.len == 0) return null;
+        var buf = std.ArrayListUnmanaged(u8){};
+        for (path, 0..) |segment, i| {
+            if (i > 0) buf.append(alloc, '.') catch return null;
+            buf.appendSlice(alloc, segment) catch return null;
+        }
+        return buf.toOwnedSlice(alloc) catch null;
     }
 
     /// Register IR type declarations for built-in generic types (Option, Result).
@@ -153,6 +341,19 @@ pub const Lowerer = struct {
                 },
             } },
         }) catch return LowerError.OutOfMemory;
+
+        // List = | Nil | Cons(T, List[T]) — Nil=0, Cons=1
+        _ = self.module.addTypeDecl(.{
+            .name = "List",
+            .kind = .{ .sum_type = .{
+                .variants = blk: {
+                    var v = std.ArrayListUnmanaged(ir.VariantDecl){};
+                    v.append(alloc, .{ .name = "Nil", .tag = 0, .field_count = 0 }) catch return LowerError.OutOfMemory;
+                    v.append(alloc, .{ .name = "Cons", .tag = 1, .field_count = 2 }) catch return LowerError.OutOfMemory;
+                    break :blk v.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+                },
+            } },
+        }) catch return LowerError.OutOfMemory;
     }
 
     /// Pre-register all function names (fn decls and let-bound closures) so that
@@ -178,6 +379,82 @@ pub const Lowerer = struct {
         }
     }
 
+    /// Pre-register type declarations from a program so variant tag lookups
+    /// work regardless of lowering order.
+    fn registerTypeDecls(self: *Lowerer, program: *const Program) LowerError!void {
+        for (program.declarations) |*decl| {
+            if (decl.kind == .type_decl) {
+                const td = &decl.kind.type_decl;
+                // Check if this type is already registered (avoid duplicates)
+                var found = false;
+                for (self.module.type_decls.items) |existing| {
+                    if (std.mem.eql(u8, existing.name, td.name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try self.lowerTypeDecl(td);
+                }
+            }
+        }
+    }
+
+    /// Pre-register compile-time constants from a program. This ensures constants
+    /// are available for all modules regardless of lowering order.
+    fn registerConstants(self: *Lowerer, program: *const Program) LowerError!void {
+        for (program.declarations) |*decl| {
+            switch (decl.kind) {
+                .let_decl => |*ld| {
+                    if (ld.value.kind != .closure) {
+                        if (self.tryConstExpr(ld.value)) |cv| {
+                            const name = self.qualifiedName(ld.name);
+                            if (!self.hasConstant(name)) {
+                                _ = self.module.addConstant(.{ .name = name, .value = cv }) catch return LowerError.OutOfMemory;
+                            }
+                        }
+                    }
+                },
+                .const_decl => |*cd| {
+                    if (self.tryConstExpr(cd.value)) |cv| {
+                        const name = self.qualifiedName(cd.name);
+                        if (!self.hasConstant(name)) {
+                            _ = self.module.addConstant(.{ .name = name, .value = cv }) catch return LowerError.OutOfMemory;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn hasConstant(self: *Lowerer, name: []const u8) bool {
+        for (self.module.constants.items) |c| {
+            if (std.mem.eql(u8, c.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// Register forward declarations with a module prefix for qualified names.
+    fn registerForwardDeclarationsWithPrefix(self: *Lowerer, program: *const Program, prefix: []const u8) LowerError!void {
+        const alloc = self.irAlloc();
+        for (program.declarations) |*decl| {
+            const name: ?[]const u8 = switch (decl.kind) {
+                .function_decl => |*fd| if (fd.body != null) fd.name else null,
+                .let_decl => |*ld| if (ld.value.kind == .closure) ld.name else null,
+                else => null,
+            };
+            if (name) |n| {
+                const qname = self.makeQualifiedName(alloc, prefix, n) orelse return LowerError.OutOfMemory;
+                if (self.module.function_map.get(qname) == null) {
+                    var func = Function.init(alloc);
+                    func.name = qname;
+                    _ = self.module.addFunction(func) catch return LowerError.OutOfMemory;
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------------------
     // Declarations
     // ----------------------------------------------------------------
@@ -188,10 +465,13 @@ pub const Lowerer = struct {
             .const_decl => |*cd| try self.lowerConstDecl(cd),
             .type_decl => |*td| try self.lowerTypeDecl(td),
             .let_decl => |*ld| try self.lowerLetDecl(ld),
-            // Note: test and bench IR functions are emitted unconditionally.
-            // A future build-mode flag could strip them from production output.
-            .test_decl => |*td| try self.lowerTestDecl(td),
-            .bench_decl => |*bd| try self.lowerBenchDecl(bd),
+            // Only emit test/bench from the entry module (not imported modules)
+            .test_decl => |*td| if (self.current_module_prefix == null) {
+                try self.lowerTestDecl(td);
+            },
+            .bench_decl => |*bd| if (self.current_module_prefix == null) {
+                try self.lowerBenchDecl(bd);
+            },
             // Traits, impls, modules, imports are compile-time only — nothing to emit
             .trait_decl, .impl_block, .module_decl, .import_decl => {},
         }
@@ -201,17 +481,20 @@ pub const Lowerer = struct {
         const body = fd.body orelse return; // Signature-only (trait method) — skip
         const alloc = self.irAlloc();
 
+        // Use qualified name if lowering an imported module
+        const func_name = self.qualifiedName(fd.name);
+
         // Reuse pre-registered placeholder if it exists (from registerForwardDeclarations),
         // otherwise create a new entry.
-        const func_idx = if (self.module.function_map.get(fd.name)) |idx| blk: {
+        const func_idx = if (self.module.function_map.get(func_name)) |idx| blk: {
             self.module.functions.items[idx] = Function.init(alloc);
-            self.module.functions.items[idx].name = fd.name;
+            self.module.functions.items[idx].name = func_name;
             self.module.functions.items[idx].is_effect = fd.is_effect;
             self.module.functions.items[idx].is_memoized = fd.is_memoized;
             break :blk idx;
         } else blk: {
             var func = Function.init(alloc);
-            func.name = fd.name;
+            func.name = func_name;
             func.is_effect = fd.is_effect;
             func.is_memoized = fd.is_memoized;
             break :blk self.module.addFunction(func) catch return LowerError.OutOfMemory;
@@ -260,10 +543,13 @@ pub const Lowerer = struct {
     fn lowerConstDecl(self: *Lowerer, cd: *const Declaration.ConstDecl) LowerError!void {
         // Try to evaluate as a compile-time constant
         if (self.tryConstExpr(cd.value)) |cv| {
-            _ = self.module.addConstant(.{
-                .name = cd.name,
-                .value = cv,
-            }) catch return LowerError.OutOfMemory;
+            const name = self.qualifiedName(cd.name);
+            if (!self.hasConstant(name)) {
+                _ = self.module.addConstant(.{
+                    .name = name,
+                    .value = cv,
+                }) catch return LowerError.OutOfMemory;
+            }
         }
         // If not a simple constant, it will be lowered as a global init function later
     }
@@ -324,6 +610,11 @@ pub const Lowerer = struct {
             .type_alias => return, // Type aliases are erased in IR
         };
 
+        // Skip if already registered (e.g., from pre-registration pass or another module)
+        for (self.module.type_decls.items) |existing| {
+            if (std.mem.eql(u8, existing.name, td.name)) return;
+        }
+
         _ = self.module.addTypeDecl(.{
             .name = td.name,
             .kind = kind,
@@ -337,15 +628,18 @@ pub const Lowerer = struct {
             const cl = &ld.value.kind.closure;
             const alloc = self.irAlloc();
 
+            // Use qualified name if lowering an imported module
+            const let_name = self.qualifiedName(ld.name);
+
             // Reuse pre-registered placeholder if it exists
-            const func_idx = if (self.module.function_map.get(ld.name)) |idx| blk: {
+            const func_idx = if (self.module.function_map.get(let_name)) |idx| blk: {
                 self.module.functions.items[idx] = Function.init(alloc);
-                self.module.functions.items[idx].name = ld.name;
+                self.module.functions.items[idx].name = let_name;
                 self.module.functions.items[idx].is_effect = cl.is_effect;
                 break :blk idx;
             } else blk: {
                 var func = Function.init(alloc);
-                func.name = ld.name;
+                func.name = let_name;
                 func.is_effect = cl.is_effect;
                 break :blk self.module.addFunction(func) catch return LowerError.OutOfMemory;
             };
@@ -386,10 +680,13 @@ pub const Lowerer = struct {
         } else {
             // Non-closure: try to evaluate as a compile-time constant
             if (self.tryConstExpr(ld.value)) |cv| {
-                _ = self.module.addConstant(.{
-                    .name = ld.name,
-                    .value = cv,
-                }) catch return LowerError.OutOfMemory;
+                const let_const_name = self.qualifiedName(ld.name);
+                if (!self.hasConstant(let_const_name)) {
+                    _ = self.module.addConstant(.{
+                        .name = let_const_name,
+                        .value = cv,
+                    }) catch return LowerError.OutOfMemory;
+                }
             }
         }
     }
@@ -897,6 +1194,12 @@ pub const Lowerer = struct {
                 if (self.module.function_map.get(id.name) != null) {
                     return self.emit(.{ .func_ref = id.name });
                 }
+                // Check import map for cross-module function references
+                if (self.import_map.get(id.name)) |qualified| {
+                    if (self.module.function_map.get(qualified) != null) {
+                        return self.emit(.{ .func_ref = qualified });
+                    }
+                }
                 // Fall back to module-level constant lookup
                 for (self.module.constants.items) |c| {
                     if (std.mem.eql(u8, c.name, id.name)) {
@@ -908,6 +1211,21 @@ pub const Lowerer = struct {
                             .char => |v| self.emit(.{ .const_char = v }),
                             .void_val => self.emit(.{ .const_void = {} }),
                         };
+                    }
+                }
+                // Check import map for cross-module constant lookup
+                if (self.import_map.get(id.name)) |qualified| {
+                    for (self.module.constants.items) |c| {
+                        if (std.mem.eql(u8, c.name, qualified)) {
+                            return switch (c.value) {
+                                .integer => |v| self.emit(.{ .const_int = .{ .value = v } }),
+                                .float => |v| self.emit(.{ .const_float = v }),
+                                .string => |v| self.emit(.{ .const_string = v }),
+                                .boolean => |v| self.emit(.{ .const_bool = v }),
+                                .char => |v| self.emit(.{ .const_char = v }),
+                                .void_val => self.emit(.{ .const_void = {} }),
+                            };
+                        }
                     }
                 }
                 self.setErrorContext(id.name, expr.span);
@@ -1144,6 +1462,10 @@ pub const Lowerer = struct {
         // Only match if it's a module-level function (not a local variable)
         if (self.lookupVar(name) != null) return null;
         if (self.module.function_map.get(name) != null) return name;
+        // Check import map for cross-module function references
+        if (self.import_map.get(name)) |qualified| {
+            if (self.module.function_map.get(qualified) != null) return qualified;
+        }
         return null;
     }
 

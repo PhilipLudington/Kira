@@ -1248,7 +1248,26 @@ fn buildFileWithIO(allocator: Allocator, path: []const u8, output_path: ?[]const
     var lowerer = Kira.IRLowerer.init(allocator);
     defer lowerer.deinit();
 
-    var ir_module = lowerer.lower(&program) catch |err| {
+    // Collect loaded modules for cross-module lowering
+    var module_infos = std.ArrayListUnmanaged(Kira.IRLowerer.ModuleInfo){};
+    defer module_infos.deinit(allocator);
+    {
+        var loaded_iter = loader.loadedModulesIterator();
+        while (loaded_iter.next()) |entry| {
+            if (entry.value_ptr.program) |prog| {
+                module_infos.append(allocator, .{
+                    .module_path = entry.key_ptr.*,
+                    .program = prog,
+                }) catch {};
+            }
+        }
+    }
+
+    const lower_result = if (module_infos.items.len > 0)
+        lowerer.lowerWithModules(&program, module_infos.items)
+    else
+        lowerer.lower(&program);
+    var ir_module = lower_result catch |err| {
         if (lowerer.getErrorContext()) |ctx| {
             renderer.render(stderr, .{
                 .message = ctx.message,
