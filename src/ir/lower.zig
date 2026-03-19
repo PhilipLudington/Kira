@@ -858,14 +858,13 @@ pub const Lowerer = struct {
     }
 
     fn lowerIfStatement(self: *Lowerer, ifs: *const Statement.IfStatement) LowerError!void {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const cond = try self.lowerExpression(ifs.condition);
 
-        const then_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const then_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
         const else_blk = if (ifs.else_branch != null)
-            func.addBlock(alloc) catch return LowerError.OutOfMemory
+            self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory
         else
             merge_blk;
 
@@ -881,7 +880,7 @@ pub const Lowerer = struct {
         errdefer self.popScope();
         try self.lowerStatements(ifs.then_branch);
         self.popScope();
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             self.setTerminator(.{ .jump = merge_blk });
         }
 
@@ -895,7 +894,7 @@ pub const Lowerer = struct {
                 .else_if => |elif_stmt| try self.lowerStatement(elif_stmt),
             }
             self.popScope();
-            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+            if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
                 self.setTerminator(.{ .jump = merge_blk });
             }
         }
@@ -904,12 +903,11 @@ pub const Lowerer = struct {
     }
 
     fn lowerWhileLoop(self: *Lowerer, wl: *const Statement.WhileLoop) LowerError!void {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
 
-        const cond_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const body_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const exit_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const cond_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const body_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const exit_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         self.setTerminator(.{ .jump = cond_blk });
 
@@ -931,7 +929,7 @@ pub const Lowerer = struct {
         errdefer self.popScope();
         try self.lowerStatements(wl.body);
         self.popScope();
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             self.setTerminator(.{ .jump = cond_blk });
         }
 
@@ -940,11 +938,10 @@ pub const Lowerer = struct {
     }
 
     fn lowerLoopStatement(self: *Lowerer, ls: *const Statement.LoopStatement) LowerError!void {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
 
-        const body_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const exit_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const body_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const exit_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         self.setTerminator(.{ .jump = body_blk });
 
@@ -957,7 +954,7 @@ pub const Lowerer = struct {
         errdefer self.popScope();
         try self.lowerStatements(ls.body);
         self.popScope();
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             self.setTerminator(.{ .jump = body_blk });
         }
 
@@ -966,7 +963,6 @@ pub const Lowerer = struct {
     }
 
     fn lowerForLoop(self: *Lowerer, fl: *const Statement.ForLoop) LowerError!void {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
 
         // Lower the iterable expression
@@ -980,9 +976,9 @@ pub const Lowerer = struct {
         const idx_slot = try self.emit(.{ .alloc_var = .{ .name = "for$idx", .init_value = zero } });
 
         // Create blocks: cond, body, exit
-        const cond_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const body_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const exit_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const cond_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const body_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const exit_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         // Jump from current block to condition
         self.setTerminator(.{ .jump = cond_blk });
@@ -1018,7 +1014,7 @@ pub const Lowerer = struct {
         self.popScope();
 
         // Increment index (only if block not terminated by return/break)
-        if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+        if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
             const cur_idx = try self.emit(.{ .load_var = idx_slot });
             const one = try self.emit(.{ .const_int = .{ .value = 1 } });
             const next_idx = try self.emit(.{ .int_binop = .{ .op = .add, .left = cur_idx, .right = one } });
@@ -1031,7 +1027,6 @@ pub const Lowerer = struct {
     }
 
     fn lowerMatchStatement(self: *Lowerer, ms: *const Statement.MatchStatement) LowerError!void {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const subject = try self.lowerExpression(ms.subject);
 
@@ -1046,19 +1041,19 @@ pub const Lowerer = struct {
             return self.lowerMatchStatementSwitch(ms.arms, subject, context_type);
         }
 
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         // For each arm, create a block
         for (ms.arms) |*arm| {
-            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-            const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+            const arm_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+            const next_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
             // Generate condition check for this arm's pattern
             const matches = try self.lowerPatternCheck(arm.pattern, subject, context_type);
 
             // Apply guard if present
             const final_cond = if (arm.guard) |guard| blk: {
-                const guard_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+                const guard_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
                 self.setTerminator(.{ .branch = .{
                     .condition = matches,
                     .then_block = guard_blk,
@@ -1082,7 +1077,7 @@ pub const Lowerer = struct {
             try self.lowerPatternBindings(arm.pattern, subject);
             try self.lowerStatements(arm.body);
             self.popScope();
-            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+            if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
                 self.setTerminator(.{ .jump = merge_blk });
             }
 
@@ -1129,9 +1124,8 @@ pub const Lowerer = struct {
 
     /// Emit a match statement using switch_tag for constructor-only patterns.
     fn lowerMatchStatementSwitch(self: *Lowerer, arms: anytype, subject: ValueRef, context_type: ?[]const u8) LowerError!void {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         const tag = try self.emit(.{ .get_tag = subject });
 
@@ -1143,7 +1137,7 @@ pub const Lowerer = struct {
         var arm_blocks = std.ArrayListUnmanaged(ArmBlock){};
 
         for (arms, 0..) |*arm, idx| {
-            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+            const arm_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
             arm_blocks.append(alloc, .{ .block = arm_blk, .arm_idx = idx }) catch return LowerError.OutOfMemory;
 
             switch (arm.pattern.kind) {
@@ -1179,7 +1173,7 @@ pub const Lowerer = struct {
             try self.lowerPatternBindings(arms[ab.arm_idx].pattern, subject);
             try self.lowerStatements(arms[ab.arm_idx].body);
             self.popScope();
-            if (func.blocks.items[self.current_block].terminator == .unreachable_term) {
+            if (self.currentFunc().?.blocks.items[self.current_block].terminator == .unreachable_term) {
                 self.setTerminator(.{ .jump = merge_blk });
             }
         }
@@ -1328,15 +1322,14 @@ pub const Lowerer = struct {
     }
 
     fn lowerLogicalAnd(self: *Lowerer, bin: *const Expression.BinaryOp) LowerError!ValueRef {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(bin.left);
         // Capture AFTER evaluating left — bin.left may span multiple blocks
         // (e.g. nested &&), so current_block may have changed.
         const left_blk = self.current_block;
 
-        const right_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const right_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         self.setTerminator(.{ .branch = .{
             .condition = left,
@@ -1358,14 +1351,13 @@ pub const Lowerer = struct {
     }
 
     fn lowerLogicalOr(self: *Lowerer, bin: *const Expression.BinaryOp) LowerError!ValueRef {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(bin.left);
         // Capture AFTER evaluating left — bin.left may span multiple blocks
         const left_blk = self.current_block;
 
-        const right_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const right_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         self.setTerminator(.{ .branch = .{
             .condition = left,
@@ -2039,13 +2031,12 @@ pub const Lowerer = struct {
     }
 
     fn lowerIfExpr(self: *Lowerer, ie: *const Expression.IfExpr) LowerError!ValueRef {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const cond = try self.lowerExpression(ie.condition);
 
-        const then_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const else_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const then_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const else_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         self.setTerminator(.{ .branch = .{
             .condition = cond,
@@ -2074,25 +2065,24 @@ pub const Lowerer = struct {
     }
 
     fn lowerMatchExpr(self: *Lowerer, me: *const Expression.MatchExpr) LowerError!ValueRef {
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const subject = try self.lowerExpression(me.subject);
 
         const context_type = inferTypeFromArms(me.arms) orelse self.inferTypeFromSubject(subject);
 
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
         var incoming = std.ArrayListUnmanaged(Instruction.PhiIncoming){};
 
         for (me.arms) |*arm| {
-            const arm_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-            const next_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+            const arm_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+            const next_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
             // Generate condition check for this arm's pattern
             const matches = try self.lowerPatternCheck(arm.pattern, subject, context_type);
 
             // Apply guard if present
             const final_cond = if (arm.guard) |guard| blk: {
-                const guard_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+                const guard_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
                 self.setTerminator(.{ .branch = .{
                     .condition = matches,
                     .then_block = guard_blk,
@@ -2188,7 +2178,6 @@ pub const Lowerer = struct {
 
     fn lowerNullCoalesce(self: *Lowerer, nc: *const Expression.NullCoalesce) LowerError!ValueRef {
         // Lower as: if (left != None) unwrap(left) else default
-        const func = self.currentFunc().?;
         const alloc = self.irAlloc();
         const left = try self.lowerExpression(nc.left);
 
@@ -2201,9 +2190,9 @@ pub const Lowerer = struct {
         const expected = try self.emit(.{ .const_int = .{ .value = some_tag } });
         const is_some = try self.emit(.{ .cmp = .{ .op = .eq, .left = tag, .right = expected } });
 
-        const some_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const none_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
-        const merge_blk = func.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const some_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const none_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
+        const merge_blk = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
         self.setTerminator(.{ .branch = .{
             .condition = is_some,

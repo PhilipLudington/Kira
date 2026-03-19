@@ -152,8 +152,9 @@ Before Phase 3, these must be true:
 - [x] Build and test kira-lpe — C compiles and runs (1 null-char warning, REPL: interactive only)
 - [x] Build and test kira-http — C generates successfully
 - [x] Build and test kira-pcl — C compiles cleanly (library, no main)
-- [ ] Build and test kira-test — segfault in lowerMatchStatement (pre-existing IR bug)
+- [x] Build and test kira-test — C compiles cleanly (library, no main)
 - [x] Fix closure codegen: uniform _env calling convention
+- [x] Fix pointer invalidation: replace cached func pointers with self.currentFunc() calls
 - [ ] Update BUG.md in each project to mark build bugs as fixed
 
 ### Testing Strategy
@@ -176,5 +177,5 @@ For each project: `kira build`, `cc` the output, run the binary, diff output aga
 - Phase 1: **Complete**
 - Phase 1 → Phase 2: sequential (Phase 2 needs clean builtin infrastructure)
 - Phase 2: **Complete**
-- Phase 3: 6/7 projects build and compile; kira-test blocked by match statement IR bug
-- Remaining: kira-test segfault fix, BUG.md cleanup across projects
+- Phase 3: All 7 projects build and compile successfully
+- Remaining: BUG.md cleanup across projects
