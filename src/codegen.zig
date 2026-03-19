@@ -103,13 +103,13 @@ pub const CCodeGen = struct {
             try self.write("_kira_argv = argv;\n");
             try self.writeIndent();
             if (has_return) {
-                try self.writeFmt("kira_int result = kira_main();\n", .{});
+                try self.writeFmt("kira_int result = kira_main(0);\n", .{});
                 try self.writeIndent();
                 try self.write("printf(\"%lld\\n\", (long long)result);\n");
                 try self.writeIndent();
                 try self.write("return 0;\n");
             } else {
-                try self.write("kira_main();\n");
+                try self.write("kira_main(0);\n");
                 try self.writeIndent();
                 try self.write("return 0;\n");
             }
@@ -363,7 +363,7 @@ pub const CCodeGen = struct {
 
         // List operations (operate on Kira arrays: [length, elem0, elem1, ...])
         try self.write("/* List operations */\n");
-        try self.write("typedef kira_int (*_kira_fn1)(kira_int);\n");
+        try self.write("typedef kira_int (*_kira_fn1)(kira_int, kira_int);\n");
         // list_length: return the length field of a Kira array
         try self.write("static kira_int kira_list_length(kira_int arr_val) {\n");
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)arr_val;\n");
@@ -378,7 +378,7 @@ pub const CCodeGen = struct {
         try self.write("    kira_int* closure = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn_ptr = (_kira_fn1)(intptr_t)closure[0];\n");
         try self.write("    for (kira_int i = 0; i < len; i++) {\n");
-        try self.write("        result[i + 1] = fn_ptr(arr[i + 1]);\n");
+        try self.write("        result[i + 1] = fn_ptr(fn_val, arr[i + 1]);\n");
         try self.write("    }\n");
         try self.write("    return (kira_int)(intptr_t)result;\n");
         try self.write("}\n");
@@ -391,7 +391,7 @@ pub const CCodeGen = struct {
         try self.write("    kira_int* closure = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn_ptr = (_kira_fn1)(intptr_t)closure[0];\n");
         try self.write("    for (kira_int i = 0; i < len; i++) {\n");
-        try self.write("        if (fn_ptr(arr[i + 1])) { tmp[count + 1] = arr[i + 1]; count++; }\n");
+        try self.write("        if (fn_ptr(fn_val, arr[i + 1])) { tmp[count + 1] = arr[i + 1]; count++; }\n");
         try self.write("    }\n");
         try self.write("    tmp[0] = count;\n");
         try self.write("    return (kira_int)(intptr_t)tmp;\n");
@@ -432,14 +432,14 @@ pub const CCodeGen = struct {
         try self.write("    for (kira_int i = 1; i < len; i++) arr[i] = old[i + 1];\n");
         try self.write("    return (kira_int)(intptr_t)arr;\n");
         try self.write("}\n");
-        try self.write("typedef kira_int (*_kira_fn2)(kira_int, kira_int);\n");
+        try self.write("typedef kira_int (*_kira_fn2)(kira_int, kira_int, kira_int);\n");
         try self.write("static kira_int kira_list_fold(kira_int list_val, kira_int init, kira_int fn_val) {\n");
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
         try self.write("    kira_int len = arr[0];\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn2 fn = (_kira_fn2)(intptr_t)cl[0];\n");
         try self.write("    kira_int acc = init;\n");
-        try self.write("    for (kira_int i = 0; i < len; i++) acc = fn(acc, arr[i + 1]);\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) acc = fn(fn_val, acc, arr[i + 1]);\n");
         try self.write("    return acc;\n");
         try self.write("}\n");
         try self.write("static kira_int kira_list_fold_right(kira_int list_val, kira_int init, kira_int fn_val) {\n");
@@ -448,7 +448,7 @@ pub const CCodeGen = struct {
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn2 fn = (_kira_fn2)(intptr_t)cl[0];\n");
         try self.write("    kira_int acc = init;\n");
-        try self.write("    for (kira_int i = len; i > 0; i--) acc = fn(arr[i], acc);\n");
+        try self.write("    for (kira_int i = len; i > 0; i--) acc = fn(fn_val, arr[i], acc);\n");
         try self.write("    return acc;\n");
         try self.write("}\n");
         try self.write("static void kira_list_foreach(kira_int list_val, kira_int fn_val) {\n");
@@ -456,7 +456,7 @@ pub const CCodeGen = struct {
         try self.write("    kira_int len = arr[0];\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    for (kira_int i = 0; i < len; i++) fn(arr[i + 1]);\n");
+        try self.write("    for (kira_int i = 0; i < len; i++) fn(fn_val, arr[i + 1]);\n");
         try self.write("}\n");
         try self.write("static kira_int kira_list_find(kira_int list_val, kira_int fn_val) {\n");
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
@@ -464,7 +464,7 @@ pub const CCodeGen = struct {
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
         try self.write("    for (kira_int i = 0; i < len; i++) {\n");
-        try self.write("        if (fn(arr[i + 1])) { kira_int* s = (kira_int*)KIRA_ALLOC(2*sizeof(kira_int)); s[0]=1; s[1]=arr[i+1]; return (kira_int)(intptr_t)s; }\n");
+        try self.write("        if (fn(fn_val, arr[i + 1])) { kira_int* s = (kira_int*)KIRA_ALLOC(2*sizeof(kira_int)); s[0]=1; s[1]=arr[i+1]; return (kira_int)(intptr_t)s; }\n");
         try self.write("    }\n");
         try self.write("    kira_int* n = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); n[0]=0; return (kira_int)(intptr_t)n;\n");
         try self.write("}\n");
@@ -472,14 +472,14 @@ pub const CCodeGen = struct {
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    for (kira_int i = 0; i < arr[0]; i++) if (fn(arr[i+1])) return 1;\n");
+        try self.write("    for (kira_int i = 0; i < arr[0]; i++) if (fn(fn_val, arr[i+1])) return 1;\n");
         try self.write("    return 0;\n");
         try self.write("}\n");
         try self.write("static kira_int kira_list_all(kira_int list_val, kira_int fn_val) {\n");
         try self.write("    kira_int* arr = (kira_int*)(intptr_t)list_val;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    for (kira_int i = 0; i < arr[0]; i++) if (!fn(arr[i+1])) return 0;\n");
+        try self.write("    for (kira_int i = 0; i < arr[0]; i++) if (!fn(fn_val, arr[i+1])) return 0;\n");
         try self.write("    return 1;\n");
         try self.write("}\n");
         try self.write("static kira_int kira_list_reverse(kira_int list_val) {\n");
@@ -562,14 +562,14 @@ pub const CCodeGen = struct {
         try self.write("    if (v[0] == 0) return opt;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    return kira_make_some(fn(v[1]));\n");
+        try self.write("    return kira_make_some(fn(fn_val, v[1]));\n");
         try self.write("}\n");
         try self.write("static kira_int kira_option_and_then(kira_int opt, kira_int fn_val) {\n");
         try self.write("    kira_int* v = (kira_int*)(intptr_t)opt;\n");
         try self.write("    if (v[0] == 0) return opt;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    return fn(v[1]);\n");
+        try self.write("    return fn(fn_val, v[1]);\n");
         try self.write("}\n\n");
 
         // --- Result operations (Ok=tag 0, Err=tag 1) ---
@@ -584,21 +584,21 @@ pub const CCodeGen = struct {
         try self.write("    if (v[0] != 0) return r;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    return kira_make_ok(fn(v[1]));\n");
+        try self.write("    return kira_make_ok(fn(fn_val, v[1]));\n");
         try self.write("}\n");
         try self.write("static kira_int kira_result_map_err(kira_int r, kira_int fn_val) {\n");
         try self.write("    kira_int* v = (kira_int*)(intptr_t)r;\n");
         try self.write("    if (v[0] == 0) return r;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    return kira_make_err((kira_string)(intptr_t)fn(v[1]));\n");
+        try self.write("    return kira_make_err((kira_string)(intptr_t)fn(fn_val, v[1]));\n");
         try self.write("}\n");
         try self.write("static kira_int kira_result_and_then(kira_int r, kira_int fn_val) {\n");
         try self.write("    kira_int* v = (kira_int*)(intptr_t)r;\n");
         try self.write("    if (v[0] != 0) return r;\n");
         try self.write("    kira_int* cl = (kira_int*)(intptr_t)fn_val;\n");
         try self.write("    _kira_fn1 fn = (_kira_fn1)(intptr_t)cl[0];\n");
-        try self.write("    return fn(v[1]);\n");
+        try self.write("    return fn(fn_val, v[1]);\n");
         try self.write("}\n\n");
 
         // --- StringBuilder operations ---
@@ -1036,13 +1036,12 @@ pub const CCodeGen = struct {
             try self.write(kiraTypeToCType(func.return_type_name));
             try self.write(" ");
             try self.emitFunctionName(func);
-            try self.write("(");
-            for (func.params, 0..) |p, i| {
-                if (i > 0) try self.write(", ");
+            try self.write("(kira_int _env");
+            for (func.params) |p| {
+                try self.write(", ");
                 try self.write(kiraTypeToCType(p.type_name));
                 try self.writeFmt(" {s}", .{sanitizeName(p.name)});
             }
-            if (func.params.len == 0) try self.write("void");
             try self.write(");\n");
 
             // For memoized functions, also forward-declare the _memo_impl version
@@ -1051,13 +1050,12 @@ pub const CCodeGen = struct {
                 try self.write(kiraTypeToCType(func.return_type_name));
                 try self.write(" ");
                 try self.emitFunctionName(func);
-                try self.write("_memo_impl(");
-                for (func.params, 0..) |p, i| {
-                    if (i > 0) try self.write(", ");
+                try self.write("_memo_impl(kira_int _env");
+                for (func.params) |p| {
+                    try self.write(", ");
                     try self.write(kiraTypeToCType(p.type_name));
                     try self.writeFmt(" {s}", .{sanitizeName(p.name)});
                 }
-                if (func.params.len == 0) try self.write("void");
                 try self.write(");\n");
             }
         }
@@ -1136,13 +1134,12 @@ pub const CCodeGen = struct {
         try self.write(" ");
         try self.emitFunctionName(func);
         if (func.is_memoized) try self.write("_memo_impl");
-        try self.write("(");
-        for (func.params, 0..) |p, i| {
-            if (i > 0) try self.write(", ");
+        try self.write("(kira_int _env");
+        for (func.params) |p| {
+            try self.write(", ");
             try self.write(kiraTypeToCType(p.type_name));
             try self.writeFmt(" {s}", .{sanitizeName(p.name)});
         }
-        if (func.params.len == 0) try self.write("void");
         try self.write(") {\n");
         self.indent_level += 1;
 
@@ -1189,13 +1186,12 @@ pub const CCodeGen = struct {
         try self.write(ret_type);
         try self.write(" ");
         try self.emitFunctionName(func);
-        try self.write("(");
-        for (func.params, 0..) |p, i| {
-            if (i > 0) try self.write(", ");
+        try self.write("(kira_int _env");
+        for (func.params) |p| {
+            try self.write(", ");
             try self.write(kiraTypeToCType(p.type_name));
             try self.writeFmt(" {s}", .{sanitizeName(p.name)});
         }
-        if (func.params.len == 0) try self.write("void");
         try self.write(") {\n");
         self.indent_level += 1;
 
@@ -1215,7 +1211,7 @@ pub const CCodeGen = struct {
             try self.writeIndent();
             try self.writeFmt("{s} _result = ", .{ret_type});
             try self.emitFunctionName(func);
-            try self.writeFmt("_memo_impl({s});\n", .{param_name});
+            try self.writeFmt("_memo_impl(_env, {s});\n", .{param_name});
 
             // Store in cache
             try self.writeIndent();
@@ -1254,14 +1250,14 @@ pub const CCodeGen = struct {
             try self.writeIndent();
             if (std.mem.eql(u8, ret_type, "void")) {
                 try self.emitFunctionName(func);
-                try self.write("_memo_impl(");
+                try self.write("_memo_impl(_env");
             } else {
                 try self.writeFmt("{s} _result = ", .{ret_type});
                 try self.emitFunctionName(func);
-                try self.write("_memo_impl(");
+                try self.write("_memo_impl(_env");
             }
-            for (func.params, 0..) |p, i| {
-                if (i > 0) try self.write(", ");
+            for (func.params) |p| {
+                try self.write(", ");
                 try self.write(sanitizeName(p.name));
             }
             try self.write(");\n");
@@ -1456,8 +1452,8 @@ pub const CCodeGen = struct {
             .load_var => |v| try self.writeFmt("v{d} = v{d};\n", .{ ref, v }),
             .store_var => |s| try self.writeFmt("v{d} = v{d}; v{d} = 0;\n", .{ s.target, s.value, ref }),
             .func_ref => |name| {
-                // Emit function pointer as kira_int
-                try self.writeFmt("v{d} = (kira_int)(intptr_t)&kira_{s};\n", .{ ref, name });
+                // Wrap function pointer in closure struct [func_ptr] for uniform calling convention
+                try self.writeFmt("{{ kira_int* _fr = (kira_int*)KIRA_ALLOC(sizeof(kira_int)); _fr[0] = (kira_int)(intptr_t)&kira_{s}; v{d} = (kira_int)(intptr_t)_fr; }}\n", .{ name, ref });
             },
             .call_direct => |c| {
                 // Direct call to a named function
@@ -1479,11 +1475,11 @@ pub const CCodeGen = struct {
                 } else false;
 
                 if (is_void) {
-                    try self.writeFmt("kira_{s}(", .{c.name});
+                    try self.writeFmt("kira_{s}(0", .{c.name});
                 } else if (needs_cast) {
-                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_{s}(", .{ ref, c.name });
+                    try self.writeFmt("v{d} = (kira_int)(intptr_t)kira_{s}(0", .{ ref, c.name });
                 } else {
-                    try self.writeFmt("v{d} = kira_{s}(", .{ ref, c.name });
+                    try self.writeFmt("v{d} = kira_{s}(0", .{ ref, c.name });
                 }
                 // Look up target function params for type-aware argument casting
                 const target_params: ?[]const Function.Param = if (self.current_module) |m| blk: {
@@ -1494,7 +1490,7 @@ pub const CCodeGen = struct {
                 } else null;
 
                 for (c.args, 0..) |a, i| {
-                    if (i > 0) try self.write(", ");
+                    try self.write(", ");
                     // Cast kira_int to proper C type for string/float params
                     if (target_params) |params| {
                         if (i < params.len and std.mem.eql(u8, params[i].type_name, "string")) {
@@ -1524,16 +1520,14 @@ pub const CCodeGen = struct {
                 }
             },
             .call => |c| {
-                // Emit indirect call through function-pointer cast
-                try self.writeFmt("v{d} = ((kira_int(*)(", .{ref});
-                for (0..c.args.len) |i| {
-                    if (i > 0) try self.write(", ");
-                    try self.write("kira_int");
+                // Indirect call: extract func_ptr from closure[0], pass closure as _env
+                try self.writeFmt("v{d} = ((kira_int(*)(kira_int", .{ref});
+                for (0..c.args.len) |_| {
+                    try self.write(", kira_int");
                 }
-                try self.writeFmt("))v{d})(", .{c.callee});
-                for (c.args, 0..) |a, i| {
-                    if (i > 0) try self.write(", ");
-                    try self.writeFmt("v{d}", .{a});
+                try self.writeFmt("))(((kira_int*)(intptr_t)v{d})[0]))(v{d}", .{ c.callee, c.callee });
+                for (c.args) |a| {
+                    try self.writeFmt(", v{d}", .{a});
                 }
                 try self.write(");\n");
             },
@@ -2355,7 +2349,7 @@ test "codegen function call" {
     try gen.generateModule(&module);
 
     const output = gen.getOutput();
-    try std.testing.expect(std.mem.indexOf(u8, output, "kira_caller(int64_t f)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_caller(kira_int _env, int64_t f)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "v0 = f;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "return v2;") != null);
 }
@@ -3055,10 +3049,10 @@ test "codegen typed function signatures" {
     try gen.generateModule(&module);
 
     const output = gen.getOutput();
-    // Forward declaration has proper types
-    try std.testing.expect(std.mem.indexOf(u8, output, "double kira_distance(double x, double y);") != null);
+    // Forward declaration has proper types (with _env hidden param)
+    try std.testing.expect(std.mem.indexOf(u8, output, "double kira_distance(kira_int _env, double x, double y);") != null);
     // Definition also has proper types
-    try std.testing.expect(std.mem.indexOf(u8, output, "double kira_distance(double x, double y) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "double kira_distance(kira_int _env, double x, double y) {") != null);
 }
 
 test "codegen typed record fields" {
@@ -3130,8 +3124,8 @@ test "codegen void return type" {
     try gen.generateModule(&module);
 
     const output = gen.getOutput();
-    // Void function signature
-    try std.testing.expect(std.mem.indexOf(u8, output, "void kira_greet(void)") != null);
+    // Void function signature (with _env hidden param)
+    try std.testing.expect(std.mem.indexOf(u8, output, "void kira_greet(kira_int _env)") != null);
     // Void return (no value)
     try std.testing.expect(std.mem.indexOf(u8, output, "return;\n") != null);
 }
@@ -3164,10 +3158,10 @@ test "codegen mixed typed params" {
     try gen.generateModule(&module);
 
     const output = gen.getOutput();
-    // Forward declaration with mixed types
-    try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(const char* name, int32_t count, bool flag);") != null);
+    // Forward declaration with mixed types (with _env hidden param)
+    try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(kira_int _env, const char* name, int32_t count, bool flag);") != null);
     // Definition with mixed types
-    try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(const char* name, int32_t count, bool flag) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "int32_t kira_process(kira_int _env, const char* name, int32_t count, bool flag) {") != null);
 }
 
 test "codegen effect tracking preamble" {
@@ -3259,7 +3253,7 @@ test "codegen effect function has no pure tracking" {
     try std.testing.expect(std.mem.indexOf(u8, output, "/* effect */ void kira_greet(") != null);
     // Effect function does NOT enter pure context (no ENTER/LEAVE around its body)
     // Find the function body to verify
-    const func_start = std.mem.indexOf(u8, output, "/* effect */ void kira_greet(const char* msg) {") orelse unreachable;
+    const func_start = std.mem.indexOf(u8, output, "/* effect */ void kira_greet(kira_int _env, const char* msg) {") orelse unreachable;
     const func_body = output[func_start..];
     const func_end = std.mem.indexOf(u8, func_body, "}\n\n") orelse unreachable;
     const body = func_body[0..func_end];
@@ -3311,9 +3305,9 @@ test "codegen mixed pure and effect functions" {
     try std.testing.expect(std.mem.indexOf(u8, output, "/* pure */ int32_t kira_double(") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "/* effect */ void kira_main(") != null);
     // Function definitions preserve annotations
-    const pure_def = std.mem.indexOf(u8, output, "/* pure */ int32_t kira_double(int32_t x) {");
+    const pure_def = std.mem.indexOf(u8, output, "/* pure */ int32_t kira_double(kira_int _env, int32_t x) {");
     try std.testing.expect(pure_def != null);
-    const effect_def = std.mem.indexOf(u8, output, "/* effect */ void kira_main(void) {");
+    const effect_def = std.mem.indexOf(u8, output, "/* effect */ void kira_main(kira_int _env) {");
     try std.testing.expect(effect_def != null);
 }
 
@@ -3347,17 +3341,17 @@ test "codegen memoized function emits cache wrapper" {
     try std.testing.expect(std.mem.indexOf(u8, output, "/* memo */ int32_t kira_fib(") != null);
     // Forward declaration for impl
     try std.testing.expect(std.mem.indexOf(u8, output, "static int32_t kira_fib_memo_impl(") != null);
-    // Impl function body
-    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo impl */ int32_t kira_fib_memo_impl(int32_t n) {") != null);
+    // Impl function body (with _env hidden param)
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo impl */ int32_t kira_fib_memo_impl(kira_int _env, int32_t n) {") != null);
     // Wrapper function with cache
-    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo wrapper */ int32_t kira_fib(int32_t n) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "/* memo wrapper */ int32_t kira_fib(kira_int _env, int32_t n) {") != null);
     // Uses array cache (single int param)
     try std.testing.expect(std.mem.indexOf(u8, output, "static int32_t _cache[KIRA_MEMO_ARRAY_SIZE]") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "static bool _set[KIRA_MEMO_ARRAY_SIZE]") != null);
     // Cache lookup
     try std.testing.expect(std.mem.indexOf(u8, output, "if (n >= 0 && n < KIRA_MEMO_ARRAY_SIZE && _set[n]) return _cache[n]") != null);
-    // Calls impl
-    try std.testing.expect(std.mem.indexOf(u8, output, "kira_fib_memo_impl(n)") != null);
+    // Calls impl (with _env)
+    try std.testing.expect(std.mem.indexOf(u8, output, "kira_fib_memo_impl(_env, n)") != null);
     // Preamble has memo infrastructure
     try std.testing.expect(std.mem.indexOf(u8, output, "#define KIRA_MEMO_ARRAY_SIZE 4096") != null);
 }
