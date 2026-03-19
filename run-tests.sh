@@ -13,14 +13,19 @@ TEST_EXIT_CODE=$?
 PASSED=0
 FAILED=0
 
-# Parse the summary line: "X/Y tests passed" or "X passed, Y failed"
-# Zig 0.15 with --summary all outputs: "192/192 tests passed"
+# Parse the summary line: "X/Y tests passed; Z skipped" or "X passed, Y failed"
+# Zig 0.15 with --summary all outputs: "683/685 tests passed; 2 skipped"
 if echo "$OUTPUT" | grep -qE '[0-9]+/[0-9]+ tests passed'; then
     # Extract "X/Y tests passed" format
     COUNTS=$(echo "$OUTPUT" | grep -oE '[0-9]+/[0-9]+ tests passed' | head -1)
     PASSED=$(echo "$COUNTS" | grep -oE '^[0-9]+')
     TOTAL=$(echo "$COUNTS" | grep -oE '/[0-9]+' | tr -d '/')
-    FAILED=$((TOTAL - PASSED))
+    # Account for skipped tests (not failures)
+    SKIPPED=0
+    if echo "$OUTPUT" | grep -qE '[0-9]+ skipped'; then
+        SKIPPED=$(echo "$OUTPUT" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' | head -1)
+    fi
+    FAILED=$((TOTAL - PASSED - SKIPPED))
 elif echo "$OUTPUT" | grep -qE '[0-9]+ passed'; then
     # Alternative format: "X passed"
     PASSED=$(echo "$OUTPUT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
