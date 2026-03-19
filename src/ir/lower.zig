@@ -57,6 +57,8 @@ pub const Lowerer = struct {
     float_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
     /// ValueRefs known to produce string values.
     string_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
+    /// ValueRefs known to produce char values (from param/capture type info).
+    char_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
     /// Diagnostic context for the most recent error (set before returning an error).
     error_context: ?ErrorContext = null,
 
@@ -91,6 +93,7 @@ pub const Lowerer = struct {
             .break_target = null,
             .float_refs = .{},
             .string_refs = .{},
+            .char_refs = .{},
         };
     }
 
@@ -107,6 +110,7 @@ pub const Lowerer = struct {
         self.scope_stack.deinit(self.allocator);
         self.float_refs.deinit(self.allocator);
         self.string_refs.deinit(self.allocator);
+        self.char_refs.deinit(self.allocator);
         self.import_map.deinit(self.allocator);
         self.module.deinit();
     }
@@ -502,9 +506,10 @@ pub const Lowerer = struct {
         self.current_func_idx = func_idx;
         errdefer self.current_func_idx = null;
 
-        // Clear per-function float tracking (ValueRefs are function-local indices)
+        // Clear per-function type tracking (ValueRefs are function-local indices)
         self.float_refs.clearRetainingCapacity();
         self.string_refs.clearRetainingCapacity();
+        self.char_refs.clearRetainingCapacity();
 
         // Create entry block (so param instructions can be emitted into it)
         self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
@@ -517,6 +522,7 @@ pub const Lowerer = struct {
         for (fd.parameters, 0..) |param, i| {
             const vref = try self.emit(.{ .param = @intCast(i) });
             if (isAstTypeFloat(param.param_type)) try self.markFloat(vref);
+            if (isAstTypeChar(param.param_type)) try self.markChar(vref);
             params.append(alloc, .{
                 .name = param.name,
                 .value_ref = vref,
@@ -648,6 +654,7 @@ pub const Lowerer = struct {
 
             self.float_refs.clearRetainingCapacity();
             self.string_refs.clearRetainingCapacity();
+            self.char_refs.clearRetainingCapacity();
 
             self.current_block = self.currentFunc().?.addBlock(alloc) catch return LowerError.OutOfMemory;
 
@@ -658,6 +665,7 @@ pub const Lowerer = struct {
             for (cl.parameters, 0..) |param, i| {
                 const vref = try self.emit(.{ .param = @intCast(i) });
                 if (isAstTypeFloat(param.param_type)) try self.markFloat(vref);
+                if (isAstTypeChar(param.param_type)) try self.markChar(vref);
                 params.append(alloc, .{
                     .name = param.name,
                     .value_ref = vref,
@@ -803,6 +811,9 @@ pub const Lowerer = struct {
 
     fn lowerLetBinding(self: *Lowerer, lb: *const Statement.LetBinding) LowerError!void {
         const val = try self.lowerExpression(lb.initializer);
+        // Track type from explicit annotation
+        if (isAstTypeChar(lb.explicit_type)) self.markChar(val) catch {};
+        if (isAstTypeFloat(lb.explicit_type)) self.markFloat(val) catch {};
         // Simple identifier pattern — just bind the name
         switch (lb.pattern.kind) {
             .identifier => |id| try self.defineVar(id.name, val),
@@ -818,6 +829,9 @@ pub const Lowerer = struct {
     fn lowerVarBinding(self: *Lowerer, vb: *const Statement.VarBinding) LowerError!void {
         const init_val: ?ValueRef = if (vb.initializer) |init_expr| try self.lowerExpression(init_expr) else null;
         const slot = try self.emit(.{ .alloc_var = .{ .name = vb.name, .init_value = init_val } });
+        // Track type from explicit annotation
+        if (isAstTypeChar(vb.explicit_type)) self.markChar(slot) catch {};
+        if (isAstTypeFloat(vb.explicit_type)) self.markFloat(slot) catch {};
         try self.defineVar(vb.name, slot);
     }
 
@@ -1410,6 +1424,11 @@ pub const Lowerer = struct {
             } });
         }
 
+        // Check for standalone runtime builtins (to_string, to_float, assert, etc.)
+        if (try self.tryResolveStandaloneBuiltin(call)) |result| {
+            return result;
+        }
+
         // General case: indirect call through a value
         const callee = try self.lowerExpression(call.callee);
         var args = std.ArrayListUnmanaged(ValueRef){};
@@ -1466,6 +1485,111 @@ pub const Lowerer = struct {
         if (self.import_map.get(name)) |qualified| {
             if (self.module.function_map.get(qualified) != null) return qualified;
         }
+        return null;
+    }
+
+    /// Check if a function call targets a standalone runtime builtin (e.g., bare
+    /// `to_string(x)`, `to_float(x)`, `assert(cond, msg)`). These are top-level
+    /// builtins recognised by the resolver/interpreter but without a `std.*` prefix.
+    /// For polymorphic builtins like `to_string`, the dispatched builtin name depends
+    /// on the argument's tracked type (char → char_to_string, float → float_to_string,
+    /// int → int_to_string).
+    fn tryResolveStandaloneBuiltin(self: *Lowerer, call: *const Expression.FunctionCall) LowerError!?ValueRef {
+        if (call.callee.kind != .identifier) return null;
+        const name = call.callee.kind.identifier.name;
+        // Only match if NOT already resolved as a user function or local variable
+        if (self.lookupVar(name) != null) return null;
+        if (self.module.function_map.get(name) != null) return null;
+        if (self.import_map.get(name)) |qualified| {
+            if (self.module.function_map.get(qualified) != null) return null;
+        }
+
+        const alloc = self.irAlloc();
+        const eql = std.mem.eql;
+
+        if (eql(u8, name, "to_string")) {
+            if (call.arguments.len != 1) return null;
+            const arg = try self.lowerExpression(call.arguments[0]);
+            // Dispatch based on tracked type of argument
+            const builtin_name: []const u8 = if (self.isCharValue(arg))
+                "char_to_string"
+            else if (self.isFloatValue(arg))
+                "float_to_string"
+            else
+                "int_to_string";
+            const ref = try self.emit(.{ .call_builtin = .{
+                .name = builtin_name,
+                .args = blk: {
+                    var a = std.ArrayListUnmanaged(ValueRef){};
+                    a.append(alloc, arg) catch return LowerError.OutOfMemory;
+                    break :blk a.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+                },
+            } });
+            try self.markString(ref);
+            return ref;
+        }
+
+        if (eql(u8, name, "to_float")) {
+            if (call.arguments.len != 1) return null;
+            const arg = try self.lowerExpression(call.arguments[0]);
+            const builtin_name: []const u8 = if (self.isStringValue(arg))
+                "to_float_string"
+            else
+                "float_from_int";
+            const ref = try self.emit(.{ .call_builtin = .{
+                .name = builtin_name,
+                .args = blk: {
+                    var a = std.ArrayListUnmanaged(ValueRef){};
+                    a.append(alloc, arg) catch return LowerError.OutOfMemory;
+                    break :blk a.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+                },
+            } });
+            try self.markFloat(ref);
+            return ref;
+        }
+
+        if (eql(u8, name, "to_int")) {
+            if (call.arguments.len != 1) return null;
+            const arg = try self.lowerExpression(call.arguments[0]);
+            const builtin_name: []const u8 = if (self.isStringValue(arg))
+                "int_parse"
+            else if (self.isFloatValue(arg))
+                "float_to_int"
+            else
+                "identity";
+            return try self.emit(.{ .call_builtin = .{
+                .name = builtin_name,
+                .args = blk: {
+                    var a = std.ArrayListUnmanaged(ValueRef){};
+                    a.append(alloc, arg) catch return LowerError.OutOfMemory;
+                    break :blk a.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
+                },
+            } });
+        }
+
+        if (eql(u8, name, "assert")) {
+            // assert(condition, message) or assert(condition)
+            var args = std.ArrayListUnmanaged(ValueRef){};
+            for (call.arguments) |arg| {
+                args.append(alloc, try self.lowerExpression(arg)) catch return LowerError.OutOfMemory;
+            }
+            return try self.emit(.{ .call_builtin = .{
+                .name = "assert",
+                .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            } });
+        }
+
+        if (eql(u8, name, "print") or eql(u8, name, "println")) {
+            var args = std.ArrayListUnmanaged(ValueRef){};
+            for (call.arguments) |arg| {
+                args.append(alloc, try self.lowerExpression(arg)) catch return LowerError.OutOfMemory;
+            }
+            return try self.emit(.{ .call_builtin = .{
+                .name = name,
+                .args = args.toOwnedSlice(alloc) catch return LowerError.OutOfMemory,
+            } });
+        }
+
         return null;
     }
 
@@ -1815,19 +1939,24 @@ pub const Lowerer = struct {
         defer capture_refs.deinit(self.allocator);
         try self.collectFreeVariables(cl.body, &capture_names, &capture_refs);
 
-        // Record which captures are float-typed (from outer scope) before clearing
+        // Record which captures are float/char-typed (from outer scope) before clearing
         var capture_is_float = std.ArrayListUnmanaged(bool){};
         defer capture_is_float.deinit(self.allocator);
+        var capture_is_char = std.ArrayListUnmanaged(bool){};
+        defer capture_is_char.deinit(self.allocator);
         for (capture_refs.items) |outer_ref| {
             capture_is_float.append(self.allocator, self.float_refs.contains(outer_ref)) catch return LowerError.OutOfMemory;
+            capture_is_char.append(self.allocator, self.char_refs.contains(outer_ref)) catch return LowerError.OutOfMemory;
         }
 
-        // Switch to closure function context with fresh float/string tracking.
+        // Switch to closure function context with fresh float/string/char tracking.
         // Use a nested block so errdefer cleanup is scoped to closure lowering only.
         const saved_float_refs = self.float_refs;
         self.float_refs = .{};
         const saved_string_refs = self.string_refs;
         self.string_refs = .{};
+        const saved_char_refs = self.char_refs;
+        self.char_refs = .{};
 
         self.current_func_idx = func_idx;
 
@@ -1837,6 +1966,8 @@ pub const Lowerer = struct {
                 self.float_refs = saved_float_refs;
                 self.string_refs.deinit(self.allocator);
                 self.string_refs = saved_string_refs;
+                self.char_refs.deinit(self.allocator);
+                self.char_refs = saved_char_refs;
                 self.current_func_idx = saved_func_idx;
                 self.current_block = saved_block;
             }
@@ -1851,6 +1982,7 @@ pub const Lowerer = struct {
             for (cl.parameters, 0..) |param, i| {
                 const vref = try self.emit(.{ .param = @intCast(i) });
                 if (isAstTypeFloat(param.param_type)) try self.markFloat(vref);
+                if (isAstTypeChar(param.param_type)) try self.markChar(vref);
                 params.append(alloc, .{
                     .name = param.name,
                     .value_ref = vref,
@@ -1861,11 +1993,12 @@ pub const Lowerer = struct {
             self.currentFunc().?.params = params.toOwnedSlice(alloc) catch return LowerError.OutOfMemory;
             self.currentFunc().?.return_type_name = astTypeToName(cl.return_type);
 
-            // Define captures in the closure's scope, propagating float status
+            // Define captures in the closure's scope, propagating float/char status
             var captures = std.ArrayListUnmanaged(Function.Capture){};
             for (capture_names.items, 0..) |name, i| {
                 const cap_ref = try self.emit(.{ .capture = @intCast(i) });
                 if (capture_is_float.items[i]) try self.markFloat(cap_ref);
+                if (capture_is_char.items[i]) try self.markChar(cap_ref);
                 captures.append(alloc, .{
                     .name = name,
                     .value_ref = cap_ref,
@@ -1893,6 +2026,8 @@ pub const Lowerer = struct {
         self.float_refs = saved_float_refs;
         self.string_refs.deinit(self.allocator);
         self.string_refs = saved_string_refs;
+        self.char_refs.deinit(self.allocator);
+        self.char_refs = saved_char_refs;
         self.current_func_idx = saved_func_idx;
         self.current_block = saved_block;
 
@@ -2360,6 +2495,30 @@ pub const Lowerer = struct {
 
     fn markString(self: *Lowerer, ref: ValueRef) LowerError!void {
         self.string_refs.put(self.allocator, ref, {}) catch return LowerError.OutOfMemory;
+    }
+
+    /// Check if a ValueRef produces a char value.
+    fn isCharValue(self: *Lowerer, ref: ValueRef) bool {
+        if (self.char_refs.contains(ref)) return true;
+        const func = self.currentFunc() orelse return false;
+        if (ref >= func.instructions.items.len) return false;
+        return switch (func.instructions.items[ref].op) {
+            .const_char => true,
+            else => false,
+        };
+    }
+
+    /// Check if an AST type is a char primitive.
+    fn isAstTypeChar(param_type: *const Type) bool {
+        return switch (param_type.kind) {
+            .primitive => |p| p == .char,
+            else => false,
+        };
+    }
+
+    /// Register a ValueRef as char-typed (for params/captures with char types).
+    fn markChar(self: *Lowerer, ref: ValueRef) LowerError!void {
+        self.char_refs.put(self.allocator, ref, {}) catch return LowerError.OutOfMemory;
     }
 
     /// Look up a variant's numeric tag from the module's type declarations (C6/L4 fix).

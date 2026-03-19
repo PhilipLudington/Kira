@@ -175,6 +175,18 @@ pub const CCodeGen = struct {
         try self.write("    char* s = (char*)KIRA_ALLOC(32);\n");
         try self.write("    snprintf(s, 32, \"%lld\", (long long)n);\n");
         try self.write("    return s;\n");
+        try self.write("}\n");
+        try self.write("static kira_string kira_char_to_string(kira_int c) {\n");
+        try self.write("    char* s = (char*)KIRA_ALLOC(5);\n");
+        try self.write("    uint32_t cp = (uint32_t)c;\n");
+        try self.write("    if (cp < 0x80) { s[0] = (char)cp; s[1] = '\\0'; }\n");
+        try self.write("    else if (cp < 0x800) { s[0] = (char)(0xC0|(cp>>6)); s[1] = (char)(0x80|(cp&0x3F)); s[2] = '\\0'; }\n");
+        try self.write("    else if (cp < 0x10000) { s[0] = (char)(0xE0|(cp>>12)); s[1] = (char)(0x80|((cp>>6)&0x3F)); s[2] = (char)(0x80|(cp&0x3F)); s[3] = '\\0'; }\n");
+        try self.write("    else { s[0] = (char)(0xF0|(cp>>18)); s[1] = (char)(0x80|((cp>>12)&0x3F)); s[2] = (char)(0x80|((cp>>6)&0x3F)); s[3] = (char)(0x80|(cp&0x3F)); s[4] = '\\0'; }\n");
+        try self.write("    return s;\n");
+        try self.write("}\n");
+        try self.write("static void kira_assert(kira_int cond, kira_string msg) {\n");
+        try self.write("    if (!cond) { fprintf(stderr, \"Assertion failed: %s\\n\", msg); abort(); }\n");
         try self.write("}\n\n");
 
         // String helper functions
@@ -2100,6 +2112,25 @@ fn emitFloatFromInt(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) Code
     try self.writeFmt("{{ kira_float _f = (double)v{d}; memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ args[0], ref });
 }
 
+fn emitFloatToInt(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)_f; }}\n", .{ args[0], ref });
+}
+
+/// Parse string to float directly (no Option wrapping). Used by bare `to_float(s)`.
+fn emitToFloatString(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    try self.writeFmt("{{ kira_float _f = strtod((const char*)(intptr_t)v{d}, NULL); memcpy(&v{d}, &_f, sizeof(kira_float)); }}\n", .{ args[0], ref });
+}
+
+fn emitAssert(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
+    if (args.len >= 2) {
+        try self.writeFmt("kira_assert(v{d}, (const char*)(intptr_t)v{d}); v{d} = 0;\n", .{ args[0], args[1], ref });
+    } else if (args.len == 1) {
+        try self.writeFmt("kira_assert(v{d}, \"assertion failed\"); v{d} = 0;\n", .{ args[0], ref });
+    } else {
+        try self.writeFmt("v{d} = 0;\n", .{ref});
+    }
+}
+
 fn emitMathTruncToI64(self: *CCodeGen, ref: ValueRef, args: []const ValueRef) CodeGenError!void {
     try self.writeFmt("{{ kira_float _f; memcpy(&_f, &v{d}, sizeof(kira_float)); v{d} = (kira_int)trunc(_f); }}\n", .{ args[0], ref });
 }
@@ -2128,6 +2159,12 @@ const builtin_registry = std.StaticStringMap(BuiltinSpec).initComptime(.{
     // Conversion
     .{ "int_to_string", BuiltinSpec{ .emit =makeCallEmitter("kira_int_to_string", 0, true), .returns_string = true } },
     .{ "float_to_string", BuiltinSpec{ .emit =emitFloatToString, .returns_string = true } },
+    .{ "char_to_string", BuiltinSpec{ .emit =makeCallEmitter("kira_char_to_string", 0, true), .returns_string = true } },
+    .{ "float_to_int", BuiltinSpec{ .emit =emitFloatToInt } },
+    .{ "float_parse", BuiltinSpec{ .emit =emitParseFloat } },
+    .{ "to_float_string", BuiltinSpec{ .emit =emitToFloatString } },
+    .{ "identity", BuiltinSpec{ .emit =emitIdentity } },
+    .{ "assert", BuiltinSpec{ .emit =emitAssert } },
     // String operations
     .{ "string_length", BuiltinSpec{ .emit =emitStringLength } },
     .{ "string_char_at", BuiltinSpec{ .emit =emitStringCharAt } },
