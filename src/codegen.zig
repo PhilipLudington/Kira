@@ -1878,6 +1878,7 @@ pub const CCodeGen = struct {
     fn emitEscapedString(self: *CCodeGen, s: []const u8) CodeGenError!void {
         for (s) |ch| {
             switch (ch) {
+                0 => try self.write("\\0"),
                 '\n' => try self.write("\\n"),
                 '\r' => try self.write("\\r"),
                 '\t' => try self.write("\\t"),
