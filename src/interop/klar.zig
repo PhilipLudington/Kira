@@ -538,19 +538,19 @@ fn emitLibraryWrapper(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
         }
     }
 
-    // Call internal function
+    // Call internal function (pass 0 for hidden _env parameter)
     const is_string_return = isStringType(func.return_type_name);
     if (is_void_return) {
-        try appendFmt(allocator, output, "    kira_{s}(", .{name});
+        try appendFmt(allocator, output, "    kira_{s}(0", .{name});
     } else if (is_string_return) {
-        try appendFmt(allocator, output, "    const char* _r = kira_{s}(", .{name});
+        try appendFmt(allocator, output, "    const char* _r = kira_{s}(0", .{name});
     } else {
-        try appendFmt(allocator, output, "    kira_int _r = kira_{s}(", .{name});
+        try appendFmt(allocator, output, "    kira_int _r = kira_{s}(0", .{name});
     }
 
-    // Arguments with type conversions
+    // Arguments with type conversions (0 for _env already emitted)
     for (func.params, 0..) |param, i| {
-        if (i > 0) try appendSlice(allocator, output, ", ");
+        try appendSlice(allocator, output, ", ");
         if (isFloatType(param.type_name)) {
             try appendFmt(allocator, output, "_a{d}", .{i});
         } else if (isStringType(param.type_name)) {
@@ -1284,24 +1284,24 @@ test "generateLibraryWrappers with mixed types" {
 
     // Integer wrapper: simple cast
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "int32_t add(int32_t a, int32_t b)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_add((kira_int)a, (kira_int)b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_add(0, (kira_int)a, (kira_int)b)") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "return (int32_t)_r;") != null);
 
     // Float wrapper: memcpy conversion
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "double scale(double x)") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "memcpy(&_a0, &x, sizeof(double))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_scale(_a0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_scale(0, _a0)") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "memcpy(&_ret, &_r, sizeof(double))") != null);
 
     // String wrapper: pass-through (both wrapper and internal use const char*)
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "const char* greet(const char* name)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_greet(name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_greet(0, name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "const char* _r = kira_greet") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "return _r;") != null);
 
     // Void wrapper: no return
     try std.testing.expect(std.mem.indexOf(u8, wrappers, "void reset(void)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_reset()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrappers, "kira_reset(0)") != null);
 }
 
 test "generateKlarExternBlock with string wrappers" {
