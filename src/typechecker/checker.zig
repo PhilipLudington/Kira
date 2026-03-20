@@ -2278,7 +2278,7 @@ pub const TypeChecker = struct {
             errdefer self.scopeCleanup();
 
             try self.checkPattern(arm.pattern, subject_type);
-            try self.addPatternBindings(arm.pattern, null, subject_type, false);
+            try self.addPatternBindings(arm.pattern, null, subject_type, true);
 
             if (arm.guard) |guard| {
                 const guard_type = try self.checkExpression(guard);
@@ -2999,7 +2999,7 @@ pub const TypeChecker = struct {
 
                     // Check pattern against subject type and add bindings to scope
                     try self.checkPattern(arm.pattern, subject_type);
-                    try self.addPatternBindings(arm.pattern, null, subject_type, false);
+                    try self.addPatternBindings(arm.pattern, null, subject_type, true);
 
                     // Collect pattern and guard info for exhaustiveness checking
                     try patterns.append(self.allocator, arm.pattern);

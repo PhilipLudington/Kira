@@ -24,20 +24,12 @@
 
 ---
 
-## [ ] Bug 3: Match arm bindings silently shadow module-level functions
+## [x] Bug 3: Match arm bindings silently shadow module-level functions
 
-**Status:** Investigating
+**Status:** Fixed
 
-**Description:** Prior to a recent compiler update, match arm bindings could silently shadow module-level function names without any warning or error. The compiler now requires explicit acknowledgment of shadowing, but this was a breaking change with no migration guidance.
+**Root cause:** When the explicit shadowing requirement (`shadow` keyword) was added to Kira, match arm pattern bindings were given the same restriction as `let`/`var` bindings — `allow_shadow` was hardcoded to `false` in both the resolver and type checker for match arms. However, match arm bindings are inherently scoped (each arm creates its own block scope) and pattern variable names are often constrained by the data being destructured, making the `shadow` keyword requirement overly burdensome and a breaking change for existing code.
 
-**Steps to reproduce:**
-1. Define a module-level function `socket_handle`
-2. In a match arm, bind a variable named `handle`
-3. With older compiler: compiles silently (shadow is implicit)
-4. With updated compiler: compilation fails due to new explicit shadow requirement
+**Fix:** Changed `allow_shadow` from `false` to `true` for match arm pattern resolution in all four call sites: match statements and match expressions in both the resolver (`resolvePattern`) and type checker (`addPatternBindings`). Match arm bindings now implicitly allow shadowing outer scope names without requiring the `shadow` keyword.
 
-**Expected:** Either consistent behavior across versions, or a deprecation warning before making this a hard error.
-
-**Actual:** The new requirement was introduced as a breaking change. Existing code using common binding names in match arms stopped compiling.
-
-**Affected project:** Tharn — `tools/net.ki` match arms renamed bindings to avoid shadowing. See Tharn commit `5615440`.
+**Affected files:** `src/symbols/resolver.zig`, `src/typechecker/checker.zig`

@@ -1069,7 +1069,7 @@ pub const Resolver = struct {
 
                 for (match_stmt.arms) |arm| {
                     _ = try self.table.enterScope(.block);
-                    try self.resolvePattern(arm.pattern, null, false);
+                    try self.resolvePattern(arm.pattern, null, true);
 
                     if (arm.guard) |guard| {
                         try self.resolveExpression(guard);
@@ -1196,7 +1196,7 @@ pub const Resolver = struct {
                 try self.resolveExpression(me.subject);
                 for (me.arms) |arm| {
                     _ = try self.table.enterScope(.block);
-                    try self.resolvePattern(arm.pattern, null, false);
+                    try self.resolvePattern(arm.pattern, null, true);
                     if (arm.guard) |guard| {
                         try self.resolveExpression(guard);
                     }

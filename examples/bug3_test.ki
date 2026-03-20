@@ -1,0 +1,59 @@
+// Bug 3 Test: Match arm bindings can shadow module-level functions
+//
+// This tests that match arm pattern bindings are allowed to use names
+// that shadow module-level functions without requiring the 'shadow' keyword.
+// Match arms create their own scope, and pattern variable names are often
+// constrained by the data being destructured.
+
+type Outcome =
+    | Success(i32)
+    | Failure(string)
+
+// Module-level function named 'value' — match arm bindings should be
+// able to use 'value' as a binding name without error.
+fn value() -> i32 {
+    return 42
+}
+
+// Module-level function named 'msg'
+fn msg() -> string {
+    return "hello"
+}
+
+fn describe(r: Outcome) -> string {
+    // These match arm bindings shadow the module-level 'value' and 'msg' functions.
+    // This should compile without requiring the 'shadow' keyword.
+    match r {
+        Success(value) => { return "ok: ${std.int.to_string(value)}" }
+        Failure(msg) => { return "err: ${msg}" }
+    }
+}
+
+// Also test match statements (not just expressions)
+fn extract(r: Outcome) -> i32 {
+    match r {
+        Success(value) => { return value }
+        Failure(msg) => { return 0 - 1 }
+    }
+}
+
+effect fn main() -> void {
+    std.io.println("Bug 3 Test: Match arm shadowing")
+    std.io.println("================================")
+
+    // Verify module-level functions still work
+    std.io.println("Module value(): ${std.int.to_string(value())}")
+    std.io.println("Module msg(): ${msg()}")
+
+    // Verify match arm bindings work correctly
+    let ok_result: Outcome = Success(99)
+    let err_result: Outcome = Failure("not found")
+
+    std.io.println("describe(Success(99)): ${describe(ok_result)}")
+    std.io.println("describe(Failure(...)): ${describe(err_result)}")
+    std.io.println("extract(Success(99)): ${std.int.to_string(extract(ok_result))}")
+    std.io.println("extract(Failure(...)): ${std.int.to_string(extract(err_result))}")
+
+    std.io.println("")
+    std.io.println("All tests passed!")
+}
