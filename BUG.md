@@ -12,22 +12,15 @@
 
 ---
 
-## [ ] Bug 2: Compiler segfault on deep nesting with many imported symbols
+## [x] Bug 2: Compiler segfault on deep nesting with many imported symbols
 
-**Status:** Open
+**Status:** Fixed
 
-**Description:** The compiler crashes with a segfault when compiling files that combine deeply nested code structures with a large number of imported symbols.
+**Root cause:** The parser, resolver, type checker, and IR lowerer all used unbounded recursion for nested expressions, statements, blocks, and patterns. With deeply nested code, the process stack would overflow causing a segfault with no diagnostic output. (The interpreter already had a recursion limit of 1000, and the module loader had an import depth limit of 64, but the compilation passes had no such guards.)
 
-**Steps to reproduce:**
-1. Create a module with many imported symbols
-2. Write deeply nested control flow or match expressions within that module
-3. Compile — the compiler segfaults
+**Fix:** Added a `nesting_depth` counter and `max_nesting_depth` limit (256) to all four compilation passes: Parser (`parseExpression`, `parseBlock`), Resolver (`resolveStatement`, `resolveExpression`), TypeChecker (`checkExpression`, `checkStatement`), and Lowerer (`lowerExpression`, `lowerStatement`). When the limit is hit, each pass reports a clear diagnostic error instead of segfaulting.
 
-**Expected:** Compilation succeeds or produces a clear error message.
-
-**Actual:** The compiler segfaults with no diagnostic output.
-
-**Affected project:** Tharn — `runtime/channel_test.ki` had to be restructured to flatten nesting and reduce the interaction with imported symbols. See Tharn commit `5615440`.
+**Affected files:** `src/parser/parser.zig`, `src/symbols/resolver.zig`, `src/typechecker/checker.zig`, `src/ir/lower.zig`
 
 ---
 

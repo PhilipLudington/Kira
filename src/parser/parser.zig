@@ -20,6 +20,10 @@ const Declaration = ast.Declaration;
 const Pattern = ast.Pattern;
 const Program = ast.Program;
 
+/// Maximum nesting depth before the parser reports an error.
+/// Set conservatively to prevent stack overflow during recursive descent.
+pub const max_nesting_depth: usize = 256;
+
 /// Parser error types
 pub const ParseError = error{
     UnexpectedToken,
@@ -30,6 +34,7 @@ pub const ParseError = error{
     ExpectedDeclaration,
     InvalidAssignmentTarget,
     InvalidPattern,
+    NestingTooDeep,
     OutOfMemory,
     Overflow,
 };
@@ -48,6 +53,8 @@ pub const Parser = struct {
     tokens: []const Token,
     current: usize,
     errors: std.ArrayListUnmanaged(ErrorInfo),
+    /// Current nesting depth for stack overflow prevention
+    nesting_depth: usize,
 
     /// Initialize a new parser with the given tokens
     pub fn init(allocator: Allocator, tokens: []const Token) Parser {
@@ -56,6 +63,7 @@ pub const Parser = struct {
             .tokens = tokens,
             .current = 0,
             .errors = .{},
+            .nesting_depth = 0,
         };
     }
 
@@ -1299,6 +1307,18 @@ pub const Parser = struct {
     }
 
     fn parseBlock(self: *Parser) ParseError![]Statement {
+        if (self.nesting_depth >= max_nesting_depth) {
+            try self.errors.append(self.allocator, ErrorInfo{
+                .message = "block nesting depth exceeds maximum; simplify the code or reduce nesting",
+                .span = self.peek().span,
+                .expected = null,
+                .found = null,
+            });
+            return ParseError.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         try self.consume(.left_brace, "expected '{'");
         self.skipNewlines();
 
@@ -1320,6 +1340,17 @@ pub const Parser = struct {
     // =========================================================================
 
     fn parseExpression(self: *Parser) ParseError!Expression {
+        if (self.nesting_depth >= max_nesting_depth) {
+            try self.errors.append(self.allocator, ErrorInfo{
+                .message = "nesting depth exceeds maximum; simplify the expression or reduce nesting",
+                .span = self.peek().span,
+                .expected = null,
+                .found = null,
+            });
+            return ParseError.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
         return self.parseOrExpr();
     }
 

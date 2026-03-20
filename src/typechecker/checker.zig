@@ -33,9 +33,14 @@ pub const ResolvedType = types_mod.ResolvedType;
 pub const Diagnostic = errors_mod.Diagnostic;
 pub const DiagnosticKind = errors_mod.DiagnosticKind;
 
+/// Maximum nesting depth before the type checker reports an error.
+/// Set conservatively to prevent stack overflow during recursive descent.
+pub const max_nesting_depth: usize = 256;
+
 /// Errors that can occur during type checking
 pub const TypeCheckError = error{
     TypeError,
+    NestingTooDeep,
     OutOfMemory,
 };
 
@@ -85,6 +90,8 @@ pub const TypeChecker = struct {
     type_arena: std.heap.ArenaAllocator,
     /// Current trait being checked (for resolving method calls on Self in default bodies)
     current_trait: ?*const Declaration.TraitDecl,
+    /// Current nesting depth for stack overflow prevention
+    nesting_depth: usize,
 
     /// Create a new type checker
     pub fn init(allocator: Allocator, symbol_table: *SymbolTable) TypeChecker {
@@ -102,6 +109,7 @@ pub const TypeChecker = struct {
             .in_effect_function = false,
             .type_arena = std.heap.ArenaAllocator.init(allocator),
             .current_trait = null,
+            .nesting_depth = 0,
         };
     }
 
@@ -395,6 +403,17 @@ pub const TypeChecker = struct {
 
     /// Type check an expression and return its type
     pub fn checkExpression(self: *TypeChecker, expr: *const Expression) TypeCheckError!ResolvedType {
+        if (self.nesting_depth >= max_nesting_depth) {
+            try self.addDiagnostic(try errors_mod.simpleError(
+                self.allocator,
+                "nesting depth exceeds maximum; simplify the expression or reduce nesting",
+                expr.span,
+            ));
+            return error.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         return switch (expr.kind) {
             .integer_literal => |lit| {
                 // Determine type from suffix or default to i32
@@ -2732,6 +2751,17 @@ pub const TypeChecker = struct {
 
     /// Type check a statement
     pub fn checkStatement(self: *TypeChecker, stmt: *const Statement) TypeCheckError!void {
+        if (self.nesting_depth >= max_nesting_depth) {
+            try self.addDiagnostic(try errors_mod.simpleError(
+                self.allocator,
+                "nesting depth exceeds maximum; simplify the code or reduce nesting",
+                stmt.span,
+            ));
+            return error.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         // Scope balance invariant: no statement should permanently change the scope depth
         const entry_scope_id = self.symbol_table.current_scope_id;
         defer std.debug.assert(self.symbol_table.current_scope_id == entry_scope_id);

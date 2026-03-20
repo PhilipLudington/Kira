@@ -29,6 +29,10 @@ const Terminator = ir.Terminator;
 const ValueRef = ir.ValueRef;
 const BlockId = ir.BlockId;
 
+/// Maximum nesting depth before the lowerer reports an error.
+/// Set conservatively to prevent stack overflow during recursive descent.
+pub const max_nesting_depth: usize = 256;
+
 pub const LowerError = error{
     OutOfMemory,
     UnsupportedExpression,
@@ -36,6 +40,7 @@ pub const LowerError = error{
     UnsupportedDeclaration,
     UndefinedVariable,
     NoCurrentFunction,
+    NestingTooDeep,
 };
 
 /// Lowers a Kira AST Program into an IR Module.
@@ -61,6 +66,8 @@ pub const Lowerer = struct {
     char_refs: std.AutoArrayHashMapUnmanaged(ValueRef, void),
     /// Diagnostic context for the most recent error (set before returning an error).
     error_context: ?ErrorContext = null,
+    /// Current nesting depth for stack overflow prevention
+    nesting_depth: usize = 0,
 
     /// Maps local function names to qualified IR names for cross-module resolution.
     /// Rebuilt for each module being lowered.
@@ -772,6 +779,16 @@ pub const Lowerer = struct {
     }
 
     fn lowerStatement(self: *Lowerer, stmt: *const Statement) LowerError!void {
+        if (self.nesting_depth >= max_nesting_depth) {
+            self.error_context = .{
+                .message = "nesting depth exceeds maximum; simplify the code or reduce nesting",
+                .span = stmt.span,
+            };
+            return error.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         switch (stmt.kind) {
             .let_binding => |*lb| try self.lowerLetBinding(lb),
             .var_binding => |*vb| try self.lowerVarBinding(vb),
@@ -1186,6 +1203,16 @@ pub const Lowerer = struct {
     // ----------------------------------------------------------------
 
     fn lowerExpression(self: *Lowerer, expr: *const Expression) LowerError!ValueRef {
+        if (self.nesting_depth >= max_nesting_depth) {
+            self.error_context = .{
+                .message = "nesting depth exceeds maximum; simplify the expression or reduce nesting",
+                .span = expr.span,
+            };
+            return error.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         return switch (expr.kind) {
             .integer_literal => |lit| self.emit(.{ .const_int = .{ .value = lit.value } }),
             .float_literal => |lit| self.emit(.{ .const_float = lit.value }),

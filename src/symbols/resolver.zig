@@ -35,6 +35,10 @@ pub const ScopeId = symbol_mod.ScopeId;
 pub const SymbolTable = table_mod.SymbolTable;
 pub const ScopeKind = @import("scope.zig").ScopeKind;
 
+/// Maximum nesting depth before the resolver reports an error.
+/// Set conservatively to prevent stack overflow during recursive descent.
+pub const max_nesting_depth: usize = 256;
+
 /// Errors that can occur during resolution
 pub const ResolveError = error{
     DuplicateDefinition,
@@ -47,6 +51,7 @@ pub const ResolveError = error{
     EffectViolation,
     ImportNotFound,
     CircularDependency,
+    NestingTooDeep,
     ResolutionFailed, // Generic error when diagnostics contain errors
     OutOfMemory,
 };
@@ -150,6 +155,8 @@ pub const Resolver = struct {
     first_pass: bool,
     /// Optional module loader for cross-file imports
     module_loader: ?*modules.ModuleLoader,
+    /// Current nesting depth for stack overflow prevention
+    nesting_depth: usize,
 
     const PendingImport = struct {
         decl: Declaration.ImportDecl,
@@ -167,6 +174,7 @@ pub const Resolver = struct {
             .pending_imports = .{},
             .first_pass = true,
             .module_loader = null,
+            .nesting_depth = 0,
         };
     }
 
@@ -180,6 +188,7 @@ pub const Resolver = struct {
             .pending_imports = .{},
             .first_pass = true,
             .module_loader = loader,
+            .nesting_depth = 0,
         };
     }
 
@@ -948,6 +957,13 @@ pub const Resolver = struct {
 
     /// Resolve a statement
     fn resolveStatement(self: *Resolver, stmt: *const Statement) ResolveError!void {
+        if (self.nesting_depth >= max_nesting_depth) {
+            try self.addError("nesting depth exceeds maximum ({d}); simplify the code or reduce nesting", .{max_nesting_depth}, stmt.span);
+            return error.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         switch (stmt.kind) {
             .let_binding => |let_bind| {
                 // Resolve the initializer first
@@ -1090,6 +1106,13 @@ pub const Resolver = struct {
 
     /// Resolve an expression
     fn resolveExpression(self: *Resolver, expr: *const Expression) ResolveError!void {
+        if (self.nesting_depth >= max_nesting_depth) {
+            try self.addError("nesting depth exceeds maximum ({d}); simplify the expression or reduce nesting", .{max_nesting_depth}, expr.span);
+            return error.NestingTooDeep;
+        }
+        self.nesting_depth += 1;
+        defer self.nesting_depth -= 1;
+
         switch (expr.kind) {
             .identifier => |ident| {
                 // Skip error for 'std' (runtime namespace) and runtime builtins
