@@ -697,6 +697,24 @@ pub const Resolver = struct {
         };
     }
 
+    /// Check if a symbol is effectively public, following import alias chains.
+    /// An import alias is considered public if the original symbol it points to
+    /// is public — this enables transitive re-exports.
+    fn isEffectivelyPublic(self: *Resolver, sym: *const Symbol) bool {
+        var current = sym;
+        var depth: usize = 0;
+        while (depth < 64) : (depth += 1) {
+            switch (current.kind) {
+                .import_alias => |ia| {
+                    const resolved_id = ia.resolved_id orelse return false;
+                    current = self.table.getSymbol(resolved_id) orelse return false;
+                },
+                else => return current.is_public,
+            }
+        }
+        return false;
+    }
+
     /// Resolve pending imports
     fn resolveImports(self: *Resolver) ResolveError!void {
         for (self.pending_imports.items) |pending| {
@@ -745,8 +763,9 @@ pub const Resolver = struct {
             for (items) |item| {
                 const source_sym = self.table.lookupInScope(module_scope_id.?, item.name);
                 if (source_sym) |sym| {
-                    // Check visibility
-                    if (!sym.is_public) {
+                    // Check visibility — follow import alias chains so that
+                    // re-exported public symbols remain importable.
+                    if (!self.isEffectivelyPublic(sym)) {
                         try self.addError("Cannot import private symbol '{s}'", .{item.name}, item.span);
                         continue;
                     }
@@ -837,7 +856,7 @@ pub const Resolver = struct {
                 while (it.next()) |entry| {
                     const sym_id = entry.value_ptr.*;
                     if (self.table.getSymbol(sym_id)) |sym| {
-                        if (!sym.is_public) continue;
+                        if (!self.isEffectivelyPublic(sym)) continue;
 
                         const alias_sym = Symbol{
                             .id = 0,

@@ -814,6 +814,24 @@ pub const ModuleLoader = struct {
         _ = self.table.define(sym) catch {};
     }
 
+    /// Check if a symbol is effectively public, following import alias chains.
+    /// An import alias is considered public if the original symbol it points to
+    /// is public — this enables transitive re-exports.
+    fn isEffectivelyPublic(self: *ModuleLoader, sym: *const symbol_mod.Symbol) bool {
+        var current = sym;
+        var depth: usize = 0;
+        while (depth < 64) : (depth += 1) {
+            switch (current.kind) {
+                .import_alias => |ia| {
+                    const resolved_id = ia.resolved_id orelse return false;
+                    current = self.table.getSymbol(resolved_id) orelse return false;
+                },
+                else => return current.is_public,
+            }
+        }
+        return false;
+    }
+
     /// Resolve import aliases from one module scope into another.
     /// Creates import alias symbols so that types referenced in the source
     /// module's function signatures are visible for cross-module type resolution.
@@ -831,7 +849,7 @@ pub const ModuleLoader = struct {
             // Specific imports: create alias for each named item
             for (items) |item| {
                 const source_sym = self.table.lookupInScope(source_scope_id, item.name) orelse continue;
-                if (!source_sym.is_public) continue;
+                if (!self.isEffectivelyPublic(source_sym)) continue;
 
                 // Copy fields before define() — appending to the symbols array
                 // may reallocate, invalidating the source_sym pointer.
@@ -891,7 +909,7 @@ pub const ModuleLoader = struct {
             while (it.next()) |entry| {
                 const sym_id = entry.value_ptr.*;
                 const sym = self.table.getSymbol(sym_id) orelse continue;
-                if (!sym.is_public) continue;
+                if (!self.isEffectivelyPublic(sym)) continue;
 
                 const alias_sym = symbol_mod.Symbol{
                     .id = 0,
